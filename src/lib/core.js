@@ -25,29 +25,39 @@ export async function findBetterCore() {
   const envPath = process.env.BETTER_CORE_PATH;
   if (envPath && (await exists(envPath))) return envPath;
 
+  const preferredProfile = String(process.env.BETTER_CORE_PROFILE ?? "release").toLowerCase() === "debug"
+    ? "debug"
+    : "release";
+  const profileRank = preferredProfile === "debug"
+    ? { debug: 0, release: 1 }
+    : { release: 0, debug: 1 };
   const betterRoot = betterInstallRoot();
   const candidates = [
     // Cargo workspace target dirs.
-    path.join(betterRoot, "crates", "target", "debug", platformExe("better-core")),
-    path.join(betterRoot, "crates", "target", "release", platformExe("better-core")),
+    { candidate: path.join(betterRoot, "crates", "target", "release", platformExe("better-core")), profile: "release" },
+    { candidate: path.join(betterRoot, "crates", "target", "debug", platformExe("better-core")), profile: "debug" },
     // Fallback if the package is built standalone.
-    path.join(betterRoot, "crates", "better-core", "target", "debug", platformExe("better-core")),
-    path.join(betterRoot, "crates", "better-core", "target", "release", platformExe("better-core"))
+    { candidate: path.join(betterRoot, "crates", "better-core", "target", "release", platformExe("better-core")), profile: "release" },
+    { candidate: path.join(betterRoot, "crates", "better-core", "target", "debug", platformExe("better-core")), profile: "debug" }
   ];
 
   const existing = [];
-  for (const candidate of candidates) {
+  for (const { candidate, profile } of candidates) {
     if (!(await exists(candidate))) continue;
     try {
       const st = await fs.stat(candidate);
-      existing.push({ candidate, mtimeMs: Number(st.mtimeMs || 0) });
+      existing.push({ candidate, profile, mtimeMs: Number(st.mtimeMs || 0) });
     } catch {
-      existing.push({ candidate, mtimeMs: 0 });
+      existing.push({ candidate, profile, mtimeMs: 0 });
     }
   }
   if (existing.length > 0) {
-    // Prefer the most recently built local core binary to avoid stale release/debug mismatches.
-    existing.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    // Prefer profile (release by default), then most recent build in that profile.
+    existing.sort((a, b) => {
+      const byProfile = (profileRank[a.profile] ?? 99) - (profileRank[b.profile] ?? 99);
+      if (byProfile !== 0) return byProfile;
+      return b.mtimeMs - a.mtimeMs;
+    });
     return existing[0].candidate;
   }
 
@@ -89,6 +99,7 @@ export async function runBetterCoreScan(corePath, rootDir) {
 export async function runBetterCoreMaterialize(corePath, srcDir, destDir, opts = {}) {
   const args = ["materialize", "--src", srcDir, "--dest", destDir];
   if (opts.linkStrategy) args.push("--link-strategy", String(opts.linkStrategy));
+  if (opts.jobs != null) args.push("--jobs", String(opts.jobs));
   const res = await runCommand(corePath, args, {
     cwd: path.dirname(destDir),
     passthroughStdio: false,

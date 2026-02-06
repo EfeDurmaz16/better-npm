@@ -256,7 +256,10 @@ export async function materializeFromGlobalCache(layout, key, projectRoot, opts 
     if (corePath) {
       runtime.corePath = corePath;
       try {
-        const coreResult = await runBetterCoreMaterialize(corePath, verify.paths.nodeModulesPath, staging, { linkStrategy });
+        const coreResult = await runBetterCoreMaterialize(corePath, verify.paths.nodeModulesPath, staging, {
+          linkStrategy,
+          jobs: fsConcurrency
+        });
         if (coreResult?.ok === true && coreResult?.stats) {
           stats.files = Number(coreResult.stats.files ?? 0);
           stats.filesLinked = Number(coreResult.stats.filesLinked ?? 0);

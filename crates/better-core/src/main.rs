@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -39,6 +41,7 @@ enum Command {
         src: PathBuf,
         dest: PathBuf,
         link_strategy: LinkStrategy,
+        jobs: usize,
     },
     Version,
     Help { error: Option<String> },
@@ -62,6 +65,10 @@ fn parse_args() -> Command {
     let mut src: Option<PathBuf> = None;
     let mut dest: Option<PathBuf> = None;
     let mut link_strategy = LinkStrategy::Auto;
+    let mut jobs = std::thread::available_parallelism()
+        .map(|n| n.get().saturating_mul(2))
+        .unwrap_or(8);
+    jobs = jobs.clamp(1, 64);
     let mut i = 1usize;
     while i < args.len() {
         match args[i].as_str() {
@@ -119,6 +126,23 @@ fn parse_args() -> Command {
                 }
                 i += 2;
             }
+            "--jobs" => {
+                if i + 1 >= args.len() {
+                    return Command::Help {
+                        error: Some("--jobs requires a value".to_string()),
+                    };
+                }
+                let raw = args[i + 1].as_str();
+                match raw.parse::<usize>() {
+                    Ok(parsed) if parsed > 0 => jobs = parsed.clamp(1, 256),
+                    _ => {
+                        return Command::Help {
+                            error: Some(format!("invalid --jobs '{raw}' (expected positive integer)")),
+                        }
+                    }
+                }
+                i += 2;
+            }
             other => {
                 return Command::Help {
                     error: Some(format!("unknown flag: {other}")),
@@ -145,6 +169,7 @@ fn parse_args() -> Command {
                 src,
                 dest,
                 link_strategy,
+                jobs,
             },
             _ => Command::Help {
                 error: Some("materialize requires --src <path> and --dest <path>".to_string()),
@@ -166,7 +191,7 @@ fn print_help(error: Option<String>) {
 Usage:
   better-core analyze --root <path> [--graph]
   better-core scan --root <path>
-  better-core materialize --src <path> --dest <path> [--link-strategy auto|hardlink|copy]
+  better-core materialize --src <path> --dest <path> [--link-strategy auto|hardlink|copy] [--jobs N]
   better-core version
 "
     );
@@ -520,6 +545,41 @@ struct MaterializeStats {
     symlinks: u64,
 }
 
+#[derive(Default)]
+struct MaterializeCounters {
+    files: AtomicU64,
+    files_linked: AtomicU64,
+    files_copied: AtomicU64,
+    link_fallback_copies: AtomicU64,
+    symlinks: AtomicU64,
+}
+
+impl MaterializeCounters {
+    fn snapshot(&self) -> MaterializeStats {
+        MaterializeStats {
+            files: self.files.load(Ordering::Relaxed),
+            files_linked: self.files_linked.load(Ordering::Relaxed),
+            files_copied: self.files_copied.load(Ordering::Relaxed),
+            link_fallback_copies: self.link_fallback_copies.load(Ordering::Relaxed),
+            directories: 0,
+            symlinks: self.symlinks.load(Ordering::Relaxed),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct MaterializeFileTask {
+    src: PathBuf,
+    dst: PathBuf,
+}
+
+#[derive(Clone)]
+struct MaterializeSymlinkTask {
+    src: PathBuf,
+    dst: PathBuf,
+    target: PathBuf,
+}
+
 fn remove_path_if_exists(p: &Path) -> Result<(), String> {
     match fs::symlink_metadata(p) {
         Ok(md) => {
@@ -541,13 +601,13 @@ fn remove_path_if_exists(p: &Path) -> Result<(), String> {
 }
 
 #[cfg(unix)]
-fn create_symlink(target: &Path, dst: &Path, _src_path: &Path) -> Result<(), String> {
+fn create_symlink(target: &Path, dst: &Path, _src_path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::symlink;
-    symlink(target, dst).map_err(|e| e.to_string())
+    symlink(target, dst)
 }
 
 #[cfg(windows)]
-fn create_symlink(target: &Path, dst: &Path, src_path: &Path) -> Result<(), String> {
+fn create_symlink(target: &Path, dst: &Path, src_path: &Path) -> std::io::Result<()> {
     use std::os::windows::fs::{symlink_dir, symlink_file};
     let resolved = if target.is_absolute() {
         target.to_path_buf()
@@ -559,52 +619,166 @@ fn create_symlink(target: &Path, dst: &Path, src_path: &Path) -> Result<(), Stri
     };
     let target_is_dir = fs::metadata(&resolved).map(|m| m.is_dir()).unwrap_or(false);
     if target_is_dir {
-        symlink_dir(target, dst).map_err(|e| e.to_string())
+        symlink_dir(target, dst)
     } else {
-        symlink_file(target, dst).map_err(|e| e.to_string())
+        symlink_file(target, dst)
     }
 }
 
 #[cfg(not(any(unix, windows)))]
-fn create_symlink(target: &Path, dst: &Path, _src_path: &Path) -> Result<(), String> {
+fn create_symlink(target: &Path, dst: &Path, _src_path: &Path) -> std::io::Result<()> {
     // Fallback on unsupported targets: preserve behavior via copy.
-    fs::copy(target, dst).map(|_| ()).map_err(|e| e.to_string())
+    fs::copy(target, dst).map(|_| ())
 }
 
-fn materialize_file(src: &Path, dst: &Path, strategy: LinkStrategy, stats: &mut MaterializeStats) -> Result<(), String> {
-    stats.files = stats.files.saturating_add(1);
-    fs::create_dir_all(dst.parent().unwrap_or_else(|| Path::new("."))).map_err(|e| e.to_string())?;
-    remove_path_if_exists(dst)?;
-
-    match strategy {
-        LinkStrategy::Copy => {
-            fs::copy(src, dst).map_err(|e| e.to_string())?;
-            stats.files_copied = stats.files_copied.saturating_add(1);
-            Ok(())
-        }
-        LinkStrategy::Hardlink | LinkStrategy::Auto => {
-            match fs::hard_link(src, dst) {
-                Ok(()) => {
-                    stats.files_linked = stats.files_linked.saturating_add(1);
-                    Ok(())
-                }
-                Err(_) => {
-                    fs::copy(src, dst).map_err(|e| e.to_string())?;
-                    stats.files_copied = stats.files_copied.saturating_add(1);
-                    stats.link_fallback_copies = stats.link_fallback_copies.saturating_add(1);
-                    Ok(())
-                }
+fn copy_file_with_retry(src: &Path, dst: &Path) -> Result<(), String> {
+    match fs::copy(src, dst) {
+        Ok(_) => Ok(()),
+        Err(err) => {
+            if err.kind() != std::io::ErrorKind::AlreadyExists {
+                return Err(err.to_string());
             }
+            remove_path_if_exists(dst)?;
+            fs::copy(src, dst).map(|_| ()).map_err(|e| e.to_string())
         }
     }
 }
 
-fn materialize_tree(src_root: &Path, dst_root: &Path, strategy: LinkStrategy) -> Result<MaterializeStats, String> {
-    let mut stats = MaterializeStats::default();
+fn hardlink_with_retry(src: &Path, dst: &Path) -> Result<(), String> {
+    match fs::hard_link(src, dst) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            if err.kind() != std::io::ErrorKind::AlreadyExists {
+                return Err(err.to_string());
+            }
+            remove_path_if_exists(dst)?;
+            fs::hard_link(src, dst).map_err(|e| e.to_string())
+        }
+    }
+}
+
+fn create_symlink_with_retry(task: &MaterializeSymlinkTask) -> Result<(), String> {
+    match create_symlink(&task.target, &task.dst, &task.src) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            remove_path_if_exists(&task.dst)?;
+            create_symlink(&task.target, &task.dst, &task.src).map_err(|e| e.to_string())
+        }
+    }
+}
+
+enum MaterializeTask {
+    File(MaterializeFileTask),
+    Symlink(MaterializeSymlinkTask),
+}
+
+fn run_materialize_tasks_parallel(
+    tasks: Vec<MaterializeTask>,
+    strategy: LinkStrategy,
+    jobs: usize,
+    counters: &MaterializeCounters,
+) -> Result<(), String> {
+    if tasks.is_empty() {
+        return Ok(());
+    }
+    let queue = Arc::new(Mutex::new(VecDeque::from(tasks)));
+    let first_error = Arc::new(Mutex::new(None::<String>));
+    let worker_count = jobs.max(1).min(queue.lock().map(|g| g.len()).unwrap_or(1).max(1));
+
+    std::thread::scope(|scope| {
+        for _ in 0..worker_count {
+            let queue = Arc::clone(&queue);
+            let first_error = Arc::clone(&first_error);
+            scope.spawn(move || {
+                loop {
+                    if first_error
+                        .lock()
+                        .ok()
+                        .and_then(|g| g.as_ref().cloned())
+                        .is_some()
+                    {
+                        return;
+                    }
+
+                    let next_task = match queue.lock() {
+                        Ok(mut guard) => guard.pop_front(),
+                        Err(_) => return,
+                    };
+                    let Some(task) = next_task else { return };
+
+                    let task_result = match task {
+                        MaterializeTask::File(task) => {
+                            counters.files.fetch_add(1, Ordering::Relaxed);
+                            match strategy {
+                                LinkStrategy::Copy => {
+                                    if let Err(err) = copy_file_with_retry(&task.src, &task.dst) {
+                                        Err(err)
+                                    } else {
+                                        counters.files_copied.fetch_add(1, Ordering::Relaxed);
+                                        Ok(())
+                                    }
+                                }
+                                LinkStrategy::Hardlink | LinkStrategy::Auto => {
+                                    if hardlink_with_retry(&task.src, &task.dst).is_ok() {
+                                        counters.files_linked.fetch_add(1, Ordering::Relaxed);
+                                        Ok(())
+                                    } else if let Err(err) =
+                                        copy_file_with_retry(&task.src, &task.dst)
+                                    {
+                                        Err(err)
+                                    } else {
+                                        counters.files_copied.fetch_add(1, Ordering::Relaxed);
+                                        counters
+                                            .link_fallback_copies
+                                            .fetch_add(1, Ordering::Relaxed);
+                                        Ok(())
+                                    }
+                                }
+                            }
+                        }
+                        MaterializeTask::Symlink(task) => match create_symlink_with_retry(&task) {
+                            Ok(()) => {
+                                counters.symlinks.fetch_add(1, Ordering::Relaxed);
+                                Ok(())
+                            }
+                            Err(err) => Err(err),
+                        },
+                    };
+
+                    if let Err(err) = task_result {
+                        if let Ok(mut guard) = first_error.lock() {
+                            if guard.is_none() {
+                                *guard = Some(err);
+                            }
+                        }
+                        return;
+                    }
+                }
+            });
+        }
+    });
+
+    let result = match first_error.lock() {
+        Ok(guard) => match guard.as_ref() {
+            Some(err) => Err(err.clone()),
+            None => Ok(()),
+        },
+        Err(_) => Err("materialize_worker_error_lock_poisoned".to_string()),
+    };
+    result
+}
+
+fn materialize_tree(
+    src_root: &Path,
+    dst_root: &Path,
+    strategy: LinkStrategy,
+    jobs: usize,
+) -> Result<MaterializeStats, String> {
+    let mut directories: Vec<PathBuf> = vec![dst_root.to_path_buf()];
+    let mut tasks: Vec<MaterializeTask> = Vec::new();
     let mut stack: Vec<(PathBuf, PathBuf)> = vec![(src_root.to_path_buf(), dst_root.to_path_buf())];
 
     while let Some((src_dir, dst_dir)) = stack.pop() {
-        fs::create_dir_all(&dst_dir).map_err(|e| e.to_string())?;
         let entries = stable_list_dir(&src_dir).map_err(|e| e.to_string())?;
         for ent in entries {
             let name = ent.file_name();
@@ -618,25 +792,37 @@ fn materialize_tree(src_root: &Path, dst_root: &Path, strategy: LinkStrategy) ->
             let ft = ent.file_type().map_err(|e| e.to_string())?;
 
             if ft.is_dir() {
-                stats.directories = stats.directories.saturating_add(1);
+                directories.push(dst.clone());
                 stack.push((src, dst));
                 continue;
             }
             if ft.is_symlink() {
                 let target = fs::read_link(&src).map_err(|e| e.to_string())?;
-                fs::create_dir_all(dst.parent().unwrap_or_else(|| Path::new("."))).map_err(|e| e.to_string())?;
-                remove_path_if_exists(&dst)?;
-                create_symlink(&target, &dst, &src)?;
-                stats.symlinks = stats.symlinks.saturating_add(1);
+                tasks.push(MaterializeTask::Symlink(MaterializeSymlinkTask {
+                    src,
+                    dst,
+                    target,
+                }));
                 continue;
             }
             if ft.is_file() {
-                materialize_file(&src, &dst, strategy, &mut stats)?;
+                tasks.push(MaterializeTask::File(MaterializeFileTask { src, dst }));
                 continue;
             }
         }
     }
 
+    directories.sort();
+    directories.dedup();
+    for dir in &directories {
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+
+    let counters = MaterializeCounters::default();
+    run_materialize_tasks_parallel(tasks, strategy, jobs, &counters)?;
+
+    let mut stats = counters.snapshot();
+    stats.directories = directories.len().saturating_sub(1) as u64;
     Ok(stats)
 }
 
@@ -644,6 +830,7 @@ fn write_materialize_json(
     src: &Path,
     dest: &Path,
     strategy: LinkStrategy,
+    jobs: usize,
     ok: bool,
     reason: Option<String>,
     duration_ms: u64,
@@ -663,6 +850,8 @@ fn write_materialize_json(
     w.value_string(&dest.to_string_lossy());
     w.key("strategy");
     w.value_string(strategy.as_str());
+    w.key("jobs");
+    w.value_u64(jobs as u64);
     w.key("durationMs");
     w.value_u64(duration_ms);
     w.key("reason");
@@ -1229,9 +1418,10 @@ fn main() {
             src,
             dest,
             link_strategy,
+            jobs,
         } => {
             let started = Instant::now();
-            match materialize_tree(&src, &dest, link_strategy) {
+            match materialize_tree(&src, &dest, link_strategy, jobs) {
                 Ok(stats) => {
                     let duration_ms = started.elapsed().as_millis() as u64;
                     print!(
@@ -1240,6 +1430,7 @@ fn main() {
                             &src,
                             &dest,
                             link_strategy,
+                            jobs,
                             true,
                             None,
                             duration_ms,
@@ -1255,6 +1446,7 @@ fn main() {
                             &src,
                             &dest,
                             link_strategy,
+                            jobs,
                             false,
                             Some(reason),
                             duration_ms,
