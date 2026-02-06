@@ -147,6 +147,16 @@ function parseJsonFromMixedOutput(raw) {
   return null;
 }
 
+async function tryReadJsonFile(filePath) {
+  if (!filePath) return null;
+  try {
+    const raw = await fs.readFile(filePath, "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
 function betterInstallArgs(projectRoot, pm, engine, opts = {}) {
   const args = [
     BETTER_BIN_PATH,
@@ -201,19 +211,27 @@ async function runVariant(variant, ctx, roundMeta) {
     };
   }
 
-  const res = await runCommand(process.execPath, variant.args, {
+  const reportPath = path.join(
+    roundMeta.cacheRoot ?? os.tmpdir(),
+    `.better-benchmark-${variant.name}-${roundMeta.phase}-${roundMeta.round}.json`
+  );
+  const args = [...variant.args, "--report", reportPath];
+  const res = await runCommand(process.execPath, args, {
     cwd: projectRoot,
     env,
     passthroughStdio: false,
-    captureLimitBytes: 1024 * 1024,
+    captureLimitBytes: 4 * 1024 * 1024,
     timeoutMs
   });
-  const parsed = parseJsonFromMixedOutput(res.stdout);
+  const parsedFromReport = await tryReadJsonFile(reportPath);
+  const parsed = parsedFromReport ?? parseJsonFromMixedOutput(res.stdout);
+  const parsedOk = parsed?.ok;
   const installWallTimeMs = Number(parsed?.install?.wallTimeMs);
+  await rmrf(reportPath);
   return {
     ...roundMeta,
     variant: variant.name,
-    ok: res.exitCode === 0 && !res.timedOut && parsed?.ok === true,
+    ok: res.exitCode === 0 && !res.timedOut && parsedOk !== false,
     exitCode: res.exitCode,
     timedOut: res.timedOut,
     wallTimeMs: res.wallTimeMs,
