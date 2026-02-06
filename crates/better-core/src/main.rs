@@ -468,6 +468,7 @@ struct ScanAgg {
     physical: u64,
     shared: u64,
     file_count: u64,
+    package_count: u64,
     approx: bool,
 }
 
@@ -500,6 +501,9 @@ fn scan_tree(
             let ft = ent.file_type().map_err(|e| e.to_string())?;
 
             if ft.is_dir() || (ft.is_symlink() && fs::metadata(&full).map(|m| m.is_dir()).unwrap_or(false)) {
+                if is_package_dir(&full) {
+                    agg.package_count += 1;
+                }
                 stack.push(full);
                 continue;
             }
@@ -1170,6 +1174,8 @@ fn write_scan_json(root: &Path, agg: &ScanAgg, ok: bool, reason: Option<String>)
     w.value_bool(agg.approx);
     w.key("fileCount");
     w.value_u64(agg.file_count);
+    w.key("packageCount");
+    w.value_u64(agg.package_count);
     w.end_object();
     w.out.push('\n');
     w.finish()

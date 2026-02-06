@@ -86,6 +86,7 @@ export async function scanTreeWithBestEngine(rootDir, opts = {}) {
       physicalBytes: Number(res.physicalBytes ?? 0),
       physicalBytesApprox: !!res.physicalBytesApprox,
       fileCount: Number(res.fileCount ?? 0),
+      packageCount: Number(res.packageCount ?? 0),
       // Not provided by core scan yet
       dirCount: 0,
       symlinkCount: 0

@@ -66,6 +66,81 @@ async function rmrf(p) {
   await fs.rm(p, { recursive: true, force: true });
 }
 
+async function readJsonFileOrNull(filePath) {
+  try {
+    const raw = await fs.readFile(filePath, "utf8");
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function loadPmCacheSnapshotStore(layout) {
+  const snapshotFile = path.join(layout.root, "pm-cache-snapshots.json");
+  const parsed = await readJsonFileOrNull(snapshotFile);
+  return {
+    file: snapshotFile,
+    snapshots: parsed?.snapshots && typeof parsed.snapshots === "object" ? parsed.snapshots : {}
+  };
+}
+
+function pmCacheSnapshotKey(pmCacheDir) {
+  return path.resolve(pmCacheDir);
+}
+
+function snapshotToCacheResult(entry) {
+  if (!entry || typeof entry !== "object") return { ok: false, reason: "snapshot_missing" };
+  const logicalBytes = Number(entry.logicalBytes);
+  const physicalBytes = Number(entry.physicalBytes);
+  if (!Number.isFinite(logicalBytes) || !Number.isFinite(physicalBytes)) {
+    return { ok: false, reason: "snapshot_invalid" };
+  }
+  return {
+    ok: true,
+    logicalBytes,
+    physicalBytes,
+    physicalBytesApprox: true,
+    source: "snapshot_index",
+    snapshotUpdatedAt: entry.updatedAt ?? null
+  };
+}
+
+async function persistPmCacheSnapshot(layout, snapshotStore, pmCacheDir, sample) {
+  if (!sample?.ok) return;
+  const key = pmCacheSnapshotKey(pmCacheDir);
+  snapshotStore.snapshots[key] = {
+    logicalBytes: Number(sample.logicalBytes ?? 0),
+    physicalBytes: Number(sample.physicalBytes ?? 0),
+    updatedAt: nowIso()
+  };
+  const payload = {
+    schemaVersion: 1,
+    snapshots: snapshotStore.snapshots
+  };
+  await fs.writeFile(snapshotStore.file, `${JSON.stringify(payload, null, 2)}\n`);
+}
+
+function suggestFsConcurrencyTuning({ engine, fsConcurrency, globalMaterialize }) {
+  if (engine !== "better" || !globalMaterialize?.ok) return null;
+  const durationMs = Number(globalMaterialize.durationMs ?? 0);
+  const files = Number(globalMaterialize.stats?.files ?? 0);
+  if (!Number.isFinite(durationMs) || durationMs <= 0 || files <= 0) return null;
+  const lower = Math.max(4, Math.floor(fsConcurrency / 2));
+  const upper = Math.min(64, fsConcurrency * 2);
+  const candidates = [...new Set([lower, fsConcurrency, upper])].sort((a, b) => a - b);
+  const recommended = durationMs > 8000 ? upper : durationMs < 2500 ? lower : fsConcurrency;
+  return {
+    kind: "fs_concurrency",
+    reason: "materialize_duration_based",
+    current: fsConcurrency,
+    recommended,
+    candidates,
+    durationMs,
+    files
+  };
+}
+
 function pmInstallCommand(pm, passthrough, engine, opts = {}) {
   const { frozen = false, production = false, yarnBerry = false } = opts;
   if (engine === "better") {
@@ -464,6 +539,16 @@ export async function cmdInstall(argv) {
 
   const runId = `${Date.now()}-${shortHash(`${projectRoot}:${pm}:${mode}`)}`;
   const startedAt = nowIso();
+  const startedAtMs = Date.now();
+  const phaseDurations = {
+    preMeasureMs: 0,
+    installMs: 0,
+    postMeasureMs: 0,
+    parityPreMs: 0,
+    parityCompareMs: 0,
+    globalCacheStoreMs: 0,
+    totalMs: 0
+  };
 
   const nodeModulesPath = path.join(projectRoot, "node_modules");
   const pmCacheDir = engine === "bun"
@@ -476,12 +561,20 @@ export async function cmdInstall(argv) {
   const includePackageCount = !(engine === "bun" && measureMode === "fast");
   const scanCoreMode = measureMode === "fast" ? "off" : "auto";
   const duFallback = measureMode === "precise" ? "off" : "auto";
+  const pmCacheSnapshotStore = await loadPmCacheSnapshotStore(layout);
+  const pmCacheSnapshotBefore = snapshotToCacheResult(pmCacheSnapshotStore.snapshots[pmCacheSnapshotKey(pmCacheDir)]);
+  const preMeasureStartMs = Date.now();
   const beforeCache = shouldMeasureCache
     ? await scanTreeWithBestEngine(pmCacheDir, { coreMode: scanCoreMode, duFallback })
-    : { ok: false, reason: measure === "off" ? "measure_off" : "measure_cache_off" };
+    : (
+      measure === "on" && measureCacheMode === "auto" && pmCacheSnapshotBefore.ok
+        ? pmCacheSnapshotBefore
+        : { ok: false, reason: measure === "off" ? "measure_off" : "measure_cache_off" }
+    );
   const beforeNodeModules = measure === "on"
     ? await collectNodeModulesSnapshot(projectRoot, { coreMode: scanCoreMode, duFallback, includePackageCount })
     : { ok: false, reason: "measure_off", exists: false, packageCount: 0 };
+  phaseDurations.preMeasureMs = Date.now() - preMeasureStartMs;
 
   const c = pmInstallCommand(pm, passthrough, engine, {
     frozen,
@@ -648,7 +741,9 @@ export async function cmdInstall(argv) {
         ? `parity pre-snapshot (${parityCheckMode}): hashing lockfiles + package set (may take time on large repos)`
         : `parity pre-snapshot (${parityCheckMode}): hashing lockfiles`
     );
+    const parityPreStartMs = Date.now();
     parityContext = await createParityContext(projectRoot, includePackageSet);
+    phaseDurations.parityPreMs = Date.now() - parityPreStartMs;
   }
 
   let cmd = null;
@@ -766,6 +861,7 @@ export async function cmdInstall(argv) {
       }
     }
   }
+  phaseDurations.installMs = Number(install?.wallTimeMs ?? 0);
 
   progress(
     measure === "off"
@@ -774,12 +870,23 @@ export async function cmdInstall(argv) {
         ? "post-install: measuring cache and node_modules sizes"
         : "post-install: measuring node_modules sizes (pm cache scan skipped)"
   );
-  const afterCache = shouldMeasureCache
+  const postMeasureStartMs = Date.now();
+  const afterCacheMeasured = shouldMeasureCache
     ? await scanTreeWithBestEngine(pmCacheDir, { coreMode: scanCoreMode, duFallback })
-    : { ok: false, reason: measure === "off" ? "measure_off" : "measure_cache_off" };
+    : null;
+  const pmCacheSnapshotAfter = snapshotToCacheResult(pmCacheSnapshotStore.snapshots[pmCacheSnapshotKey(pmCacheDir)]);
+  const afterCache = afterCacheMeasured ?? (
+    measure === "on" && measureCacheMode === "auto" && pmCacheSnapshotAfter.ok
+      ? pmCacheSnapshotAfter
+      : { ok: false, reason: measure === "off" ? "measure_off" : "measure_cache_off" }
+  );
   const nodeModules = measure === "on"
     ? await collectNodeModulesSnapshot(projectRoot, { coreMode: scanCoreMode, duFallback, includePackageCount })
     : { ok: false, reason: "measure_off", exists: false, packageCount: 0 };
+  phaseDurations.postMeasureMs = Date.now() - postMeasureStartMs;
+  if (shouldMeasureCache && afterCacheMeasured?.ok) {
+    await persistPmCacheSnapshot(layout, pmCacheSnapshotStore, pmCacheDir, afterCacheMeasured);
+  }
 
   if (
     !noopReuseInstall &&
@@ -790,6 +897,7 @@ export async function cmdInstall(argv) {
     !cacheReadOnly
   ) {
     progress(`global cache miss: capturing node_modules into key ${globalCacheContext.key.slice(0, 12)}…`);
+    const globalCacheStoreStartMs = Date.now();
     globalCacheStored = await captureProjectNodeModulesToGlobalCache(layout, globalCacheContext.key, projectRoot, {
       linkStrategy: values["link-strategy"] ?? "auto",
       fsConcurrency,
@@ -801,6 +909,7 @@ export async function cmdInstall(argv) {
       scriptsMode: cacheScripts,
       cacheMode
     });
+    phaseDurations.globalCacheStoreMs = Date.now() - globalCacheStoreStartMs;
     if (globalCacheStored.ok) {
       globalCacheDecision = {
         ...globalCacheDecision,
@@ -822,12 +931,14 @@ export async function cmdInstall(argv) {
         ? `parity compare (${parityCheckMode}): checking drift and package set`
         : `parity compare (${parityCheckMode}): checking drift`
     );
+    const parityCompareStartMs = Date.now();
     parityResult = await runParityCheck({
       projectRoot,
       lockfileBefore: parityContext.lockfileBefore,
       packageSetBefore: parityContext.packageSetBefore,
       mode: parityCheckMode
     });
+    phaseDurations.parityCompareMs = Date.now() - parityCompareStartMs;
 
     // In strict mode, throw if parity check failed
     if (parityCheckMode === "strict" && !parityResult.ok) {
@@ -838,6 +949,7 @@ export async function cmdInstall(argv) {
   }
 
   const endedAt = nowIso();
+  phaseDurations.totalMs = Date.now() - startedAtMs;
   const inferredCache = globalCacheDecision.hit
     ? { hits: 1, misses: 0, source: "global-node_modules-cache" }
     : inferPmCacheStats({
@@ -945,6 +1057,8 @@ export async function cmdInstall(argv) {
       incremental: engine === "better" ? incremental : null,
       fsConcurrency: engine === "better" ? fsConcurrency : null
     },
+    phases: phaseDurations,
+    tuning: suggestFsConcurrencyTuning({ engine, fsConcurrency, globalMaterialize }),
     reuseDecision,
     cacheDecision: globalCacheDecision,
     materialize: globalMaterialize
@@ -986,10 +1100,20 @@ export async function cmdInstall(argv) {
     cache: {
       pmCacheDir,
       before: beforeCache.ok
-        ? { logicalBytes: beforeCache.logicalBytes, physicalBytes: beforeCache.physicalBytes }
+        ? {
+            logicalBytes: beforeCache.logicalBytes,
+            physicalBytes: beforeCache.physicalBytes,
+            physicalBytesApprox: beforeCache.physicalBytesApprox ?? false,
+            source: beforeCache.source ?? "scan"
+          }
         : { ok: false, reason: beforeCache.reason },
       after: afterCache.ok
-        ? { logicalBytes: afterCache.logicalBytes, physicalBytes: afterCache.physicalBytes }
+        ? {
+            logicalBytes: afterCache.logicalBytes,
+            physicalBytes: afterCache.physicalBytes,
+            physicalBytesApprox: afterCache.physicalBytesApprox ?? false,
+            source: afterCache.source ?? "scan"
+          }
         : { ok: false, reason: afterCache.reason }
     },
     metrics: installMetrics,

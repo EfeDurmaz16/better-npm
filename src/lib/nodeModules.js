@@ -120,13 +120,16 @@ export async function collectNodeModulesSnapshot(projectRoot, opts = {}) {
     }),
     includePackageCount ? countInstalledPackages(nodeModulesPath) : Promise.resolve(null)
   ]);
+  const resolvedPackageCount = packageCount ?? (
+    Number.isFinite(size?.packageCount) ? Number(size.packageCount) : null
+  );
 
   if (!size.ok) {
     return {
       ok: false,
       path: nodeModulesPath,
       exists: true,
-      packageCount,
+      packageCount: resolvedPackageCount,
       reason: size.reason ?? "scan_failed"
     };
   }
@@ -135,7 +138,7 @@ export async function collectNodeModulesSnapshot(projectRoot, opts = {}) {
     ok: true,
     path: nodeModulesPath,
     exists: true,
-    packageCount,
+    packageCount: resolvedPackageCount,
     logicalBytes: size.logicalBytes,
     physicalBytes: size.physicalBytes,
     physicalBytesApprox: !!size.physicalBytesApprox,

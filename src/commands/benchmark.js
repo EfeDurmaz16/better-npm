@@ -188,9 +188,12 @@ async function runVariant(variant, ctx, roundMeta) {
   const { projectRoot, pm, engine, frozen, production, timeoutMs } = ctx;
   const env = { ...process.env, ...variant.env };
   const nodeModulesPath = path.join(projectRoot, "node_modules");
+  const startedAt = Date.now();
   await rmrf(nodeModulesPath);
+  const cleanupWallTimeMs = Date.now() - startedAt;
 
   if (variant.kind === "raw") {
+    const processStartedAt = Date.now();
     const command = rawInstallCommand(pm, engine, { frozen, production });
     const res = await runCommand(command.cmd, command.args, {
       cwd: projectRoot,
@@ -205,6 +208,10 @@ async function runVariant(variant, ctx, roundMeta) {
       ok: res.exitCode === 0 && !res.timedOut,
       exitCode: res.exitCode,
       timedOut: res.timedOut,
+      startedAt,
+      finishedAt: Date.now(),
+      cleanupWallTimeMs,
+      processWallTimeMs: Date.now() - processStartedAt,
       wallTimeMs: res.wallTimeMs,
       installWallTimeMs: res.wallTimeMs,
       stderrTail: res.stderrTail
@@ -216,6 +223,7 @@ async function runVariant(variant, ctx, roundMeta) {
     `.better-benchmark-${variant.name}-${roundMeta.phase}-${roundMeta.round}.json`
   );
   const args = [...variant.args, "--report", reportPath];
+  const processStartedAt = Date.now();
   const res = await runCommand(process.execPath, args, {
     cwd: projectRoot,
     env,
@@ -223,20 +231,31 @@ async function runVariant(variant, ctx, roundMeta) {
     captureLimitBytes: 4 * 1024 * 1024,
     timeoutMs
   });
+  const processWallTimeMs = Date.now() - processStartedAt;
+  const parseStartedAt = Date.now();
   const parsedFromReport = await tryReadJsonFile(reportPath);
   const parsed = parsedFromReport ?? parseJsonFromMixedOutput(res.stdout);
+  const parseWallTimeMs = Date.now() - parseStartedAt;
   const parsedOk = parsed?.ok;
+  const hasValidReport = !!parsed && parsed?.kind === "better.install.report" && parsedOk !== false;
   const installWallTimeMs = Number(parsed?.install?.wallTimeMs);
   await rmrf(reportPath);
   return {
     ...roundMeta,
     variant: variant.name,
-    ok: res.exitCode === 0 && !res.timedOut && parsedOk !== false,
+    ok: res.exitCode === 0 && !res.timedOut && hasValidReport,
     exitCode: res.exitCode,
     timedOut: res.timedOut,
+    startedAt,
+    finishedAt: Date.now(),
+    cleanupWallTimeMs,
+    processWallTimeMs,
+    parseWallTimeMs,
     wallTimeMs: res.wallTimeMs,
     installWallTimeMs: Number.isFinite(installWallTimeMs) ? installWallTimeMs : null,
     reportKind: parsed?.kind ?? null,
+    reportFound: !!parsed,
+    reportParseSource: parsedFromReport ? "report_file" : parsed ? "stdout_fallback" : "none",
     stderrTail: res.stderrTail
   };
 }
@@ -284,11 +303,31 @@ function formatSampleFailure(sample) {
   details.push(`exit=${sample.exitCode}`);
   if (sample.timedOut) details.push("timedOut=true");
   if (sample.reportKind) details.push(`reportKind=${sample.reportKind}`);
+  if (sample.reportFound === false) details.push("reportMissing=true");
+  if (sample.reportParseSource) details.push(`reportSource=${sample.reportParseSource}`);
+  if (Number.isFinite(sample.cleanupWallTimeMs)) details.push(`cleanupMs=${sample.cleanupWallTimeMs}`);
+  if (Number.isFinite(sample.processWallTimeMs)) details.push(`processMs=${sample.processWallTimeMs}`);
+  if (Number.isFinite(sample.parseWallTimeMs)) details.push(`parseMs=${sample.parseWallTimeMs}`);
   if (sample.stderrTail) {
     const compact = String(sample.stderrTail).replace(/\s+/g, " ").trim();
     if (compact) details.push(`stderrTail=${compact.slice(0, 300)}`);
   }
   return details.join(", ");
+}
+
+async function runWithHeartbeat(label, fn, logger, heartbeatMs = 15_000) {
+  const started = Date.now();
+  const timer = setInterval(() => {
+    logger.info("benchmark.heartbeat", {
+      phase: label,
+      elapsedMs: Date.now() - started
+    });
+  }, heartbeatMs);
+  try {
+    return await fn();
+  } finally {
+    clearInterval(timer);
+  }
 }
 
 function summarizeVariant(samples) {
@@ -431,18 +470,33 @@ export async function cmdBenchmark(argv) {
         let layout = cacheLayout(runCacheRoot);
         layout = await ensureCacheDirs(layout, { projectRootForFallback: projectRoot });
         variant.env = { ...variant.env, ...variantPmEnv(pm, layout, engine), BETTER_CACHE_ROOT: layout.root };
-        const sample = await runVariant(
-          variant,
-          {
-            projectRoot,
-            pm,
-            engine,
-            frozen: values.frozen === true,
-            production: values.production === true,
-            timeoutMs
-          },
-          { phase: "cold", round, cacheRoot: layout.root }
+        commandLogger.info("benchmark.round.start", { variant: variant.name, phase: "cold", round, cacheRoot: layout.root });
+        const sample = await runWithHeartbeat(
+          `${variant.name}:cold:${round}`,
+          () =>
+            runVariant(
+              variant,
+              {
+                projectRoot,
+                pm,
+                engine,
+                frozen: values.frozen === true,
+                production: values.production === true,
+                timeoutMs
+              },
+              { phase: "cold", round, cacheRoot: layout.root }
+            ),
+          commandLogger
         );
+        commandLogger.info("benchmark.round.end", {
+          variant: variant.name,
+          phase: "cold",
+          round,
+          ok: sample.ok,
+          wallTimeMs: sample.wallTimeMs,
+          cleanupWallTimeMs: sample.cleanupWallTimeMs,
+          processWallTimeMs: sample.processWallTimeMs
+        });
         perVariantSamples[variant.name].push(sample);
         if (!sample.ok) {
           throw new Error(`${variant.name} cold round ${round} failed (${formatSampleFailure(sample)})`);
@@ -457,35 +511,65 @@ export async function cmdBenchmark(argv) {
       variant.env = { ...variant.env, ...variantPmEnv(pm, layout, engine), BETTER_CACHE_ROOT: layout.root };
 
       // Prime cache
-      const prime = await runVariant(
-        variant,
-        {
-          projectRoot,
-          pm,
-          engine,
-          frozen: values.frozen === true,
-          production: values.production === true,
-          timeoutMs
-        },
-        { phase: "warm-prime", round: 0, cacheRoot: layout.root }
+      commandLogger.info("benchmark.round.start", { variant: variant.name, phase: "warm-prime", round: 0, cacheRoot: layout.root });
+      const prime = await runWithHeartbeat(
+        `${variant.name}:warm-prime`,
+        () =>
+          runVariant(
+            variant,
+            {
+              projectRoot,
+              pm,
+              engine,
+              frozen: values.frozen === true,
+              production: values.production === true,
+              timeoutMs
+            },
+            { phase: "warm-prime", round: 0, cacheRoot: layout.root }
+          ),
+        commandLogger
       );
+      commandLogger.info("benchmark.round.end", {
+        variant: variant.name,
+        phase: "warm-prime",
+        round: 0,
+        ok: prime.ok,
+        wallTimeMs: prime.wallTimeMs,
+        cleanupWallTimeMs: prime.cleanupWallTimeMs,
+        processWallTimeMs: prime.processWallTimeMs
+      });
       if (!prime.ok) {
         throw new Error(`${variant.name} warm prime failed (${formatSampleFailure(prime)})`);
       }
 
       for (let round = 1; round <= warmRounds; round += 1) {
-        const sample = await runVariant(
-          variant,
-          {
-            projectRoot,
-            pm,
-            engine,
-            frozen: values.frozen === true,
-            production: values.production === true,
-            timeoutMs
-          },
-          { phase: "warm", round, cacheRoot: layout.root }
+        commandLogger.info("benchmark.round.start", { variant: variant.name, phase: "warm", round, cacheRoot: layout.root });
+        const sample = await runWithHeartbeat(
+          `${variant.name}:warm:${round}`,
+          () =>
+            runVariant(
+              variant,
+              {
+                projectRoot,
+                pm,
+                engine,
+                frozen: values.frozen === true,
+                production: values.production === true,
+                timeoutMs
+              },
+              { phase: "warm", round, cacheRoot: layout.root }
+            ),
+          commandLogger
         );
+        commandLogger.info("benchmark.round.end", {
+          variant: variant.name,
+          phase: "warm",
+          round,
+          ok: sample.ok,
+          wallTimeMs: sample.wallTimeMs,
+          cleanupWallTimeMs: sample.cleanupWallTimeMs,
+          processWallTimeMs: sample.processWallTimeMs
+        });
         perVariantSamples[variant.name].push(sample);
         if (!sample.ok) {
           throw new Error(`${variant.name} warm round ${round} failed (${formatSampleFailure(sample)})`);
