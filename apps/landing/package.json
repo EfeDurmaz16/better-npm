@@ -8,9 +8,11 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "deps:better": "node ../../bin/better.js install --project-root . --pm npm --engine pm --json",
-    "build:better": "npm run deps:better && npm run build",
-    "lint:better": "npm run deps:better && npm run lint"
+    "run:better": "node ../../bin/better.js run",
+    "dev:better": "node ../../bin/better.js dev --project-root .",
+    "build:better": "node ../../bin/better.js build --project-root .",
+    "lint:better": "node ../../bin/better.js lint --project-root .",
+    "test:better": "node ../../bin/better.js test --project-root . --if-present"
   },
   "dependencies": {
     "geist": "^1.3.1",

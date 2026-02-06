@@ -9,6 +9,7 @@ This repo currently implements an MVP CLI with five primary commands:
 - `better cache` — `stats`, `gc`, `explain` for the Better-managed cache roots and run artifacts
 - `better doctor` — rule-based checks + explainable 0–100 health score
 - `better benchmark` — comparative cold/warm rounds (raw PM vs Better) with median/p95 summary
+- `better lock` — generate and verify deterministic lock metadata (`better.lock.json`)
 - `better run` — run `package.json` scripts via npm/pnpm/yarn (`better lint|test|dev|build` aliases)
 
 Global cache primitives are available behind opt-in flags:
@@ -33,6 +34,8 @@ node /path/to/better/bin/better.js analyze --serve
 node /path/to/better/bin/better.js doctor
 node /path/to/better/bin/better.js cache stats
 node /path/to/better/bin/better.js benchmark --pm npm --engine pm --cold-rounds 1 --warm-rounds 3
+node /path/to/better/bin/better.js lock --json
+node /path/to/better/bin/better.js lock verify --json
 node /path/to/better/bin/better.js run lint -- --fix
 node /path/to/better/bin/better.js lint -- --max-warnings=0
 ```
@@ -57,8 +60,11 @@ Use Better before build/lint:
 
 ```bash
 cd apps/landing
-npm run build:better
+node ../../bin/better.js install --project-root . --pm npm
+npm run dev:better
 npm run lint:better
+npm run build:better
+npm run test:better
 ```
 
 ## Comparative benchmarks (2026-02-06)

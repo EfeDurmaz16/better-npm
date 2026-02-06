@@ -19,23 +19,18 @@ npm install
 npm run dev
 ```
 
-## Build / Lint with Better
+## Build / Lint / Dev with Better
 
-If you want to use Better in the dependency setup step before build/lint:
+This app can be controlled directly through Better script aliases:
 
 ```bash
 cd apps/landing
-npm run build:better
+node ../../bin/better.js install --project-root . --pm npm
+npm run dev:better
 npm run lint:better
+npm run build:better
+npm run test:better
 ```
-
-These scripts run:
-
-```bash
-node ../../bin/better.js install --project-root . --pm npm --engine pm --json
-```
-
-then execute the normal Next.js build/lint command.
 
 ## Deploy to Vercel
 
