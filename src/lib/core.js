@@ -27,15 +27,28 @@ export async function findBetterCore() {
 
   const betterRoot = betterInstallRoot();
   const candidates = [
-    // Cargo workspace default target dir (recommended build path).
-    path.join(betterRoot, "crates", "target", "release", platformExe("better-core")),
+    // Cargo workspace target dirs.
     path.join(betterRoot, "crates", "target", "debug", platformExe("better-core")),
+    path.join(betterRoot, "crates", "target", "release", platformExe("better-core")),
     // Fallback if the package is built standalone.
-    path.join(betterRoot, "crates", "better-core", "target", "release", platformExe("better-core")),
-    path.join(betterRoot, "crates", "better-core", "target", "debug", platformExe("better-core"))
+    path.join(betterRoot, "crates", "better-core", "target", "debug", platformExe("better-core")),
+    path.join(betterRoot, "crates", "better-core", "target", "release", platformExe("better-core"))
   ];
-  for (const c of candidates) {
-    if (await exists(c)) return c;
+
+  const existing = [];
+  for (const candidate of candidates) {
+    if (!(await exists(candidate))) continue;
+    try {
+      const st = await fs.stat(candidate);
+      existing.push({ candidate, mtimeMs: Number(st.mtimeMs || 0) });
+    } catch {
+      existing.push({ candidate, mtimeMs: 0 });
+    }
+  }
+  if (existing.length > 0) {
+    // Prefer the most recently built local core binary to avoid stale release/debug mismatches.
+    existing.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    return existing[0].candidate;
   }
 
   // Try PATH.
