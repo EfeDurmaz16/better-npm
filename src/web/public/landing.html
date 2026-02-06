@@ -18,6 +18,8 @@
         <span class="sep">|</span>
         <a href="#reports">Reports</a>
         <span class="sep">|</span>
+        <a href="#benchmark">Benchmarks</a>
+        <span class="sep">|</span>
         <a href="#teams">For Teams</a>
         <span class="sep">|</span>
         <a href="#notes">Docs</a>
@@ -202,9 +204,43 @@ Oldest: 2025-12-01T08:33:12Z</code></pre>
       </div>
     </section>
 
+    <section id="benchmark" class="section">
+      <div class="shell">
+        <h2>04_ LIVE BENCHMARKS (2026-02-06)</h2>
+        <div class="bench-grid">
+          <article class="ghost bench-card">
+            <h3>Aspendos: bun vs better+bun</h3>
+            <p class="bench-main"><span class="accent">84.1%</span> faster with Better wrapper</p>
+            <p class="bench-sub">raw bun: 96.02s</p>
+            <p class="bench-sub">better+bun: 15.25s</p>
+          </article>
+          <article class="ghost bench-card">
+            <h3>Sardis: npm vs better cache hit</h3>
+            <p class="bench-main"><span class="accent">59.1%</span> faster on warm hit</p>
+            <p class="bench-sub">npm cold: 16.65s</p>
+            <p class="bench-sub">better warm hit (rust): 6.81s</p>
+          </article>
+          <article class="ghost bench-card">
+            <h3>Sardis: JS vs Rust materialize</h3>
+            <p class="bench-main"><span class="accent">22.0%</span> lower warm-hit wall time</p>
+            <p class="bench-sub">better warm hit (js): 8.31s</p>
+            <p class="bench-sub">better warm hit (rust): 6.81s</p>
+          </article>
+        </div>
+        <pre class="snippet bench-method"><code># Method
+/usr/bin/time -p npm install --ignore-scripts --no-audit --no-fund
+/usr/bin/time -p bun install --frozen-lockfile
+/usr/bin/time -p node bin/better.js install --engine better --global-cache --core-mode rust
+
+# Full JSON reports
+/tmp/compare-current-summary.json
+/tmp/compare-sardis-after-capture-rust.json</code></pre>
+      </div>
+    </section>
+
     <section id="teams" class="section">
       <div class="shell">
-        <h2>04_ FOR TEAMS</h2>
+        <h2>05_ FOR TEAMS</h2>
         <div class="columns">
           <article>
             <h3>Infrastructure &amp; Platform Teams</h3>
@@ -233,7 +269,7 @@ Oldest: 2025-12-01T08:33:12Z</code></pre>
 
     <section class="section">
       <div class="shell">
-        <h2>05_ ROADMAP</h2>
+        <h2>06_ ROADMAP</h2>
         <pre class="snippet roadmap"><code># Q1: Shared cache + install metrics
 # Q2: Full analyzer, health score, local dashboard
 # Q3: Advanced cache intelligence, per-team policy engine
@@ -248,7 +284,7 @@ Oldest: 2025-12-01T08:33:12Z</code></pre>
 
     <section id="notes" class="section">
       <div class="shell">
-        <h2>06_ REPORTS &amp; PAPERS</h2>
+        <h2>07_ REPORTS &amp; PAPERS</h2>
         <div class="log-links">
           <a href="#">[REPORT] Better 2.0: Rust Core Rewrite and Sub-10s Analysis</a>
           <a href="#">[LOG] Analyzing 2.2 GB of node_modules in Under 10 Seconds</a>

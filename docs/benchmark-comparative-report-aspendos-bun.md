@@ -1,47 +1,56 @@
-# Comparative Benchmark Report: `better` vs raw `bun`
+# Comparative Benchmark Report: Better vs npm/bun
 
 Date: 2026-02-06
-Project: `/Users/efebarandurmaz/Desktop/aspendos-deploy`
 
-## Command
+## Summary
+
+| Project | Comparison | Baseline | Better | Delta |
+| --- | --- | ---: | ---: | ---: |
+| `aspendos-deploy` | raw bun vs `better --engine bun` | 96.02s | 15.25s | **-84.1%** |
+| `sardis-protocol` | npm cold vs Better warm hit (rust cache materialize) | 16.65s | 6.81s | **-59.1%** |
+| `sardis-protocol` | Better warm hit JS vs Rust runtime | 8.31s | 6.81s | **-22.0%** |
+| `sardis-protocol` | raw bun vs `better --engine bun` | 2.03s | 2.03s | parity |
+
+## Projects and commands
+
+### Aspendos (`/Users/efebarandurmaz/Desktop/aspendos-deploy`)
 
 ```bash
-better benchmark --pm npm --engine bun --cold-rounds 1 --warm-rounds 5 --json > benchmark-bun.json
+rm -rf node_modules
+/usr/bin/time -p bun install --frozen-lockfile
+
+rm -rf node_modules
+/usr/bin/time -p node /Users/efebarandurmaz/better-npm/bin/better.js install \
+  --project-root /Users/efebarandurmaz/Desktop/aspendos-deploy \
+  --pm npm --engine bun --frozen --measure off --parity-check off --json \
+  > /tmp/cmp_aspendos_better_bun.json
 ```
 
-`--engine bun` mode compares:
+### Sardis (`/Users/efebarandurmaz/sardis-protocol`)
 
-- `raw`: direct `bun install`
-- `betterMinimal`: `better install` wrapper running bun with minimal measurement profile
+```bash
+rm -rf node_modules
+/usr/bin/time -p npm install --ignore-scripts --no-audit --no-fund
 
-## Warm Results (from `benchmark-bun.json`)
+rm -rf node_modules
+/usr/bin/time -p node /Users/efebarandurmaz/better-npm/bin/better.js install \
+  --project-root /Users/efebarandurmaz/sardis-protocol \
+  --pm npm --engine better --experimental --core-mode rust \
+  --global-cache --cache-root /tmp/better-gcache-compare \
+  --link-strategy hardlink --scripts off --cache-scripts off \
+  --measure off --parity-check off --json > /tmp/cmp_better_hit_rust.json
+```
 
-### Raw (`bun install`)
+## Key observations
 
-- count: 5
-- min: 11337 ms
-- max: 24481 ms
-- mean: 18569 ms
-- median: 18346 ms
-- p95: 24481 ms
+- Better’s strongest advantage is **global-cache warm hit** + hardlink materialization.
+- Cache hit materialization reports:
+  - `filesLinked: 23509`
+  - `filesCopied: 0`
+  - `execution.mode: cache_materialize`
+- Cold miss includes replay + initial global cache capture, so it remains the main optimization target.
 
-### Better Minimal (`better install --engine bun`)
+## Raw report references
 
-- count: 5
-- min: 9420 ms
-- max: 18840 ms
-- mean: 12027.4 ms
-- median: 10621 ms
-- p95: 18840 ms
-
-## Delta (Warm)
-
-- median delta: `10621 - 18346 = -7725 ms` (about `-42.1%`)
-- mean delta: `12027.4 - 18569 = -6541.6 ms` (about `-35.2%`)
-- p95 delta: `18840 - 24481 = -5641 ms` (about `-23.0%`)
-
-## Interpretation
-
-- In this run profile, `betterMinimal` is faster than raw bun in warm rounds.
-- Tail latency (p95) is also better, indicating more stable repeated installs.
-- For publish-grade comparison, repeat with `cold-rounds >= 3` and `warm-rounds >= 10`, then report median and p95 as primary metrics.
+- `/tmp/compare-current-summary.json`
+- `/tmp/compare-sardis-after-capture-rust.json`

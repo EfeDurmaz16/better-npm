@@ -403,6 +403,35 @@ h2 {
   max-width: 94ch;
 }
 
+.bench-grid {
+  margin-top: var(--space-4);
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.bench-card h3 {
+  margin: 0 0 0.7rem;
+  font-size: 0.88rem;
+  color: var(--text);
+}
+
+.bench-main {
+  margin: 0 0 0.7rem;
+  color: var(--text);
+  font-size: 0.95rem;
+}
+
+.bench-sub {
+  margin: 0.15rem 0;
+  color: var(--text-dim);
+  font-size: 0.84rem;
+}
+
+.bench-method {
+  margin-top: var(--space-3);
+}
+
 .columns {
   margin-top: var(--space-4);
   display: grid;
@@ -520,6 +549,10 @@ h2 {
   .columns {
     grid-template-columns: 1fr;
     gap: var(--space-4);
+  }
+
+  .bench-grid {
+    grid-template-columns: 1fr;
   }
 }
 

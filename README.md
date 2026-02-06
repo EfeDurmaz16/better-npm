@@ -34,6 +34,86 @@ node /path/to/better/bin/better.js cache stats
 node /path/to/better/bin/better.js benchmark --pm npm --engine pm --cold-rounds 1 --warm-rounds 3
 ```
 
+## Comparative benchmarks (2026-02-06)
+
+The numbers below come from live runs on two real projects:
+
+- `sardis-protocol`
+- `aspendos-deploy`
+
+### Results snapshot
+
+| Scenario | Baseline | Better run | Delta |
+| --- | ---: | ---: | ---: |
+| Sardis: `npm cold` vs `better warm hit (rust cache)` | 16.65s | 6.81s | **-59.1%** |
+| Sardis: `better warm hit (js)` vs `better warm hit (rust)` | 8.31s | 6.81s | **-22.0%** |
+| Aspendos: `raw bun` vs `better + bun wrapper` | 96.02s | 15.25s | **-84.1%** |
+| Sardis: `raw bun` vs `better + bun wrapper` | 2.03s | 2.03s | parity |
+
+### Cache behavior snapshot
+
+- Global cache is active (`cacheDecision.reason = global_cache_hit` on warm runs).
+- Hardlink materialization is active (`filesLinked = 23509`, `filesCopied = 0`).
+- Cold miss (first capture) is still expensive because it includes replay + capture write.
+- Warm hit is where Better currently wins decisively.
+
+### How to reproduce
+
+Build the Rust core first:
+
+```bash
+npm run core:build
+```
+
+Sardis (`npm` baseline vs Better global-cache warm-hit):
+
+```bash
+SA=/Users/efebarandurmaz/sardis-protocol
+BETTER_BIN=/Users/efebarandurmaz/better-npm/bin/better.js
+CACHE_ROOT=/tmp/better-gcache-local
+
+rm -rf "$SA/node_modules" "$CACHE_ROOT"
+/usr/bin/time -p npm install --ignore-scripts --no-audit --no-fund
+
+rm -rf "$SA/node_modules"
+/usr/bin/time -p node "$BETTER_BIN" install \
+  --project-root "$SA" --pm npm --engine better --experimental \
+  --core-mode rust --global-cache --cache-root "$CACHE_ROOT" \
+  --link-strategy hardlink --scripts off --cache-scripts off \
+  --measure off --parity-check off --json > /tmp/better-miss.json
+
+rm -rf "$SA/node_modules"
+/usr/bin/time -p node "$BETTER_BIN" install \
+  --project-root "$SA" --pm npm --engine better --experimental \
+  --core-mode rust --global-cache --cache-root "$CACHE_ROOT" \
+  --link-strategy hardlink --scripts off --cache-scripts off \
+  --measure off --parity-check off --json > /tmp/better-hit.json
+```
+
+Aspendos (`raw bun` vs `better --engine bun`):
+
+```bash
+ASP=/Users/efebarandurmaz/Desktop/aspendos-deploy
+BETTER_BIN=/Users/efebarandurmaz/better-npm/bin/better.js
+
+rm -rf "$ASP/node_modules"
+/usr/bin/time -p bun install --frozen-lockfile
+
+rm -rf "$ASP/node_modules"
+/usr/bin/time -p node "$BETTER_BIN" install \
+  --project-root "$ASP" --pm npm --engine bun --frozen \
+  --measure off --parity-check off --json > /tmp/better-bun.json
+```
+
+### Interpretation
+
+- Better is not yet universally faster in **cold miss** mode.
+- Better is already strong in:
+  - global cache **warm hit** materialization
+  - no-op reuse paths
+  - bun wrapper flow on large repos (aspendos case)
+- The landing page benchmark panel is synced with this snapshot in `src/web/public/landing.html`.
+
 ## JSON schemas
 
 Stable report envelopes are documented in `docs/json-schemas.md`.
