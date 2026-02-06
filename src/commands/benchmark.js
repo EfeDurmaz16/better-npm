@@ -40,8 +40,8 @@ function p95(values) {
 
 function computeStats(samples, key = "wallTimeMs") {
   const values = samples
-    .map((sample) => Number(sample?.[key]))
-    .filter((value) => Number.isFinite(value) && value >= 0);
+    .map((sample) => sample?.[key])
+    .filter((value) => typeof value === "number" && Number.isFinite(value) && value >= 0);
   if (values.length === 0) {
     return {
       count: 0,
