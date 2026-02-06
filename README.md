@@ -34,6 +34,30 @@ node /path/to/better/bin/better.js cache stats
 node /path/to/better/bin/better.js benchmark --pm npm --engine pm --cold-rounds 1 --warm-rounds 3
 ```
 
+## Landing app (Next.js + Geist fonts)
+
+A Vercel-ready React/Next landing app now lives at `apps/landing`.
+
+- Stack: Next.js App Router + TypeScript
+- Fonts: Geist Sans, Geist Mono, Geist Pixel (npm package `geist`)
+- Includes current benchmark framing from live measurements
+
+Run locally:
+
+```bash
+cd apps/landing
+npm install
+npm run dev
+```
+
+Use Better before build/lint:
+
+```bash
+cd apps/landing
+npm run build:better
+npm run lint:better
+```
+
 ## Comparative benchmarks (2026-02-06)
 
 The numbers below come from live runs on two real projects:

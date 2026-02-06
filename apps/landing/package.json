@@ -1,0 +1,30 @@
+{
+  "name": "@better/landing",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "deps:better": "node ../../bin/better.js install --project-root . --pm npm --engine pm --json",
+    "build:better": "npm run deps:better && npm run build",
+    "lint:better": "npm run deps:better && npm run lint"
+  },
+  "dependencies": {
+    "geist": "^1.3.1",
+    "next": "^15.1.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
