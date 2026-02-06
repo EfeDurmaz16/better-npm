@@ -98,6 +98,68 @@ function packageNameFromRelPath(relPath) {
   return first;
 }
 
+function normalizeConstraintList(raw) {
+  if (raw == null) return [];
+  if (Array.isArray(raw)) {
+    return raw.map((item) => String(item).trim()).filter(Boolean);
+  }
+  if (typeof raw === "string") {
+    const v = raw.trim();
+    return v ? [v] : [];
+  }
+  return [];
+}
+
+function matchesPlatformConstraint(rawConstraint, runtimeValue) {
+  const values = normalizeConstraintList(rawConstraint);
+  if (values.length === 0) return true;
+
+  const denied = new Set(values.filter((v) => v.startsWith("!")).map((v) => v.slice(1)));
+  const allowed = values.filter((v) => !v.startsWith("!"));
+  if (runtimeValue && denied.has(runtimeValue)) return false;
+  if (allowed.length > 0) {
+    if (!runtimeValue) return false;
+    return allowed.includes(runtimeValue);
+  }
+  return true;
+}
+
+function detectRuntimeLibc() {
+  if (process.platform !== "linux") return null;
+  try {
+    const header = process.report?.getReport?.()?.header ?? null;
+    if (header?.glibcVersionRuntime || header?.glibcVersionCompiler) return "glibc";
+    const shared = process.report?.getReport?.()?.sharedObjects;
+    if (Array.isArray(shared) && shared.some((entry) => String(entry).toLowerCase().includes("musl"))) {
+      return "musl";
+    }
+  } catch {
+    // noop
+  }
+  return null;
+}
+
+function evaluatePlatformSupport(meta, runtime) {
+  const reasons = [];
+
+  if (!matchesPlatformConstraint(meta?.os, runtime.os)) {
+    reasons.push(`os=${JSON.stringify(meta?.os)} runtime=${runtime.os}`);
+  }
+  if (!matchesPlatformConstraint(meta?.cpu, runtime.cpu)) {
+    reasons.push(`cpu=${JSON.stringify(meta?.cpu)} runtime=${runtime.cpu}`);
+  }
+
+  const hasLibcConstraint = normalizeConstraintList(meta?.libc).length > 0;
+  if (hasLibcConstraint && runtime.os === "linux" && !matchesPlatformConstraint(meta?.libc, runtime.libc)) {
+    reasons.push(`libc=${JSON.stringify(meta?.libc)} runtime=${runtime.libc ?? "unknown"}`);
+  }
+
+  return {
+    ok: reasons.length === 0,
+    reasons
+  };
+}
+
 async function downloadToFile(url, destFile) {
   await fs.mkdir(path.dirname(destFile), { recursive: true });
   const tmp = `${destFile}.tmp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -168,6 +230,11 @@ export async function installFromNpmLockfile(projectRoot, layout, opts = {}) {
   }
 
   const lock = await readNpmLockfile(lockfilePath);
+  const runtimeTarget = {
+    os: process.platform,
+    cpu: process.arch,
+    libc: detectRuntimeLibc()
+  };
   if (detectNonRootNodeModulesEntries(lock)) {
     throw new Error(
       "This package-lock.json contains non-root install paths (e.g. 'packages/*/node_modules/*'). " +
@@ -191,6 +258,7 @@ export async function installFromNpmLockfile(projectRoot, layout, opts = {}) {
 
   const packagesByPath = new Map(); // installPath -> absPath
   const extracted = { reusedTarballs: 0, downloadedTarballs: 0, extractedUnpacked: 0, reusedUnpacked: 0 };
+  const skipped = { platform: 0 };
   const packageCacheEntries = [];
 
   for (const it of items) {
@@ -199,6 +267,29 @@ export async function installFromNpmLockfile(projectRoot, layout, opts = {}) {
     const resolved = meta.resolved;
     const integrity = meta.integrity;
     const isLink = meta.link === true;
+    const support = evaluatePlatformSupport(meta, runtimeTarget);
+    if (!support.ok) {
+      if (meta.optional === true) {
+        skipped.platform += 1;
+        packageCacheEntries.push({
+          name: meta?.name ?? packageNameFromRelPath(relPath),
+          version: meta?.version ?? null,
+          relPath,
+          source: "platform-skip",
+          cacheHit: false,
+          cacheMiss: false,
+          cas: null,
+          skipped: {
+            reason: "platform",
+            details: support.reasons
+          }
+        });
+        continue;
+      }
+      throw new Error(
+        `Platform-incompatible non-optional package ${relPath}: ${support.reasons.join("; ")}`
+      );
+    }
 
     if (isLink) {
       const segments = splitLockfilePath(relPath);
@@ -306,6 +397,7 @@ export async function installFromNpmLockfile(projectRoot, layout, opts = {}) {
     verify,
     linkStrategy,
     extracted,
+    skipped,
     packages: packageCacheEntries,
     scripts: scriptsResult,
     binLinks: { mode: binLinks }

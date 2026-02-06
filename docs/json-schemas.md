@@ -36,6 +36,7 @@ Core fields:
   - `mode`, `readOnly`
 - `materialize` (when global materialization path is used)
 - `reuse` (reuse-oriented byte counters)
+- `betterEngine` (when `engine=better`), including extract/cache details and `skipped.platform`
 - `parity` (optional)
 - `lockfileMigration` (optional)
 - `baseline`

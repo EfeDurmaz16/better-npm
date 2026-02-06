@@ -42,6 +42,11 @@ async function packFixture(dir, pkgName) {
   return { tgz, integrity };
 }
 
+function pickOtherOs(current) {
+  const all = ["darwin", "linux", "win32", "freebsd", "openbsd", "sunos", "android", "aix"];
+  return all.find((value) => value !== current) ?? "linux";
+}
+
 test("better engine (npm lockfile replay): installs from local file: tarball", { skip: !(await hasTar()) }, async () => {
   const dir = await makeTempDir("better-engine-");
   try {
@@ -160,6 +165,78 @@ test("better engine (npm lockfile replay): supports workspace link:true entries 
       : path.join(dir, "node_modules", ".bin", "foo");
     const binExists = await fs.stat(binPath).then(() => true).catch(() => false);
     assert.equal(binExists, true);
+  } finally {
+    await rmrf(dir);
+  }
+});
+
+test("better engine (npm lockfile replay): skips optional packages incompatible with current platform", { skip: !(await hasTar()) }, async () => {
+  const dir = await makeTempDir("better-engine-platform-");
+  try {
+    const targetPkg = "opt-target";
+    const foreignPkg = "opt-foreign";
+    const { tgz: targetTgz, integrity: targetIntegrity } = await packFixture(dir, targetPkg);
+    const { tgz: foreignTgz, integrity: foreignIntegrity } = await packFixture(dir, foreignPkg);
+    const otherOs = pickOtherOs(process.platform);
+
+    await writeJson(path.join(dir, "package.json"), { name: "proj", version: "1.0.0" });
+    await writeJson(path.join(dir, "package-lock.json"), {
+      name: "proj",
+      lockfileVersion: 3,
+      packages: {
+        "": { name: "proj", version: "1.0.0" },
+        [`node_modules/${targetPkg}`]: {
+          name: targetPkg,
+          version: "1.0.0",
+          resolved: `file:${path.basename(targetTgz)}`,
+          integrity: targetIntegrity,
+          optional: true,
+          os: [process.platform],
+          cpu: [process.arch]
+        },
+        [`node_modules/${foreignPkg}`]: {
+          name: foreignPkg,
+          version: "1.0.0",
+          resolved: `file:${path.basename(foreignTgz)}`,
+          integrity: foreignIntegrity,
+          optional: true,
+          os: [otherOs]
+        }
+      }
+    });
+
+    const betterBin = path.resolve(process.cwd(), "bin", "better.js");
+    const { stdout } = await execFileAsync(process.execPath, [
+      betterBin,
+      "install",
+      "--engine",
+      "better",
+      "--experimental",
+      "--scripts",
+      "off",
+      "--verify",
+      "integrity-required",
+      "--link-strategy",
+      "copy",
+      "--json"
+    ], { cwd: dir, timeout: 120_000 });
+
+    const report = JSON.parse(stdout);
+    assert.equal(report.ok, true);
+    assert.equal(report.engine, "better");
+    assert.ok(report.betterEngine);
+    assert.equal(report.betterEngine.skipped.platform, 1);
+
+    const targetExists = await fs
+      .stat(path.join(dir, "node_modules", targetPkg, "package.json"))
+      .then(() => true)
+      .catch(() => false);
+    const foreignExists = await fs
+      .stat(path.join(dir, "node_modules", foreignPkg, "package.json"))
+      .then(() => true)
+      .catch(() => false);
+    assert.equal(targetExists, true);
+    assert.equal(foreignExists, false);
   } finally {
     await rmrf(dir);
   }
