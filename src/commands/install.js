@@ -559,20 +559,21 @@ export async function cmdInstall(argv) {
     measureCacheMode === "on" || (measureCacheMode === "auto" && !bunFastTrack)
   );
   const includePackageCount = !(engine === "bun" && measureMode === "fast");
+  const quickLogical = measureMode === "fast";
   const scanCoreMode = measureMode === "fast" ? "off" : "auto";
   const duFallback = measureMode === "precise" ? "off" : "auto";
   const pmCacheSnapshotStore = await loadPmCacheSnapshotStore(layout);
   const pmCacheSnapshotBefore = snapshotToCacheResult(pmCacheSnapshotStore.snapshots[pmCacheSnapshotKey(pmCacheDir)]);
   const preMeasureStartMs = Date.now();
   const beforeCache = shouldMeasureCache
-    ? await scanTreeWithBestEngine(pmCacheDir, { coreMode: scanCoreMode, duFallback })
+    ? await scanTreeWithBestEngine(pmCacheDir, { coreMode: scanCoreMode, duFallback, quickLogical })
     : (
       measure === "on" && measureCacheMode === "auto" && pmCacheSnapshotBefore.ok
         ? pmCacheSnapshotBefore
         : { ok: false, reason: measure === "off" ? "measure_off" : "measure_cache_off" }
     );
   const beforeNodeModules = measure === "on"
-    ? await collectNodeModulesSnapshot(projectRoot, { coreMode: scanCoreMode, duFallback, includePackageCount })
+    ? await collectNodeModulesSnapshot(projectRoot, { coreMode: scanCoreMode, duFallback, quickLogical, includePackageCount })
     : { ok: false, reason: "measure_off", exists: false, packageCount: 0 };
   phaseDurations.preMeasureMs = Date.now() - preMeasureStartMs;
 
@@ -872,7 +873,7 @@ export async function cmdInstall(argv) {
   );
   const postMeasureStartMs = Date.now();
   const afterCacheMeasured = shouldMeasureCache
-    ? await scanTreeWithBestEngine(pmCacheDir, { coreMode: scanCoreMode, duFallback })
+    ? await scanTreeWithBestEngine(pmCacheDir, { coreMode: scanCoreMode, duFallback, quickLogical })
     : null;
   const pmCacheSnapshotAfter = snapshotToCacheResult(pmCacheSnapshotStore.snapshots[pmCacheSnapshotKey(pmCacheDir)]);
   const afterCache = afterCacheMeasured ?? (
@@ -881,7 +882,7 @@ export async function cmdInstall(argv) {
       : { ok: false, reason: measure === "off" ? "measure_off" : "measure_cache_off" }
   );
   const nodeModules = measure === "on"
-    ? await collectNodeModulesSnapshot(projectRoot, { coreMode: scanCoreMode, duFallback, includePackageCount })
+    ? await collectNodeModulesSnapshot(projectRoot, { coreMode: scanCoreMode, duFallback, quickLogical, includePackageCount })
     : { ok: false, reason: "measure_off", exists: false, packageCount: 0 };
   phaseDurations.postMeasureMs = Date.now() - postMeasureStartMs;
   if (shouldMeasureCache && afterCacheMeasured?.ok) {

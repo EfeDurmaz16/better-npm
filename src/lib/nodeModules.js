@@ -116,7 +116,8 @@ export async function collectNodeModulesSnapshot(projectRoot, opts = {}) {
   const [size, packageCount] = await Promise.all([
     scanTreeWithBestEngine(nodeModulesPath, {
       coreMode: opts.coreMode ?? "auto",
-      duFallback: opts.duFallback ?? "auto"
+      duFallback: opts.duFallback ?? "auto",
+      quickLogical: opts.quickLogical === true
     }),
     includePackageCount ? countInstalledPackages(nodeModulesPath) : Promise.resolve(null)
   ]);

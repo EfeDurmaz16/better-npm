@@ -8,7 +8,8 @@ function parseDuKb(stdout) {
   return Number.isFinite(kb) ? kb : null;
 }
 
-async function duScan(rootDir) {
+async function duScan(rootDir, opts = {}) {
+  const quickLogical = opts.quickLogical === true;
   // Fast approximate scan using `du`:
   // - physical: disk blocks
   // - logical: apparent size (best-effort)
@@ -18,13 +19,17 @@ async function duScan(rootDir) {
     const physKb = parseDuKb(phys.stdout);
     if (physKb == null) throw new Error("du parse failed");
 
-    // BSD/macOS du: -A = apparent size. GNU du: --apparent-size.
+    // In quick mode we intentionally avoid a second full tree walk for apparent size.
+    // This reduces scan time significantly on large node_modules trees.
     let logicalKb = null;
-    const try1 = await runCommand("du", ["-sk", "-A", rootDir], { cwd: rootDir, passthroughStdio: false, captureLimitBytes: 1024 * 128 });
-    if (try1.exitCode === 0) logicalKb = parseDuKb(try1.stdout);
-    if (logicalKb == null) {
-      const try2 = await runCommand("du", ["-sk", "--apparent-size", rootDir], { cwd: rootDir, passthroughStdio: false, captureLimitBytes: 1024 * 128 });
-      if (try2.exitCode === 0) logicalKb = parseDuKb(try2.stdout);
+    if (!quickLogical) {
+      // BSD/macOS du: -A = apparent size. GNU du: --apparent-size.
+      const try1 = await runCommand("du", ["-sk", "-A", rootDir], { cwd: rootDir, passthroughStdio: false, captureLimitBytes: 1024 * 128 });
+      if (try1.exitCode === 0) logicalKb = parseDuKb(try1.stdout);
+      if (logicalKb == null) {
+        const try2 = await runCommand("du", ["-sk", "--apparent-size", rootDir], { cwd: rootDir, passthroughStdio: false, captureLimitBytes: 1024 * 128 });
+        if (try2.exitCode === 0) logicalKb = parseDuKb(try2.stdout);
+      }
     }
 
     const physicalBytes = physKb * 1024;
@@ -58,9 +63,10 @@ async function duScan(rootDir) {
 export async function scanTreeWithBestEngine(rootDir, opts = {}) {
   const coreMode = opts.coreMode ?? "auto";
   const duFallback = opts.duFallback ?? "auto";
+  const quickLogical = opts.quickLogical === true;
   if (coreMode === "off") {
     if (duFallback !== "off") {
-      const du = await duScan(rootDir);
+      const du = await duScan(rootDir, { quickLogical });
       if (du.ok) return du;
     }
     return scanTree(rootDir);
@@ -71,7 +77,7 @@ export async function scanTreeWithBestEngine(rootDir, opts = {}) {
     if (!corePath) {
       if (coreMode === "force") throw new Error("better-core not found");
       if (duFallback !== "off") {
-        const du = await duScan(rootDir);
+        const du = await duScan(rootDir, { quickLogical });
         if (du.ok) return du;
       }
       return scanTree(rootDir);
@@ -94,7 +100,7 @@ export async function scanTreeWithBestEngine(rootDir, opts = {}) {
   } catch (err) {
     if (coreMode === "force") throw err;
     if (duFallback !== "off") {
-      const du = await duScan(rootDir);
+      const du = await duScan(rootDir, { quickLogical });
       if (du.ok) return du;
     }
     return scanTree(rootDir);
