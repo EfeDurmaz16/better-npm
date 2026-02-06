@@ -39,10 +39,22 @@ const principles = [
 ];
 
 const notes = [
-  "[REPORT] Better 2.0: Rust Core Rewrite and Sub-10s Analysis",
-  "[LOG] Global Cache Hit Path: 23,509 hardlinks in one run",
-  "[POST] How Better computes Dependency Health Score",
-  "[SPEC] Materialize Runtime Contract: JS fallback and Rust fast path"
+  {
+    label: "[DOC] JSON Schemas",
+    href: "https://github.com/EfeDurmaz16/better-npm/blob/main/docs/json-schemas.md"
+  },
+  {
+    label: "[REPORT] npm/bun Comparative Benchmarks",
+    href: "https://github.com/EfeDurmaz16/better-npm/blob/main/docs/benchmark-comparative-report-aspendos-bun.md"
+  },
+  {
+    label: "[DOC] CLI Overview and Usage",
+    href: "https://github.com/EfeDurmaz16/better-npm/blob/main/README.md"
+  },
+  {
+    label: "[DOC] Landing App Setup",
+    href: "https://github.com/EfeDurmaz16/better-npm/blob/main/apps/landing/README.md"
+  }
 ];
 
 export default function Page() {
@@ -263,8 +275,8 @@ INFO: lockfile freshness drift`}
             <h2 className={`section-title ${GeistPixelLine.className}`}>06_ ENGINEERING NOTES</h2>
             <div className="notes">
               {notes.map((note) => (
-                <a href="#" key={note} className={GeistMono.className}>
-                  {note}
+                <a href={note.href} key={note.href} className={GeistMono.className} target="_blank" rel="noreferrer">
+                  {note.label}
                 </a>
               ))}
             </div>
@@ -279,7 +291,7 @@ INFO: lockfile freshness drift`}
           </div>
           <div className={`footer-links ${GeistMono.className}`}>
             <a href="#docs">Docs</a>
-            <a href="https://github.com" target="_blank" rel="noreferrer">
+            <a href="https://github.com/EfeDurmaz16/better-npm" target="_blank" rel="noreferrer">
               GitHub
             </a>
             <a href="#reports">Reports</a>
