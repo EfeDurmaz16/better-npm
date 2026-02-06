@@ -252,6 +252,18 @@ function buildVariants(projectRoot, pm, engine, opts = {}) {
   return variants;
 }
 
+function formatSampleFailure(sample) {
+  const details = [];
+  details.push(`exit=${sample.exitCode}`);
+  if (sample.timedOut) details.push("timedOut=true");
+  if (sample.reportKind) details.push(`reportKind=${sample.reportKind}`);
+  if (sample.stderrTail) {
+    const compact = String(sample.stderrTail).replace(/\s+/g, " ").trim();
+    if (compact) details.push(`stderrTail=${compact.slice(0, 300)}`);
+  }
+  return details.join(", ");
+}
+
 function summarizeVariant(samples) {
   const cold = samples.filter((sample) => sample.phase === "cold");
   const warm = samples.filter((sample) => sample.phase === "warm");
@@ -393,7 +405,7 @@ export async function cmdBenchmark(argv) {
         );
         perVariantSamples[variant.name].push(sample);
         if (!sample.ok) {
-          throw new Error(`${variant.name} cold round ${round} failed (exit=${sample.exitCode})`);
+          throw new Error(`${variant.name} cold round ${round} failed (${formatSampleFailure(sample)})`);
         }
       }
     }
@@ -418,7 +430,7 @@ export async function cmdBenchmark(argv) {
         { phase: "warm-prime", round: 0, cacheRoot: layout.root }
       );
       if (!prime.ok) {
-        throw new Error(`${variant.name} warm prime failed (exit=${prime.exitCode})`);
+        throw new Error(`${variant.name} warm prime failed (${formatSampleFailure(prime)})`);
       }
 
       for (let round = 1; round <= warmRounds; round += 1) {
@@ -436,7 +448,7 @@ export async function cmdBenchmark(argv) {
         );
         perVariantSamples[variant.name].push(sample);
         if (!sample.ok) {
-          throw new Error(`${variant.name} warm round ${round} failed (exit=${sample.exitCode})`);
+          throw new Error(`${variant.name} warm round ${round} failed (${formatSampleFailure(sample)})`);
         }
       }
     }
