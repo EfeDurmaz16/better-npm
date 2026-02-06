@@ -902,6 +902,7 @@ export async function cmdInstall(argv) {
     globalCacheStored = await captureProjectNodeModulesToGlobalCache(layout, globalCacheContext.key, projectRoot, {
       linkStrategy: values["link-strategy"] ?? "auto",
       fsConcurrency,
+      coreMode,
       lockHash: globalCacheContext.lockHash,
       lockfile: globalCacheContext.lockfile,
       fingerprint: globalCacheContext.fingerprint,
@@ -1071,6 +1072,19 @@ export async function cmdInstall(argv) {
           filesTotal: Number(globalMaterialize.stats?.files ?? 0),
           symlinks: Number(globalMaterialize.stats?.symlinks ?? 0),
           runtime: globalMaterialize.runtime ?? null
+        }
+      : null,
+    cacheStore: globalCacheStored
+      ? {
+          durationMs: Number(globalCacheStored.durationMs ?? 0),
+          fsConcurrency: Number(globalCacheStored.fsConcurrency ?? fsConcurrency),
+          stats: {
+            filesLinked: Number(globalCacheStored.stats?.filesLinked ?? 0),
+            filesCopied: Number(globalCacheStored.stats?.filesCopied ?? 0),
+            filesTotal: Number(globalCacheStored.stats?.files ?? 0),
+            symlinks: Number(globalCacheStored.stats?.symlinks ?? 0)
+          },
+          runtime: globalCacheStored.runtime ?? null
         }
       : null,
     reuse: {

@@ -311,6 +311,7 @@ export async function captureProjectNodeModulesToGlobalCache(layout, key, projec
 
   const linkStrategy = opts.linkStrategy ?? "auto";
   const fsConcurrency = Math.max(1, Number(opts.fsConcurrency) || 16);
+  const coreMode = String(opts.coreMode ?? "auto").toLowerCase();
   const entryPaths = globalCacheEntryPaths(layout, key);
   const stagingRoot = `${entryPaths.root}.staging-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const stagingNodeModules = path.join(stagingRoot, "node_modules");
@@ -323,9 +324,51 @@ export async function captureProjectNodeModulesToGlobalCache(layout, key, projec
     directories: 0,
     symlinks: 0
   };
+  const runtime = {
+    requested: coreMode,
+    selected: "js",
+    fallbackUsed: false,
+    fallbackReason: null,
+    corePath: null
+  };
 
   await ensureEmptyDir(stagingRoot);
-  await materializeTree(source, stagingNodeModules, { linkStrategy, stats, fsConcurrency });
+  let usedCore = false;
+  if (coreMode !== "js") {
+    const corePath = await findBetterCore();
+    if (corePath) {
+      runtime.corePath = corePath;
+      try {
+        const coreResult = await runBetterCoreMaterialize(corePath, source, stagingNodeModules, {
+          linkStrategy,
+          jobs: fsConcurrency
+        });
+        if (coreResult?.ok === true && coreResult?.stats) {
+          stats.files = Number(coreResult.stats.files ?? 0);
+          stats.filesLinked = Number(coreResult.stats.filesLinked ?? 0);
+          stats.filesCopied = Number(coreResult.stats.filesCopied ?? 0);
+          stats.linkFallbackCopies = Number(coreResult.stats.linkFallbackCopies ?? 0);
+          stats.directories = Number(coreResult.stats.directories ?? 0);
+          stats.symlinks = Number(coreResult.stats.symlinks ?? 0);
+          runtime.selected = "rust";
+          usedCore = true;
+        } else {
+          runtime.fallbackUsed = true;
+          runtime.fallbackReason = "core_materialize_invalid_result";
+        }
+      } catch (err) {
+        runtime.fallbackUsed = true;
+        runtime.fallbackReason = err?.message ?? "core_materialize_failed";
+      }
+    } else if (coreMode === "rust") {
+      runtime.fallbackUsed = true;
+      runtime.fallbackReason = "rust_core_not_found";
+    }
+  }
+
+  if (!usedCore) {
+    await materializeTree(source, stagingNodeModules, { linkStrategy, stats, fsConcurrency });
+  }
   await fs.mkdir(stagingRoot, { recursive: true });
   await fs.writeFile(
     path.join(stagingRoot, "entry.json"),
@@ -343,6 +386,7 @@ export async function captureProjectNodeModulesToGlobalCache(layout, key, projec
         scriptsMode: opts.scriptsMode ?? "rebuild",
         cacheMode: opts.cacheMode ?? "strict",
         fsConcurrency,
+        runtime,
         stats
       },
       null,
@@ -362,7 +406,8 @@ export async function captureProjectNodeModulesToGlobalCache(layout, key, projec
     paths: entryPaths,
     stats,
     durationMs: endedAt - startedAt,
-    fsConcurrency
+    fsConcurrency,
+    runtime
   };
 }
 
