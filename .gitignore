@@ -8,3 +8,14 @@ target/
 *.exe
 *.pdb
 *.dSYM/
+
+# OS / local agent artifacts
+.DS_Store
+**/.DS_Store
+.omc/
+**/.omc/
+.tmp-bun.*/
+
+# Local benchmark artifacts
+benchmark.json
+health.json
