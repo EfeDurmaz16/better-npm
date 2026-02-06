@@ -439,6 +439,11 @@ export async function cmdInstall(argv) {
 
   if (projectRoot !== invocationCwd) {
     progress(`resolved project root to ${projectRoot} (${resolvedRoot.reason})`);
+    if (!values["project-root"] && (await exists(path.join(invocationCwd, "package.json")))) {
+      commandLogger.warn(
+        "cwd has its own package.json but install resolved to parent root; use --project-root . to install current directory"
+      );
+    }
   }
 
   const cacheRoot = getCacheRoot(values["cache-root"]);

@@ -5,6 +5,7 @@ import { cmdCache } from "./commands/cache.js";
 import { cmdDoctor } from "./commands/doctor.js";
 import { cmdServe } from "./commands/serve.js";
 import { cmdBenchmark } from "./commands/benchmark.js";
+import { cmdRun } from "./commands/run.js";
 import { printJson, printText, toErrorJson } from "./lib/output.js";
 import { resolveRuntimeConfig, setRuntimeConfig } from "./lib/config.js";
 import { configureLogger, logger } from "./lib/log.js";
@@ -22,6 +23,8 @@ Commands:
   doctor             Dependency health checks and score
   serve              Start web UI server for dependency visualization
   benchmark          Run comparative cold/warm install benchmark
+  run <script>       Run package.json scripts via npm/pnpm/yarn
+  lint|test|dev|build  Script aliases for better run
 
 Global options:
   --json             Machine-readable output (JSON)
@@ -99,6 +102,15 @@ export async function runCli(argv) {
         break;
       case "benchmark":
         await cmdBenchmark(rest);
+        break;
+      case "run":
+        await cmdRun(rest);
+        break;
+      case "lint":
+      case "test":
+      case "dev":
+      case "build":
+        await cmdRun(rest, { aliasScript: command });
         break;
       case "help":
       default:
