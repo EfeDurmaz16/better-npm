@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Better: Dependency Toolkit for Node.js</title>
+  <link rel="stylesheet" href="landing.css">
+</head>
+<body>
+  <div class="scanline-overlay" aria-hidden="true"></div>
+  <header class="topbar">
+    <div class="shell">
+      <a class="brand" href="#top">better_<span class="cursor">█</span></a>
+      <nav class="menu" aria-label="Main">
+        <a href="#vision">Vision</a>
+        <span class="sep">|</span>
+        <a href="#how">How It Works</a>
+        <span class="sep">|</span>
+        <a href="#reports">Reports</a>
+        <span class="sep">|</span>
+        <a href="#teams">For Teams</a>
+        <span class="sep">|</span>
+        <a href="#notes">Docs</a>
+        <a class="cta-mini" href="#cta">curl better.sh | bash</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="top" class="page">
+    <section class="section hero">
+      <div class="shell hero-grid">
+        <div class="hero-copy">
+          <p class="kicker">00_ TERMINAL-FIRST DEPENDENCY OPERATIONS</p>
+          <h1>Make Node.js Dependencies Measurable.</h1>
+          <p class="lead">
+            Better wraps npm, pnpm, and Yarn with a shared cache, deep analysis, and a dependency health score
+            so you can see exactly what node_modules costs in time, disk, and risk.
+          </p>
+          <div class="hero-actions" id="cta">
+            <a class="button-primary" href="#">Join the Private Beta</a>
+            <a class="text-link" href="#">Read the Engineering Plan -&gt;</a>
+          </div>
+        </div>
+
+        <aside class="terminal" aria-label="Terminal preview">
+          <div class="terminal-top">
+            <span class="dots" aria-hidden="true">● ● ●</span>
+            <span class="terminal-title">better@terminal</span>
+          </div>
+          <div class="terminal-body">
+            <p class="line line-1"><span class="prompt">&gt;</span> better install<span class="cursor">█</span></p>
+            <p class="line line-2">[OK] 2.3x faster than baseline</p>
+            <p class="line line-3">[OK] 1.8 GB disk reclaimed</p>
+            <p class="line line-4">[OK] Health Score: <span class="accent">82/100</span></p>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <section id="vision" class="section">
+      <div class="shell">
+        <div class="rule"></div>
+        <h2>01_ VISION</h2>
+        <div class="split two">
+          <div>
+            <p>Better turns node_modules from a black box into an observable system.</p>
+            <p>Every install, every package, every MB, and every vulnerability becomes measurable.</p>
+            <p>
+              The toolkit is designed for long-lived codebases, monorepos, and infrastructure teams that need to
+              reason about dependency risk and cost, not just install faster.
+            </p>
+          </div>
+          <div class="principles">
+            <article class="ghost">
+              <h3>Non-invasive</h3>
+              <p>Wrap npm, pnpm, Yarn. Do not replace them.</p>
+            </article>
+            <article class="ghost">
+              <h3>Measurable</h3>
+              <p>Every run emits metrics: time, size, cache hits.</p>
+            </article>
+            <article class="ghost">
+              <h3>Explainable</h3>
+              <p>Every score and warning includes concrete reasons.</p>
+            </article>
+            <article class="ghost">
+              <h3>Observable</h3>
+              <p>NDJSON logs, JSON APIs, local dashboard for CI/SRE.</p>
+            </article>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="how" class="section">
+      <div class="shell">
+        <h2>02_ WHAT BETTER DOES</h2>
+        <div class="tracks">
+          <article class="track">
+            <div class="track-copy">
+              <h3>better install</h3>
+              <p>Wraps your package manager, measures time and size, and makes installs auditable.</p>
+            </div>
+            <pre class="snippet"><code>&gt; better install --json
+{
+  "durationMs": 73241,
+  "packagesInstalled": 154,
+  "sizeAddedBytes": 524288000,
+  "cacheHits": 87,
+  "cacheMisses": 9
+}</code></pre>
+          </article>
+          <article class="track">
+            <div class="track-copy">
+              <h3>better analyze</h3>
+              <p>Scans node_modules, builds dependency graph, computes logical and physical size.</p>
+            </div>
+            <pre class="snippet"><code>&gt; better analyze
+Total packages: 523
+Direct dependencies: 24
+Logical size: 1560 MB
+Physical size: 980 MB
+Max depth: 12
+Duplicates: 37</code></pre>
+          </article>
+          <article class="track">
+            <div class="track-copy">
+              <h3>better doctor</h3>
+              <p>Runs health checks and returns a 0-100 score with itemized findings and actions.</p>
+            </div>
+            <pre class="snippet"><code>&gt; better doctor
+Health Score: 73/100
+
+ERRORS:
+- request is deprecated, replace with node-fetch
+- lodash@4.17.20 has known vulnerabilities
+
+WARNINGS:
+- debug has 3 versions installed</code></pre>
+          </article>
+          <article class="track">
+            <div class="track-copy">
+              <h3>better cache</h3>
+              <p>Shared content-addressable cache across projects, with stats and garbage collection.</p>
+            </div>
+            <pre class="snippet"><code>&gt; better cache stats
+Entries: 18,452
+Size: 186.4 GB
+Hit ratio: 0.84
+Oldest: 2025-12-01T08:33:12Z</code></pre>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="reports" class="section">
+      <div class="shell">
+        <h2>03_ REPORTS, NOT GUESSWORK</h2>
+        <div class="split reports">
+          <pre class="snippet report-json"><code>{
+  "project": "payments-service",
+  "healthScore": 68,
+  "totalPackages": 743,
+  "logicalSizeMB": 2240,
+  "physicalSizeMB": 1470,
+  "duplicatePackages": 54,
+  "deprecatedPackages": 7
+}</code></pre>
+          <div class="graph-box" aria-label="Abstract dependency graph">
+            <svg viewBox="0 0 560 320" role="img" aria-label="Dependency graph hotspots">
+              <g class="wires">
+                <line x1="84" y1="58" x2="203" y2="128"></line>
+                <line x1="203" y1="128" x2="318" y2="72"></line>
+                <line x1="318" y1="72" x2="438" y2="112"></line>
+                <line x1="203" y1="128" x2="270" y2="220"></line>
+                <line x1="270" y1="220" x2="402" y2="242"></line>
+                <line x1="438" y1="112" x2="470" y2="228"></line>
+                <line x1="120" y1="190" x2="270" y2="220"></line>
+              </g>
+              <g class="nodes">
+                <circle cx="84" cy="58" r="5"></circle>
+                <circle cx="203" cy="128" r="7"></circle>
+                <circle cx="318" cy="72" r="6"></circle>
+                <circle cx="438" cy="112" r="7"></circle>
+                <circle cx="270" cy="220" r="8"></circle>
+                <circle cx="402" cy="242" r="6"></circle>
+                <circle cx="470" cy="228" r="6"></circle>
+                <circle cx="120" cy="190" r="5"></circle>
+              </g>
+              <g class="labels">
+                <text x="331" y="66">lodash@4.17.21</text>
+                <text x="214" y="118">debug@4.3.1</text>
+                <text x="410" y="102">glob@7.2.0</text>
+              </g>
+            </svg>
+          </div>
+        </div>
+        <p class="under-note">
+          Every install and every analysis produces structured JSON and NDJSON logs you can feed into CI, dashboards,
+          and internal tooling.
+        </p>
+      </div>
+    </section>
+
+    <section id="teams" class="section">
+      <div class="shell">
+        <h2>04_ FOR TEAMS</h2>
+        <div class="columns">
+          <article>
+            <h3>Infrastructure &amp; Platform Teams</h3>
+            <p>
+              Benchmark install performance across repos, enforce health thresholds in CI, and keep shared cache usage
+              under control instead of letting node_modules sprawl.
+            </p>
+          </article>
+          <article>
+            <h3>Security &amp; Compliance</h3>
+            <p>
+              Track deprecated and vulnerable packages, integrate findings into existing security pipelines, and prove
+              dependency risk is being measured continuously.
+            </p>
+          </article>
+          <article>
+            <h3>Product &amp; Engineering Leaders</h3>
+            <p>
+              Quantify dependency cost in time and disk, identify monorepo hotspots, and justify refactors with hard
+              numbers instead of anecdotes.
+            </p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="shell">
+        <h2>05_ ROADMAP</h2>
+        <pre class="snippet roadmap"><code># Q1: Shared cache + install metrics
+# Q2: Full analyzer, health score, local dashboard
+# Q3: Advanced cache intelligence, per-team policy engine
+# Q4: Multi-language dependency toolkit experiments</code></pre>
+        <p class="under-note">
+          Better starts with Node.js and is intentionally designed as a dependency observability layer that can extend
+          to other ecosystems. Long term, dependency risk, cost, and health become as trackable as latency and error
+          rates.
+        </p>
+      </div>
+    </section>
+
+    <section id="notes" class="section">
+      <div class="shell">
+        <h2>06_ REPORTS &amp; PAPERS</h2>
+        <div class="log-links">
+          <a href="#">[REPORT] Better 2.0: Rust Core Rewrite and Sub-10s Analysis</a>
+          <a href="#">[LOG] Analyzing 2.2 GB of node_modules in Under 10 Seconds</a>
+          <a href="#">[POST] How We Compute a Dependency Health Score</a>
+          <a href="#">[SPEC] better.lock Format &amp; Content-Addressable Store Design</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="shell footer-grid">
+      <div class="brand">better_<span class="cursor">█</span></div>
+      <div class="footer-links">
+        <a href="#">Docs</a>
+        <a href="#">GitHub</a>
+        <a href="#">Security</a>
+        <a href="#">Changelog</a>
+      </div>
+      <div class="status">v0.1.0-alpha | Node.js | Rust core</div>
+    </div>
+  </footer>
+
+  <script src="landing.js"></script>
+</body>
+</html>

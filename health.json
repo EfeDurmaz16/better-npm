@@ -1,0 +1,11 @@
+{
+  "ok": true,
+  "kind": "better.doctor",
+  "schemaVersion": 1,
+  "projectRoot": "/Users/efebarandurmaz/better-npm",
+  "healthScore": {
+    "score": 100,
+    "deductions": []
+  },
+  "findings": []
+}

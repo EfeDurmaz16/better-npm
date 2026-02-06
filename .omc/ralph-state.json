@@ -1,0 +1,9 @@
+{
+  "active": true,
+  "mode": "ralph",
+  "iteration": 1,
+  "started_at": "2026-02-04T00:00:00.000Z",
+  "plan_path": ".omc/plans/better-npm.md",
+  "current_phase": "phase-0",
+  "task_description": "Build 'better' - production-grade dependency toolkit for Node.js"
+}

@@ -1,0 +1,8 @@
+{
+  "name": "simple-project",
+  "version": "1.0.0",
+  "description": "Test fixture for simple project",
+  "dependencies": {
+    "lodash": "^4.17.21"
+  }
+}

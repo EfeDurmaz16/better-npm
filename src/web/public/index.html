@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Better - Dependency Dashboard</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header class="header">
+        <div class="container">
+            <h1 class="logo">Better</h1>
+            <p class="tagline">Production-grade dependency toolkit</p>
+            <button class="theme-toggle" id="themeToggle" aria-label="Toggle theme">
+                <span class="theme-icon">🌙</span>
+            </button>
+        </div>
+    </header>
+
+    <nav class="nav">
+        <div class="container">
+            <button class="nav-tab active" data-tab="overview">Overview</button>
+            <button class="nav-tab" data-tab="dependencies">Dependencies</button>
+            <button class="nav-tab" data-tab="health">Health</button>
+            <button class="nav-tab" data-tab="cache">Cache</button>
+        </div>
+    </nav>
+
+    <main class="main">
+        <div class="container">
+            <div id="loading" class="loading">
+                <div class="spinner"></div>
+                <p>Loading dashboard...</p>
+            </div>
+
+            <div id="error" class="error hidden">
+                <h2>Error Loading Data</h2>
+                <p id="errorMessage"></p>
+                <button onclick="window.location.reload()">Retry</button>
+            </div>
+
+            <div id="content" class="content hidden">
+                <!-- Overview Tab -->
+                <div id="tab-overview" class="tab-content active">
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <h3>Total Packages</h3>
+                            <p class="stat-value" id="totalPackages">-</p>
+                        </div>
+                        <div class="stat-card">
+                            <h3>Total Size</h3>
+                            <p class="stat-value" id="totalSize">-</p>
+                        </div>
+                        <div class="stat-card">
+                            <h3>Max Depth</h3>
+                            <p class="stat-value" id="maxDepth">-</p>
+                        </div>
+                        <div class="stat-card">
+                            <h3>Health Score</h3>
+                            <p class="stat-value" id="healthScore">-</p>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <h2>Quick Issues</h2>
+                        <div id="quickIssues" class="issue-list">
+                            <p class="empty-state">No issues detected</p>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <h2>Dependency Depth Distribution</h2>
+                        <div id="depthChart" class="depth-chart"></div>
+                    </div>
+                </div>
+
+                <!-- Dependencies Tab -->
+                <div id="tab-dependencies" class="tab-content">
+                    <div class="card">
+                        <h2>Duplicate Packages</h2>
+                        <div id="duplicatesList" class="duplicates-list">
+                            <p class="empty-state">No duplicates found</p>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <h2>Deprecated Packages</h2>
+                        <div id="deprecatedList" class="deprecated-list">
+                            <p class="empty-state">No deprecated packages found</p>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <h2>Dependency Tree</h2>
+                        <div id="dependencyTree" class="dependency-tree">
+                            <p class="empty-state">Loading dependency tree...</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Health Tab -->
+                <div id="tab-health" class="tab-content">
+                    <div class="card">
+                        <h2>Overall Health Score</h2>
+                        <div class="health-score-container">
+                            <div class="health-score-circle" id="healthScoreCircle">
+                                <span id="healthScoreValue">-</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <h2>Health Breakdown</h2>
+                        <div id="healthBreakdown" class="health-breakdown">
+                            <p class="empty-state">Loading health data...</p>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <h2>Recommendations</h2>
+                        <div id="recommendations" class="recommendations">
+                            <p class="empty-state">No recommendations available</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Cache Tab -->
+                <div id="tab-cache" class="tab-content">
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <h3>Cache Size</h3>
+                            <p class="stat-value" id="cacheSize">-</p>
+                        </div>
+                        <div class="stat-card">
+                            <h3>Cached Packages</h3>
+                            <p class="stat-value" id="cachedPackages">-</p>
+                        </div>
+                        <div class="stat-card">
+                            <h3>Hit Rate</h3>
+                            <p class="stat-value" id="cacheHitRate">-</p>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <h2>Cache Statistics</h2>
+                        <div id="cacheStats" class="cache-stats">
+                            <p class="empty-state">Loading cache data...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <p>&copy; 2026 Better CLI Toolkit</p>
+        </div>
+    </footer>
+
+    <script src="app.js"></script>
+</body>
+</html>

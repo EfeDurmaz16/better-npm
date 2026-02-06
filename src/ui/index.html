@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>better analyze</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header>
+      <div class="title">better analyze</div>
+      <div class="subtitle">node_modules transparency</div>
+    </header>
+    <main>
+      <section class="panel">
+        <h2>Overview</h2>
+        <div id="overview" class="overview"></div>
+      </section>
+      <section class="panel">
+        <h2>Treemap (attributed physical bytes)</h2>
+        <canvas id="treemap" width="1200" height="520"></canvas>
+        <div class="hint">Hover for details. Sizes are deterministic attribution; shared hardlinks are assigned to the first package in stable traversal.</div>
+      </section>
+      <section class="panel">
+        <h2>Packages</h2>
+        <input id="filter" class="filter" placeholder="Filter (name@version)..." />
+        <table>
+          <thead>
+            <tr>
+              <th>Package</th>
+              <th>Physical (MiB)</th>
+              <th>Logical (MiB)</th>
+              <th>Paths</th>
+            </tr>
+          </thead>
+          <tbody id="table"></tbody>
+        </table>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>
+

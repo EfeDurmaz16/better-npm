@@ -1,0 +1,24 @@
+{
+  "name": "better",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "better": "./bin/better.js"
+  },
+  "scripts": {
+    "test": "node --test",
+    "test:coverage": "node --test --experimental-test-coverage",
+    "coverage": "node ./scripts/coverage-check.mjs",
+    "lint": "node ./scripts/lint.mjs",
+    "format:check": "node ./scripts/format-check.mjs",
+    "build": "node --check ./bin/better.js && node --check ./src/cli.js",
+    "typecheck": "node --check ./src/cli.js",
+    "dev": "node ./bin/better.js --help",
+    "core:build": "cargo build --manifest-path crates/Cargo.toml -p better-core --release",
+    "core:build:debug": "cargo build --manifest-path crates/Cargo.toml -p better-core"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

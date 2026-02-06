@@ -1,0 +1,74 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { runCommand } from "./spawn.js";
+
+async function exists(p) {
+  try {
+    await fs.access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function platformExe(name) {
+  return process.platform === "win32" ? `${name}.exe` : name;
+}
+
+function betterInstallRoot() {
+  // src/lib/core.js -> ../../ = repo/package root (works for local dev and installed package layout)
+  return path.resolve(fileURLToPath(new URL("../../", import.meta.url)));
+}
+
+export async function findBetterCore() {
+  const envPath = process.env.BETTER_CORE_PATH;
+  if (envPath && (await exists(envPath))) return envPath;
+
+  const betterRoot = betterInstallRoot();
+  const candidates = [
+    // Cargo workspace default target dir (recommended build path).
+    path.join(betterRoot, "crates", "target", "release", platformExe("better-core")),
+    path.join(betterRoot, "crates", "target", "debug", platformExe("better-core")),
+    // Fallback if the package is built standalone.
+    path.join(betterRoot, "crates", "better-core", "target", "release", platformExe("better-core")),
+    path.join(betterRoot, "crates", "better-core", "target", "debug", platformExe("better-core"))
+  ];
+  for (const c of candidates) {
+    if (await exists(c)) return c;
+  }
+
+  // Try PATH.
+  try {
+    const probe = await runCommand(platformExe("better-core"), ["--help"], { passthroughStdio: false });
+    if (probe.exitCode === 0) return platformExe("better-core");
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+export async function runBetterCoreAnalyze(corePath, projectRoot, opts = {}) {
+  const args = ["analyze", "--root", projectRoot];
+  if (opts.includeGraph) args.push("--graph");
+  const res = await runCommand(corePath, args, { cwd: projectRoot, passthroughStdio: false, captureLimitBytes: 50 * 1024 * 1024 });
+  if (res.exitCode !== 0) {
+    const err = new Error(`better-core failed (exit ${res.exitCode})`);
+    err.core = { ...res };
+    throw err;
+  }
+  const json = JSON.parse(res.stdout);
+  return json;
+}
+
+export async function runBetterCoreScan(corePath, rootDir) {
+  const args = ["scan", "--root", rootDir];
+  const res = await runCommand(corePath, args, { cwd: rootDir, passthroughStdio: false, captureLimitBytes: 50 * 1024 * 1024 });
+  if (res.exitCode !== 0) {
+    const err = new Error(`better-core scan failed (exit ${res.exitCode})`);
+    err.core = { ...res };
+    throw err;
+  }
+  const json = JSON.parse(res.stdout);
+  return json;
+}

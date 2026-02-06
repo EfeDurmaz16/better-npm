@@ -1,0 +1,9 @@
+{
+  "name": "deprecated-deps",
+  "version": "1.0.0",
+  "description": "Test fixture with deprecated dependencies",
+  "dependencies": {
+    "request": "^2.88.2",
+    "lodash": "^4.17.21"
+  }
+}
