@@ -74,7 +74,9 @@ export async function materializeTree(srcDir, destDir, opts = {}) {
       if (stats) {
         stats.directories = Number(stats.directories ?? 0) + 1;
       }
-      tasks.push(limiter(() => materializeTree(src, dst, { ...opts, fsConcurrency, __limiter: limiter })));
+      // Recurse without consuming limiter slots to avoid directory-task deadlocks
+      // (a parent task waiting for children while still holding a slot).
+      tasks.push(materializeTree(src, dst, { ...opts, fsConcurrency, __limiter: limiter }));
       continue;
     }
 

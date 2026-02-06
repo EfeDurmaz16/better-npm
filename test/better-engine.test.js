@@ -18,12 +18,17 @@ async function hasTar() {
   }
 }
 
-async function packFixture(dir, pkgName) {
+async function packFixture(dir, pkgName, opts = {}) {
+  const { includeNested = false } = opts;
   const pkgDir = path.join(dir, "pkg");
   await fs.mkdir(pkgDir, { recursive: true });
   await writeJson(path.join(pkgDir, "package.json"), { name: pkgName, version: "1.0.0", main: "index.js", bin: { [pkgName]: "bin.js" } });
   await writeFile(path.join(pkgDir, "index.js"), "module.exports = 42;\n");
   await writeFile(path.join(pkgDir, "bin.js"), "#!/usr/bin/env node\nconsole.log('ok');\n");
+  if (includeNested) {
+    await fs.mkdir(path.join(pkgDir, "lib", "nested"), { recursive: true });
+    await writeFile(path.join(pkgDir, "lib", "nested", "value.js"), "module.exports = 1;\n");
+  }
 
   const tarRoot = path.join(dir, "tarroot");
   const packageDir = path.join(tarRoot, "package");
@@ -32,6 +37,10 @@ async function packFixture(dir, pkgName) {
   await fs.copyFile(path.join(pkgDir, "package.json"), path.join(packageDir, "package.json"));
   await fs.copyFile(path.join(pkgDir, "index.js"), path.join(packageDir, "index.js"));
   await fs.copyFile(path.join(pkgDir, "bin.js"), path.join(packageDir, "bin.js"));
+  if (includeNested) {
+    await fs.mkdir(path.join(packageDir, "lib", "nested"), { recursive: true });
+    await fs.copyFile(path.join(pkgDir, "lib", "nested", "value.js"), path.join(packageDir, "lib", "nested", "value.js"));
+  }
 
   const tgz = path.join(dir, `${pkgName}-1.0.0.tgz`);
   await execFileAsync("tar", ["-czf", tgz, "-C", tarRoot, "package"]);
@@ -386,6 +395,55 @@ test("better engine (npm lockfile replay): incremental mode removes stale root p
       .then(() => true)
       .catch(() => false);
     assert.equal(staleExists, false);
+  } finally {
+    await rmrf(dir);
+  }
+});
+
+test("better engine (npm lockfile replay): fs-concurrency=1 completes for nested package trees", { skip: !(await hasTar()) }, async () => {
+  const dir = await makeTempDir("better-engine-fs-concurrency-");
+  try {
+    const pkgName = "foo";
+    const { tgz, integrity } = await packFixture(dir, pkgName, { includeNested: true });
+
+    await writeJson(path.join(dir, "package.json"), { name: "proj", version: "1.0.0" });
+    await writeJson(path.join(dir, "package-lock.json"), {
+      name: "proj",
+      lockfileVersion: 3,
+      packages: {
+        "": { name: "proj", version: "1.0.0" },
+        "node_modules/foo": {
+          name: "foo",
+          version: "1.0.0",
+          resolved: `file:${path.basename(tgz)}`,
+          integrity
+        }
+      }
+    });
+
+    const betterBin = path.resolve(process.cwd(), "bin", "better.js");
+    const { stdout } = await execFileAsync(process.execPath, [
+      betterBin,
+      "install",
+      "--engine",
+      "better",
+      "--experimental",
+      "--scripts",
+      "off",
+      "--fs-concurrency",
+      "1",
+      "--json"
+    ], { cwd: dir, timeout: 120_000 });
+
+    const report = JSON.parse(stdout);
+    assert.equal(report.ok, true);
+    assert.equal(report.betterEngine.fsConcurrency, 1);
+
+    const nestedExists = await fs
+      .stat(path.join(dir, "node_modules", "foo", "lib", "nested", "value.js"))
+      .then(() => true)
+      .catch(() => false);
+    assert.equal(nestedExists, true);
   } finally {
     await rmrf(dir);
   }
