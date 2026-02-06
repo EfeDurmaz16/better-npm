@@ -47,3 +47,26 @@ test("extractTgz self-heals stale marker when package dir is missing", { skip: !
     await rmrf(dir);
   }
 });
+
+test("extractTgz supports tarballs without package/ prefix", { skip: !(await hasTar()) }, async () => {
+  const dir = await makeTempDir("better-tar-extract-flat-");
+  try {
+    const tarRoot = path.join(dir, "tarroot");
+    const projectRoot = path.join(tarRoot, "fixture-1.0.0");
+    await fs.mkdir(projectRoot, { recursive: true });
+    await writeJson(path.join(projectRoot, "package.json"), { name: "fixture-flat", version: "1.0.0", main: "index.js" });
+    await writeFile(path.join(projectRoot, "index.js"), "module.exports = 2;\n");
+
+    const tgz = path.join(dir, "fixture-flat-1.0.0.tgz");
+    await execFileAsync("tar", ["-czf", tgz, "-C", tarRoot, "fixture-1.0.0"]);
+
+    const unpackDir = path.join(dir, "unpacked");
+    const extracted = await extractTgz(tgz, unpackDir);
+    assert.equal(extracted.ok, true);
+    assert.equal(extracted.reused, false);
+    assert.ok(typeof extracted.packageDir === "string");
+    assert.ok(extracted.packageDir.endsWith(path.join("unpacked", "fixture-1.0.0")));
+  } finally {
+    await rmrf(dir);
+  }
+});

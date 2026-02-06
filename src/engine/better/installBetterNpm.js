@@ -260,8 +260,8 @@ export async function installFromNpmLockfile(projectRoot, layout, opts = {}) {
     if (extractRes.reused) extracted.reusedUnpacked += 1;
     else extracted.extractedUnpacked += 1;
 
-    // tarballs unpack into "package/" folder.
-    const srcPkgDir = path.join(unpackDir, "package");
+    // Support tarballs that extract to package/ or a source-specific top-level folder.
+    const srcPkgDir = extractRes.packageDir;
 
     const segments = splitLockfilePath(relPath);
     const destPkgDir = path.join(stagingNm, ...segments.slice(1)); // drop leading node_modules

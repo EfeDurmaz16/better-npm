@@ -11,18 +11,32 @@ async function exists(p) {
   }
 }
 
+async function detectPackageDir(destDir) {
+  const explicit = path.join(destDir, "package");
+  if (await exists(path.join(explicit, "package.json"))) return explicit;
+
+  if (await exists(path.join(destDir, "package.json"))) return destDir;
+
+  const entries = await fs.readdir(destDir, { withFileTypes: true });
+  const dirs = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort((a, b) => a.localeCompare(b));
+  if (dirs.length === 1) {
+    const candidate = path.join(destDir, dirs[0]);
+    if (await exists(path.join(candidate, "package.json"))) return candidate;
+  }
+  return null;
+}
+
 export async function extractTgz(tgzPath, destDir) {
   const marker = path.join(destDir, ".better_extracted");
-  const packageDir = path.join(destDir, "package");
   await fs.mkdir(destDir, { recursive: true });
 
-  // Reuse only when both marker and expected package dir exist.
+  // Reuse only when marker and a detected package root both exist.
   const hasMarker = await exists(marker);
-  const hasPackageDir = await exists(packageDir);
-  if (hasMarker && hasPackageDir) {
-    return { ok: true, reused: true };
+  const detectedBefore = await detectPackageDir(destDir);
+  if (hasMarker && detectedBefore) {
+    return { ok: true, reused: true, packageDir: detectedBefore };
   }
-  if (hasMarker && !hasPackageDir) {
+  if (hasMarker && !detectedBefore) {
     // Self-heal stale/partial unpack cache entries.
     await fs.rm(destDir, { recursive: true, force: true });
     await fs.mkdir(destDir, { recursive: true });
@@ -33,9 +47,10 @@ export async function extractTgz(tgzPath, destDir) {
   if (res.exitCode !== 0) {
     throw new Error(`tar extract failed (exit ${res.exitCode}): ${res.stderrTail}`);
   }
-  if (!(await exists(packageDir))) {
-    throw new Error(`tar extract missing expected package/ dir for ${tgzPath}`);
+  const detectedAfter = await detectPackageDir(destDir);
+  if (!detectedAfter) {
+    throw new Error(`tar extract missing package root for ${tgzPath}`);
   }
   await fs.writeFile(marker, "ok\n");
-  return { ok: true, reused: false };
+  return { ok: true, reused: false, packageDir: detectedAfter };
 }
