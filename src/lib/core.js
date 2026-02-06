@@ -72,3 +72,28 @@ export async function runBetterCoreScan(corePath, rootDir) {
   const json = JSON.parse(res.stdout);
   return json;
 }
+
+export async function runBetterCoreMaterialize(corePath, srcDir, destDir, opts = {}) {
+  const args = ["materialize", "--src", srcDir, "--dest", destDir];
+  if (opts.linkStrategy) args.push("--link-strategy", String(opts.linkStrategy));
+  const res = await runCommand(corePath, args, {
+    cwd: path.dirname(destDir),
+    passthroughStdio: false,
+    captureLimitBytes: 50 * 1024 * 1024
+  });
+  let parsed = null;
+  try {
+    parsed = JSON.parse(res.stdout);
+  } catch {
+    // ignore and surface process failure details below
+  }
+  if (res.exitCode !== 0) {
+    const err = new Error(`better-core materialize failed (exit ${res.exitCode})`);
+    err.core = { ...res, parsed };
+    throw err;
+  }
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("better-core materialize returned invalid JSON");
+  }
+  return parsed;
+}

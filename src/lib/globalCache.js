@@ -3,6 +3,7 @@ import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
 import { ensureEmptyDir, materializeTree, atomicReplaceDir } from "../engine/better/materialize.js";
+import { findBetterCore, runBetterCoreMaterialize } from "./core.js";
 
 async function exists(p) {
   try {
@@ -229,6 +230,7 @@ export async function materializeFromGlobalCache(layout, key, projectRoot, opts 
 
   const linkStrategy = opts.linkStrategy ?? "auto";
   const fsConcurrency = Math.max(1, Number(opts.fsConcurrency) || 16);
+  const coreMode = String(opts.coreMode ?? "auto").toLowerCase();
   const staging = path.join(projectRoot, `.better-global-staging-node_modules-${Date.now()}-${Math.random().toString(16).slice(2)}`);
   const startedAt = Date.now();
   const stats = {
@@ -240,7 +242,47 @@ export async function materializeFromGlobalCache(layout, key, projectRoot, opts 
     symlinks: 0
   };
   await ensureEmptyDir(staging);
-  await materializeTree(verify.paths.nodeModulesPath, staging, { linkStrategy, stats, fsConcurrency });
+  const runtime = {
+    requested: coreMode,
+    selected: "js",
+    fallbackUsed: false,
+    fallbackReason: null,
+    corePath: null
+  };
+
+  let usedCore = false;
+  if (coreMode !== "js") {
+    const corePath = await findBetterCore();
+    if (corePath) {
+      runtime.corePath = corePath;
+      try {
+        const coreResult = await runBetterCoreMaterialize(corePath, verify.paths.nodeModulesPath, staging, { linkStrategy });
+        if (coreResult?.ok === true && coreResult?.stats) {
+          stats.files = Number(coreResult.stats.files ?? 0);
+          stats.filesLinked = Number(coreResult.stats.filesLinked ?? 0);
+          stats.filesCopied = Number(coreResult.stats.filesCopied ?? 0);
+          stats.linkFallbackCopies = Number(coreResult.stats.linkFallbackCopies ?? 0);
+          stats.directories = Number(coreResult.stats.directories ?? 0);
+          stats.symlinks = Number(coreResult.stats.symlinks ?? 0);
+          runtime.selected = "rust";
+          usedCore = true;
+        } else {
+          runtime.fallbackUsed = true;
+          runtime.fallbackReason = "core_materialize_invalid_result";
+        }
+      } catch (err) {
+        runtime.fallbackUsed = true;
+        runtime.fallbackReason = err?.message ?? "core_materialize_failed";
+      }
+    } else if (coreMode === "rust") {
+      runtime.fallbackUsed = true;
+      runtime.fallbackReason = "rust_core_not_found";
+    }
+  }
+
+  if (!usedCore) {
+    await materializeTree(verify.paths.nodeModulesPath, staging, { linkStrategy, stats, fsConcurrency });
+  }
   await atomicReplaceDir(staging, path.join(projectRoot, "node_modules"));
   const endedAt = Date.now();
 
@@ -253,7 +295,8 @@ export async function materializeFromGlobalCache(layout, key, projectRoot, opts 
     stats,
     durationMs: endedAt - startedAt,
     strategy: linkStrategy,
-    fsConcurrency
+    fsConcurrency,
+    runtime
   };
 }
 

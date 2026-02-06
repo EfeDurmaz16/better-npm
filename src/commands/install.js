@@ -658,7 +658,8 @@ export async function cmdInstall(argv) {
       progress(`global cache hit: materializing node_modules from key ${globalCacheContext.key.slice(0, 12)}…`);
       globalMaterialize = await materializeFromGlobalCache(layout, globalCacheContext.key, projectRoot, {
         linkStrategy: values["link-strategy"] ?? "auto",
-        fsConcurrency
+        fsConcurrency,
+        coreMode
       });
       if (globalMaterialize.ok) {
         globalCacheDecision = {
@@ -935,7 +936,8 @@ export async function cmdInstall(argv) {
           filesLinked: Number(globalMaterialize.stats?.filesLinked ?? 0),
           filesCopied: Number(globalMaterialize.stats?.filesCopied ?? 0),
           filesTotal: Number(globalMaterialize.stats?.files ?? 0),
-          symlinks: Number(globalMaterialize.stats?.symlinks ?? 0)
+          symlinks: Number(globalMaterialize.stats?.symlinks ?? 0),
+          runtime: globalMaterialize.runtime ?? null
         }
       : null,
     reuse: {
