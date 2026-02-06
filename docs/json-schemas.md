@@ -20,8 +20,11 @@ Core fields:
 - `projectRoot`
 - `pm`: `{ name, detected, reason }`
 - `engine`, `mode`, `lockfilePolicy`
+- `engineRuntime`: `{ requested, selected, fallbackUsed, fallbackReason, corePath }`
 - `command`: `{ cmd, args }`
 - `install.wallTimeMs`
+- `execution`: `{ mode, incremental, fsConcurrency }`
+- `reuseDecision`: `{ eligible, hit, reason, key, lockHash }`
 - `install.metrics`:
   - `durationMs`
   - `packagesBefore`, `packagesAfter`, `packagesInstalled`
@@ -37,6 +40,7 @@ Core fields:
 - `materialize` (when global materialization path is used)
 - `reuse` (reuse-oriented byte counters)
 - `betterEngine` (when `engine=better`), including extract/cache details and `skipped.platform`
+- `reuseMarker`: persisted local marker state for same-key no-op fast path
 - `parity` (optional)
 - `lockfileMigration` (optional)
 - `baseline`
@@ -188,6 +192,7 @@ Core fields:
 - `pm`: selected + detected
 - `engine`
 - `config`: cold/warm rounds and run knobs
+  - includes replay knobs: `coreMode`, `fsConcurrency`, `incremental`
 - `variants`:
   - `raw`, `betterMinimal`, optional `betterFull`
   - each includes `cold[]`, `warm[]`, and `stats` (`min|max|mean|median|p95`)

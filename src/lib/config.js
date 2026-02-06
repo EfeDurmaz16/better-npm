@@ -7,6 +7,8 @@ const DEFAULTS = {
   telemetry: false,
   logLevel: "info",
   cacheRoot: null,
+  coreMode: "auto",
+  fsConcurrency: 16,
   doctor: {
     threshold: 70,
     maxDepth: 15,
@@ -111,6 +113,13 @@ function parseEnv() {
   if (process.env.BETTER_CACHE_ROOT) {
     env.cacheRoot = process.env.BETTER_CACHE_ROOT;
   }
+  if (process.env.BETTER_CORE_MODE) {
+    env.coreMode = process.env.BETTER_CORE_MODE;
+  }
+  if (process.env.BETTER_FS_CONCURRENCY) {
+    const n = Number(process.env.BETTER_FS_CONCURRENCY);
+    if (Number.isFinite(n)) env.fsConcurrency = n;
+  }
   if (process.env.BETTER_DOCTOR_THRESHOLD) {
     const n = Number(process.env.BETTER_DOCTOR_THRESHOLD);
     if (Number.isFinite(n)) {
@@ -128,6 +137,17 @@ function validateAndNormalize(config) {
   if (normalized.cacheRoot != null && typeof normalized.cacheRoot !== "string") {
     normalized.cacheRoot = null;
   }
+  if (typeof normalized.coreMode !== "string") {
+    normalized.coreMode = DEFAULTS.coreMode;
+  }
+  const coreMode = normalized.coreMode.toLowerCase();
+  normalized.coreMode = coreMode === "js" || coreMode === "rust" || coreMode === "auto"
+    ? coreMode
+    : DEFAULTS.coreMode;
+  const fsConcurrency = Number(normalized.fsConcurrency);
+  normalized.fsConcurrency = Number.isFinite(fsConcurrency)
+    ? Math.max(1, Math.min(128, Math.floor(fsConcurrency)))
+    : DEFAULTS.fsConcurrency;
 
   if (!isObject(normalized.doctor)) normalized.doctor = { ...DEFAULTS.doctor };
   const threshold = Number(normalized.doctor.threshold);
@@ -162,4 +182,3 @@ export function setRuntimeConfig(config) {
 export function getRuntimeConfig() {
   return runtimeConfig;
 }
-

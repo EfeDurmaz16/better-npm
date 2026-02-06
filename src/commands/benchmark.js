@@ -162,6 +162,9 @@ function betterInstallArgs(projectRoot, pm, engine, opts = {}) {
   if (opts.frozen) args.push("--frozen");
   if (opts.production) args.push("--production");
   if (engine === "better") args.push("--experimental");
+  if (opts.coreMode) args.push("--core-mode", String(opts.coreMode));
+  if (opts.fsConcurrency != null) args.push("--fs-concurrency", String(opts.fsConcurrency));
+  if (opts.incremental === false) args.push("--no-incremental");
   if (opts.profile === "minimal") {
     args.push("--measure", "off", "--parity-check", "off");
   }
@@ -234,6 +237,9 @@ function buildVariants(projectRoot, pm, engine, opts = {}) {
     args: betterInstallArgs(projectRoot, pm, engine, {
       frozen: opts.frozen,
       production: opts.production,
+      coreMode: opts.coreMode,
+      fsConcurrency: opts.fsConcurrency,
+      incremental: opts.incremental,
       profile: "minimal"
     })
   });
@@ -245,6 +251,9 @@ function buildVariants(projectRoot, pm, engine, opts = {}) {
       args: betterInstallArgs(projectRoot, pm, engine, {
         frozen: opts.frozen,
         production: opts.production,
+        coreMode: opts.coreMode,
+        fsConcurrency: opts.fsConcurrency,
+        incremental: opts.incremental,
         profile: "full"
       })
     });
@@ -310,6 +319,7 @@ export async function cmdBenchmark(argv) {
   better benchmark [--json] [--project-root PATH] [--pm auto|npm|pnpm|yarn] [--engine pm|bun|better]
                    [--cold-rounds N] [--warm-rounds N] [--timeout-ms N]
                    [--frozen] [--production] [--include-full] [--cache-root PATH]
+                   [--core-mode auto|js|rust] [--fs-concurrency N] [--no-incremental]
 `);
     return;
   }
@@ -329,7 +339,10 @@ export async function cmdBenchmark(argv) {
       "warm-rounds": { type: "string", default: "3" },
       "timeout-ms": { type: "string", default: "600000" },
       "include-full": { type: "boolean", default: false },
-      "cache-root": { type: "string", default: runtime.cacheRoot ?? undefined }
+      "cache-root": { type: "string", default: runtime.cacheRoot ?? undefined },
+      "core-mode": { type: "string", default: runtime.coreMode ?? "auto" },
+      "fs-concurrency": { type: "string", default: String(runtime.fsConcurrency ?? 16) },
+      "no-incremental": { type: "boolean", default: false }
     },
     allowPositionals: true,
     strict: false
@@ -356,6 +369,12 @@ export async function cmdBenchmark(argv) {
   const coldRounds = Math.max(0, Number.parseInt(values["cold-rounds"], 10) || 0);
   const warmRounds = Math.max(0, Number.parseInt(values["warm-rounds"], 10) || 0);
   const timeoutMs = Math.max(10_000, Number.parseInt(values["timeout-ms"], 10) || 600_000);
+  const coreMode = String(values["core-mode"] ?? "auto").toLowerCase();
+  if (coreMode !== "auto" && coreMode !== "js" && coreMode !== "rust") {
+    throw new Error(`Unknown --core-mode '${values["core-mode"]}'. Expected auto|js|rust.`);
+  }
+  const fsConcurrency = Math.max(1, Math.min(128, Number.parseInt(values["fs-concurrency"], 10) || 16));
+  const incremental = values["no-incremental"] ? false : true;
   if (coldRounds === 0 && warmRounds === 0) {
     throw new Error("At least one of --cold-rounds or --warm-rounds must be greater than 0.");
   }
@@ -367,7 +386,10 @@ export async function cmdBenchmark(argv) {
   const variants = buildVariants(projectRoot, pm, engine, {
     frozen: values.frozen === true,
     production: values.production === true,
-    includeFull: values["include-full"] === true
+    includeFull: values["include-full"] === true,
+    coreMode,
+    fsConcurrency,
+    incremental
   });
 
   const perVariantSamples = {};
@@ -474,6 +496,9 @@ export async function cmdBenchmark(argv) {
       frozen: values.frozen === true,
       production: values.production === true,
       includeFull: values["include-full"] === true,
+      coreMode,
+      fsConcurrency,
+      incremental,
       cacheRootBase: cacheBase
     },
     variants: variantsSummary,

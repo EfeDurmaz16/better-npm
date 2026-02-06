@@ -102,6 +102,104 @@ test("better engine (npm lockfile replay): installs from local file: tarball", {
   }
 });
 
+test("better engine (npm lockfile replay): second run is a no-op reuse hit", { skip: !(await hasTar()) }, async () => {
+  const dir = await makeTempDir("better-engine-reuse-");
+  try {
+    const pkgName = "foo";
+    const { tgz, integrity } = await packFixture(dir, pkgName);
+
+    await writeJson(path.join(dir, "package.json"), { name: "proj", version: "1.0.0" });
+    await writeJson(path.join(dir, "package-lock.json"), {
+      name: "proj",
+      lockfileVersion: 3,
+      packages: {
+        "": { name: "proj", version: "1.0.0" },
+        "node_modules/foo": {
+          name: "foo",
+          version: "1.0.0",
+          resolved: `file:${path.basename(tgz)}`,
+          integrity
+        }
+      }
+    });
+
+    const betterBin = path.resolve(process.cwd(), "bin", "better.js");
+    await execFileAsync(process.execPath, [
+      betterBin,
+      "install",
+      "--engine",
+      "better",
+      "--experimental",
+      "--scripts",
+      "off",
+      "--json"
+    ], { cwd: dir, timeout: 120_000 });
+
+    const { stdout } = await execFileAsync(process.execPath, [
+      betterBin,
+      "install",
+      "--engine",
+      "better",
+      "--experimental",
+      "--scripts",
+      "off",
+      "--json"
+    ], { cwd: dir, timeout: 120_000 });
+
+    const report = JSON.parse(stdout);
+    assert.equal(report.ok, true);
+    assert.equal(report.execution.mode, "noop_reuse");
+    assert.equal(report.reuseDecision.hit, true);
+    assert.equal(report.reuseDecision.reason, "reuse_marker_hit");
+  } finally {
+    await rmrf(dir);
+  }
+});
+
+test("better engine: core-mode rust falls back to js with explainable runtime fields", { skip: !(await hasTar()) }, async () => {
+  const dir = await makeTempDir("better-engine-core-mode-");
+  try {
+    const pkgName = "foo";
+    const { tgz, integrity } = await packFixture(dir, pkgName);
+    await writeJson(path.join(dir, "package.json"), { name: "proj", version: "1.0.0" });
+    await writeJson(path.join(dir, "package-lock.json"), {
+      name: "proj",
+      lockfileVersion: 3,
+      packages: {
+        "": { name: "proj", version: "1.0.0" },
+        "node_modules/foo": {
+          name: "foo",
+          version: "1.0.0",
+          resolved: `file:${path.basename(tgz)}`,
+          integrity
+        }
+      }
+    });
+
+    const betterBin = path.resolve(process.cwd(), "bin", "better.js");
+    const { stdout } = await execFileAsync(process.execPath, [
+      betterBin,
+      "install",
+      "--engine",
+      "better",
+      "--experimental",
+      "--core-mode",
+      "rust",
+      "--scripts",
+      "off",
+      "--json"
+    ], { cwd: dir, timeout: 120_000 });
+    const report = JSON.parse(stdout);
+    assert.equal(report.ok, true);
+    assert.equal(report.engineRuntime.requested, "rust");
+    assert.equal(report.engineRuntime.selected, "js");
+    assert.equal(report.engineRuntime.fallbackUsed, true);
+    assert.ok(typeof report.engineRuntime.fallbackReason === "string");
+  } finally {
+    await rmrf(dir);
+  }
+});
+
 test("better engine (npm lockfile replay): supports workspace link:true entries (root node_modules only)", async () => {
   const dir = await makeTempDir("better-engine-ws-");
   try {
@@ -237,6 +335,57 @@ test("better engine (npm lockfile replay): skips optional packages incompatible 
       .catch(() => false);
     assert.equal(targetExists, true);
     assert.equal(foreignExists, false);
+  } finally {
+    await rmrf(dir);
+  }
+});
+
+test("better engine (npm lockfile replay): incremental mode removes stale root packages", { skip: !(await hasTar()) }, async () => {
+  const dir = await makeTempDir("better-engine-incremental-");
+  try {
+    const pkgName = "foo";
+    const { tgz, integrity } = await packFixture(dir, pkgName);
+    await writeJson(path.join(dir, "package.json"), { name: "proj", version: "1.0.0" });
+    await writeJson(path.join(dir, "package-lock.json"), {
+      name: "proj",
+      lockfileVersion: 3,
+      packages: {
+        "": { name: "proj", version: "1.0.0" },
+        "node_modules/foo": {
+          name: "foo",
+          version: "1.0.0",
+          resolved: `file:${path.basename(tgz)}`,
+          integrity
+        }
+      }
+    });
+    await writeJson(path.join(dir, "node_modules", "stale", "package.json"), {
+      name: "stale",
+      version: "9.9.9"
+    });
+    await writeFile(path.join(dir, "node_modules", "stale", "index.js"), "module.exports = 'stale';\n");
+
+    const betterBin = path.resolve(process.cwd(), "bin", "better.js");
+    const { stdout } = await execFileAsync(process.execPath, [
+      betterBin,
+      "install",
+      "--engine",
+      "better",
+      "--experimental",
+      "--scripts",
+      "off",
+      "--json"
+    ], { cwd: dir, timeout: 120_000 });
+    const report = JSON.parse(stdout);
+    assert.equal(report.ok, true);
+    assert.equal(report.betterEngine.incrementalOps.mode, "incremental");
+    assert.ok(Number(report.betterEngine.incrementalOps.removed) >= 1);
+
+    const staleExists = await fs
+      .stat(path.join(dir, "node_modules", "stale"))
+      .then(() => true)
+      .catch(() => false);
+    assert.equal(staleExists, false);
   } finally {
     await rmrf(dir);
   }

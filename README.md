@@ -15,6 +15,13 @@ Global cache primitives are available behind opt-in flags:
 - `better install --global-cache` — strict keying + reusable materialized `node_modules`
 - `better cache warm` / `materialize` / `verify` — operational control for global materialization entries
 
+Replay-engine optimizations now include:
+
+- same-key local no-op reuse marker (`node_modules/.better-state.json`)
+- incremental replay materialization (`--no-incremental` to disable)
+- tunable filesystem concurrency (`--fs-concurrency N`)
+- runtime selector scaffold (`--core-mode auto|js|rust`, JS fallback by default)
+
 ## Usage
 
 From a Node.js project directory:

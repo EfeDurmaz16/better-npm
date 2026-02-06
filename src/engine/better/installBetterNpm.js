@@ -205,12 +205,68 @@ async function ensureTarballAvailable(layout, key, resolved, projectRoot) {
   throw new Error(`Unsupported resolved URL: ${resolved}`);
 }
 
+async function readPackageIdentity(packageDir) {
+  try {
+    const raw = await fs.readFile(path.join(packageDir, "package.json"), "utf8");
+    const pkg = JSON.parse(raw);
+    return {
+      name: typeof pkg?.name === "string" ? pkg.name : null,
+      version: typeof pkg?.version === "string" ? pkg.version : null
+    };
+  } catch {
+    return { name: null, version: null };
+  }
+}
+
+async function isInstalledPackageUpToDate(destPkgDir, expectedName, expectedVersion) {
+  const id = await readPackageIdentity(destPkgDir);
+  return id.name === expectedName && id.version === expectedVersion;
+}
+
+async function listInstalledRootRelPaths(projectRoot) {
+  const out = [];
+  const root = path.join(projectRoot, "node_modules");
+  let entries = [];
+  try {
+    entries = await fs.readdir(root, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  entries.sort((a, b) => a.name.localeCompare(b.name));
+
+  for (const entry of entries) {
+    const name = entry.name;
+    if (!name || name === ".bin" || name.startsWith(".")) continue;
+    if (name.startsWith("@") && entry.isDirectory()) {
+      const scopeDir = path.join(root, name);
+      let scoped = [];
+      try {
+        scoped = await fs.readdir(scopeDir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      scoped.sort((a, b) => a.name.localeCompare(b.name));
+      for (const pkg of scoped) {
+        if (!pkg.name || pkg.name.startsWith(".")) continue;
+        if (!pkg.isDirectory() && !pkg.isSymbolicLink()) continue;
+        out.push(`node_modules/${name}/${pkg.name}`);
+      }
+      continue;
+    }
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+    out.push(`node_modules/${name}`);
+  }
+  return out;
+}
+
 export async function installFromNpmLockfile(projectRoot, layout, opts = {}) {
   const {
     verify = "integrity-required", // integrity-required|best-effort
     linkStrategy = "auto", // auto|hardlink|copy
     scripts = "rebuild", // rebuild|off (Phase 3 default rebuild via npm)
-    binLinks = "rootOnly"
+    binLinks = "rootOnly",
+    incremental = true,
+    fsConcurrency = 16
   } = opts;
 
   const lockfilePath = path.join(projectRoot, "package-lock.json");
@@ -253,12 +309,27 @@ export async function installFromNpmLockfile(projectRoot, layout, opts = {}) {
   }
 
   const items = iterNodeModulesPackages(lock);
-  const stagingNm = path.join(projectRoot, `.better-staging-node_modules-${Date.now()}`);
-  await ensureEmptyDir(stagingNm);
+  const installMode = incremental ? "incremental" : "full_replace";
+  const stagingNm = installMode === "full_replace"
+    ? path.join(projectRoot, `.better-staging-node_modules-${Date.now()}`)
+    : null;
+  if (stagingNm) {
+    await ensureEmptyDir(stagingNm);
+  } else {
+    await fs.mkdir(path.join(projectRoot, "node_modules"), { recursive: true });
+  }
 
   const packagesByPath = new Map(); // installPath -> absPath
+  const desiredRelPaths = new Set();
   const extracted = { reusedTarballs: 0, downloadedTarballs: 0, extractedUnpacked: 0, reusedUnpacked: 0 };
   const skipped = { platform: 0 };
+  const incrementalOps = {
+    mode: installMode,
+    kept: 0,
+    relinked: 0,
+    removed: 0,
+    binRelinked: 0
+  };
   const packageCacheEntries = [];
 
   for (const it of items) {
@@ -291,12 +362,41 @@ export async function installFromNpmLockfile(projectRoot, layout, opts = {}) {
       );
     }
 
+    desiredRelPaths.add(relPath);
     if (isLink) {
       const segments = splitLockfilePath(relPath);
-      const destPkgDir = path.join(stagingNm, ...segments.slice(1)); // drop leading node_modules
+      const destPkgDir = installMode === "full_replace"
+        ? path.join(stagingNm, ...segments.slice(1)) // drop leading node_modules
+        : path.join(projectRoot, ...segments);
       const targetAbs = resolveWorkspaceTargetAbs({ lock, projectRoot, relPath, meta, workspaceByName });
+      if (installMode === "incremental") {
+        try {
+          const current = await fs.readlink(destPkgDir);
+          const currentAbs = path.resolve(path.dirname(destPkgDir), current);
+          if (currentAbs === targetAbs) {
+            packagesByPath.set(relPath, destPkgDir);
+            incrementalOps.kept += 1;
+            packageCacheEntries.push({
+              name: meta?.name ?? packageNameFromRelPath(relPath),
+              version: meta?.version ?? null,
+              relPath,
+              source: "workspace-link",
+              cacheHit: false,
+              cacheMiss: false,
+              cas: null,
+              skipped: { reason: "up_to_date_link" }
+            });
+            continue;
+          }
+        } catch {
+          // proceed to rewrite link
+        }
+      }
       await symlinkDir(targetAbs, destPkgDir);
       packagesByPath.set(relPath, destPkgDir);
+      if (installMode === "incremental") {
+        incrementalOps.relinked += 1;
+      }
       packageCacheEntries.push({
         name: meta?.name ?? packageNameFromRelPath(relPath),
         version: meta?.version ?? null,
@@ -317,6 +417,31 @@ export async function installFromNpmLockfile(projectRoot, layout, opts = {}) {
       if (verify === "integrity-required") throw new Error(`Missing integrity for ${relPath}`);
     }
 
+    const pkgName = meta?.name ?? packageNameFromRelPath(relPath);
+    const pkgVersion = meta?.version ?? null;
+    const segments = splitLockfilePath(relPath);
+    const destPkgDir = installMode === "full_replace"
+      ? path.join(stagingNm, ...segments.slice(1)) // drop leading node_modules
+      : path.join(projectRoot, ...segments);
+    if (installMode === "incremental") {
+      const isUpToDate = await isInstalledPackageUpToDate(destPkgDir, pkgName, pkgVersion);
+      if (isUpToDate) {
+        packagesByPath.set(relPath, destPkgDir);
+        incrementalOps.kept += 1;
+        packageCacheEntries.push({
+          name: pkgName,
+          version: pkgVersion,
+          relPath,
+          source: "incremental-reuse",
+          cacheHit: true,
+          cacheMiss: false,
+          cas: null,
+          skipped: { reason: "up_to_date_package" }
+        });
+        continue;
+      }
+    }
+
     const key = integrity ? casKeyFromIntegrity(integrity) : null;
     if (!key) {
       throw new Error(`Unable to derive CAS key for ${relPath} (integrity missing/invalid).`);
@@ -326,8 +451,6 @@ export async function installFromNpmLockfile(projectRoot, layout, opts = {}) {
     if (tar.reused) extracted.reusedTarballs += 1;
     else extracted.downloadedTarballs += 1;
 
-    const pkgName = meta?.name ?? packageNameFromRelPath(relPath);
-    const pkgVersion = meta?.version ?? null;
     packageCacheEntries.push({
       name: pkgName,
       version: pkgVersion,
@@ -354,15 +477,29 @@ export async function installFromNpmLockfile(projectRoot, layout, opts = {}) {
     // Support tarballs that extract to package/ or a source-specific top-level folder.
     const srcPkgDir = extractRes.packageDir;
 
-    const segments = splitLockfilePath(relPath);
-    const destPkgDir = path.join(stagingNm, ...segments.slice(1)); // drop leading node_modules
+    if (installMode === "incremental") {
+      await fs.rm(destPkgDir, { recursive: true, force: true });
+    }
     await fs.mkdir(path.dirname(destPkgDir), { recursive: true });
-    await materializeTree(srcPkgDir, destPkgDir, { linkStrategy });
+    await materializeTree(srcPkgDir, destPkgDir, { linkStrategy, fsConcurrency });
     packagesByPath.set(relPath, destPkgDir);
+    if (installMode === "incremental") {
+      incrementalOps.relinked += 1;
+    }
   }
 
-  // Atomically replace node_modules
-  await atomicReplaceDir(stagingNm, path.join(projectRoot, "node_modules"));
+  if (installMode === "full_replace") {
+    // Atomically replace node_modules
+    await atomicReplaceDir(stagingNm, path.join(projectRoot, "node_modules"));
+  } else {
+    const installed = await listInstalledRootRelPaths(projectRoot);
+    for (const relPath of installed) {
+      if (desiredRelPaths.has(relPath)) continue;
+      const segments = splitLockfilePath(relPath);
+      await fs.rm(path.join(projectRoot, ...segments), { recursive: true, force: true });
+      incrementalOps.removed += 1;
+    }
+  }
 
   // Root .bin links (MVP) - must run after node_modules is in place.
   const installedPackagesByPath = new Map();
@@ -370,7 +507,11 @@ export async function installFromNpmLockfile(projectRoot, layout, opts = {}) {
     const segments = splitLockfilePath(relPath);
     installedPackagesByPath.set(relPath, path.join(projectRoot, "node_modules", ...segments.slice(1)));
   }
-  await writeRootBinLinks(projectRoot, installedPackagesByPath, { linkMode: binLinks });
+  const bins = await writeRootBinLinks(projectRoot, installedPackagesByPath, {
+    linkMode: binLinks,
+    clean: installMode === "incremental"
+  });
+  incrementalOps.binRelinked = Number(bins?.linksWritten ?? 0);
 
   // Scripts/native addons: Phase 3 uses npm rebuild fallback.
   let scriptsResult = null;
@@ -396,8 +537,10 @@ export async function installFromNpmLockfile(projectRoot, layout, opts = {}) {
     lockfile: { type: "npm", lockfileVersion: lock.lockfileVersion },
     verify,
     linkStrategy,
+    fsConcurrency,
     extracted,
     skipped,
+    incrementalOps,
     packages: packageCacheEntries,
     scripts: scriptsResult,
     binLinks: { mode: binLinks }

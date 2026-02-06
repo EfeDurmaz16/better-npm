@@ -228,6 +228,7 @@ export async function materializeFromGlobalCache(layout, key, projectRoot, opts 
   if (!verify.ok) return { ok: false, reason: verify.reason, verify };
 
   const linkStrategy = opts.linkStrategy ?? "auto";
+  const fsConcurrency = Math.max(1, Number(opts.fsConcurrency) || 16);
   const staging = path.join(projectRoot, `.better-global-staging-node_modules-${Date.now()}-${Math.random().toString(16).slice(2)}`);
   const startedAt = Date.now();
   const stats = {
@@ -239,7 +240,7 @@ export async function materializeFromGlobalCache(layout, key, projectRoot, opts 
     symlinks: 0
   };
   await ensureEmptyDir(staging);
-  await materializeTree(verify.paths.nodeModulesPath, staging, { linkStrategy, stats });
+  await materializeTree(verify.paths.nodeModulesPath, staging, { linkStrategy, stats, fsConcurrency });
   await atomicReplaceDir(staging, path.join(projectRoot, "node_modules"));
   const endedAt = Date.now();
 
@@ -251,7 +252,8 @@ export async function materializeFromGlobalCache(layout, key, projectRoot, opts 
     meta: verify.meta,
     stats,
     durationMs: endedAt - startedAt,
-    strategy: linkStrategy
+    strategy: linkStrategy,
+    fsConcurrency
   };
 }
 
@@ -262,6 +264,7 @@ export async function captureProjectNodeModulesToGlobalCache(layout, key, projec
   }
 
   const linkStrategy = opts.linkStrategy ?? "auto";
+  const fsConcurrency = Math.max(1, Number(opts.fsConcurrency) || 16);
   const entryPaths = globalCacheEntryPaths(layout, key);
   const stagingRoot = `${entryPaths.root}.staging-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const stagingNodeModules = path.join(stagingRoot, "node_modules");
@@ -276,7 +279,7 @@ export async function captureProjectNodeModulesToGlobalCache(layout, key, projec
   };
 
   await ensureEmptyDir(stagingRoot);
-  await materializeTree(source, stagingNodeModules, { linkStrategy, stats });
+  await materializeTree(source, stagingNodeModules, { linkStrategy, stats, fsConcurrency });
   await fs.mkdir(stagingRoot, { recursive: true });
   await fs.writeFile(
     path.join(stagingRoot, "entry.json"),
@@ -293,6 +296,7 @@ export async function captureProjectNodeModulesToGlobalCache(layout, key, projec
         engine: opts.engine ?? null,
         scriptsMode: opts.scriptsMode ?? "rebuild",
         cacheMode: opts.cacheMode ?? "strict",
+        fsConcurrency,
         stats
       },
       null,
@@ -311,7 +315,8 @@ export async function captureProjectNodeModulesToGlobalCache(layout, key, projec
     key,
     paths: entryPaths,
     stats,
-    durationMs: endedAt - startedAt
+    durationMs: endedAt - startedAt,
+    fsConcurrency
   };
 }
 

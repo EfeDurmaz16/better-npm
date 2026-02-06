@@ -45,9 +45,15 @@ export async function readPackageBin(packageDir) {
 
 export async function writeRootBinLinks(projectRoot, packagesByPath, opts = {}) {
   const binDir = path.join(projectRoot, "node_modules", ".bin");
+  const clean = opts.clean === true;
+  if (clean) {
+    await fs.rm(binDir, { recursive: true, force: true });
+  }
   await fs.mkdir(binDir, { recursive: true });
   const linkMode = opts.linkMode ?? "rootOnly";
-  if (linkMode !== "rootOnly") return;
+  if (linkMode !== "rootOnly") return { linksWritten: 0, cleaned: clean };
+
+  let linksWritten = 0;
 
   // Deterministic: sort by install path.
   const paths = [...packagesByPath.keys()].sort((a, b) => a.localeCompare(b));
@@ -63,13 +69,16 @@ export async function writeRootBinLinks(projectRoot, packagesByPath, opts = {}) 
         const rel = path.relative(binDir, targetAbs).replace(/\//g, "\\");
         const content = `@ECHO OFF\r\n"${process.execPath}" "%~dp0\\${rel}" %*\r\n`;
         await fs.writeFile(cmdPath, content, "utf8");
+        linksWritten += 1;
       } else {
         const linkPath = path.join(binDir, outName);
         if (await exists(linkPath)) continue;
         const rel = path.relative(binDir, targetAbs);
         await fs.symlink(rel, linkPath);
+        linksWritten += 1;
       }
     }
   }
-}
 
+  return { linksWritten, cleaned: clean };
+}

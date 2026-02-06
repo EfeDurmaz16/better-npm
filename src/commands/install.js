@@ -22,6 +22,8 @@ import {
   captureProjectNodeModulesToGlobalCache,
   entryBytesFromNodeModulesSnapshot
 } from "../lib/globalCache.js";
+import { evaluateReuseMarker, writeReuseMarker } from "../lib/reuseMarker.js";
+import { findBetterCore } from "../lib/core.js";
 
 async function exists(p) {
   try {
@@ -153,8 +155,9 @@ function collectUnknownFlagArgs(values, knownKeys) {
 
 function inferPmCacheStats({ pm, engine, installResult, betterEngine }) {
   if (engine === "better") {
+    const replayReuseHits = Number(betterEngine?.incrementalOps?.kept ?? 0);
     return {
-      hits: Number(betterEngine?.extracted?.reusedTarballs ?? 0),
+      hits: Number(betterEngine?.extracted?.reusedTarballs ?? 0) + replayReuseHits,
       misses: Number(betterEngine?.extracted?.downloadedTarballs ?? 0),
       source: "better-engine-cas"
     };
@@ -200,6 +203,37 @@ function normalizeCacheScripts(value) {
   return "rebuild";
 }
 
+async function resolveReplayRuntime(coreMode) {
+  const runtime = {
+    requested: coreMode,
+    selected: "js",
+    fallbackUsed: false,
+    fallbackReason: null,
+    corePath: null
+  };
+  if (coreMode === "js") return runtime;
+
+  const corePath = await findBetterCore();
+  if (!corePath) {
+    if (coreMode === "rust") {
+      return {
+        ...runtime,
+        fallbackUsed: true,
+        fallbackReason: "rust_core_not_found"
+      };
+    }
+    return runtime;
+  }
+
+  // Rust replay path is staged behind fallback for now.
+  return {
+    ...runtime,
+    corePath,
+    fallbackUsed: true,
+    fallbackReason: "rust_replay_not_implemented"
+  };
+}
+
 async function runLifecycleRebuild(pm, projectRoot, jsonOutput, env) {
   if (pm === "pnpm") {
     return await runCommand("pnpm", ["rebuild"], {
@@ -224,6 +258,7 @@ export async function cmdInstall(argv) {
                  [--frozen] [--production] [--cache-root PATH] [--project-root PATH]
                  [--global-cache] [--cache-mode strict|relaxed] [--cache-scripts rebuild|off]
                  [--cache-read-only] [--cache-key-salt STRING]
+                 [--core-mode auto|js|rust] [--fs-concurrency N] [--no-incremental]
                  [--parity-check auto|off|warn|strict]
                  [-- --<pm-specific flags>]
 `);
@@ -258,6 +293,10 @@ export async function cmdInstall(argv) {
       "cache-scripts": { type: "string", default: "rebuild" }, // rebuild|off
       "cache-read-only": { type: "boolean", default: false },
       "cache-key-salt": { type: "string" },
+      "core-mode": { type: "string", default: runtime.coreMode ?? "auto" }, // auto|js|rust
+      "fs-concurrency": { type: "string", default: String(runtime.fsConcurrency ?? 16) },
+      incremental: { type: "boolean", default: true },
+      "no-incremental": { type: "boolean", default: false },
       // Phase 3: better engine flags
       verify: { type: "string" }, // integrity-required|best-effort
       scripts: { type: "string" }, // rebuild|off
@@ -300,6 +339,10 @@ export async function cmdInstall(argv) {
     "cache-scripts",
     "cache-read-only",
     "cache-key-salt",
+    "core-mode",
+    "fs-concurrency",
+    "incremental",
+    "no-incremental",
     "verify",
     "scripts",
     "link-strategy",
@@ -405,6 +448,12 @@ export async function cmdInstall(argv) {
   }
   const cacheReadOnly = values["cache-read-only"] === true;
   const cacheKeySalt = values["cache-key-salt"] ?? null;
+  const coreMode = String(values["core-mode"] ?? "auto").toLowerCase();
+  if (coreMode !== "auto" && coreMode !== "js" && coreMode !== "rust") {
+    throw new Error(`Unknown --core-mode '${values["core-mode"]}'. Expected auto|js|rust.`);
+  }
+  const fsConcurrency = Math.max(1, Math.min(128, Number.parseInt(values["fs-concurrency"], 10) || 16));
+  const incremental = values["no-incremental"] ? false : values.incremental !== false;
 
   const runId = `${Date.now()}-${shortHash(`${projectRoot}:${pm}:${mode}`)}`;
   const startedAt = nowIso();
@@ -439,17 +488,50 @@ export async function cmdInstall(argv) {
     mode: cacheMode,
     readOnly: cacheReadOnly
   };
+  const engineRuntime = engine === "better"
+    ? await resolveReplayRuntime(coreMode)
+    : {
+        requested: "n/a",
+        selected: "pm",
+        fallbackUsed: false,
+        fallbackReason: null,
+        corePath: null
+      };
+  let reuseContext = null;
+  let reuseDecision = {
+    eligible: engine === "better",
+    hit: false,
+    reason: engine === "better" ? "not_checked" : "not_applicable",
+    key: null,
+    lockHash: null
+  };
 
-  if (globalCacheEnabled) {
-    globalCacheContext = await deriveGlobalCacheContext(projectRoot, {
+  if (globalCacheEnabled || engine === "better") {
+    const derivedContext = await deriveGlobalCacheContext(projectRoot, {
       pm,
       engine,
       cacheMode,
-      scriptsMode: cacheScripts,
+      scriptsMode: engine === "better" ? (values.scripts ?? "rebuild") : cacheScripts,
       frozen,
       production,
       cacheKeySalt
     });
+    if (engine === "better") {
+      reuseContext = derivedContext;
+      reuseDecision = {
+        eligible: derivedContext?.decision?.eligible === true,
+        hit: false,
+        reason: derivedContext?.decision?.eligible === true ? "marker_check_pending" : (derivedContext?.decision?.reason ?? "ineligible"),
+        key: derivedContext?.key ?? null,
+        lockHash: derivedContext?.lockHash ?? null
+      };
+    }
+    if (globalCacheEnabled) {
+      globalCacheContext = derivedContext;
+    }
+  }
+
+  if (globalCacheEnabled && globalCacheContext) {
     globalCacheDecision = {
       ...globalCacheDecision,
       ...globalCacheContext.decision,
@@ -512,9 +594,41 @@ export async function cmdInstall(argv) {
     return;
   }
 
+  let noopReuseInstall = null;
+  if (engine === "better" && reuseDecision.eligible && reuseContext?.key) {
+    const reuseEval = await evaluateReuseMarker(projectRoot, {
+      key: reuseContext.key,
+      lockHash: reuseContext.lockHash,
+      fingerprint: reuseContext.fingerprint
+    });
+    reuseDecision = {
+      ...reuseDecision,
+      hit: reuseEval.hit === true,
+      reason: reuseEval.reason ?? "marker_unknown",
+      markerVersion: reuseEval?.marker?.version ?? null
+    };
+    if (reuseEval.hit) {
+      const now = Date.now();
+      noopReuseInstall = {
+        cmd: "better",
+        args: ["install", "--engine", "better", "--reuse-hit"],
+        cwd: projectRoot,
+        startedAt: now,
+        endedAt: now,
+        wallTimeMs: 0,
+        exitCode: 0,
+        signal: null,
+        stdout: "",
+        stderr: "",
+        stdoutTail: "",
+        stderrTail: ""
+      };
+    }
+  }
+
   // Create parity context before install
   let parityContext = null;
-  if (parityCheckMode !== "off") {
+  if (parityCheckMode !== "off" && !noopReuseInstall) {
     const includePackageSet =
       parityPackageSet === "on" ? true : parityPackageSet === "off" ? false : parityCheckMode === "strict";
     progress(
@@ -527,20 +641,24 @@ export async function cmdInstall(argv) {
 
   let cmd = null;
   let args = null;
-  let install = null;
+  let install = noopReuseInstall;
   let betterEngine = null;
   let globalMaterialize = null;
   let globalCacheStored = null;
   let cacheScriptResult = null;
-  let skippedPmInstall = false;
+  let skippedPmInstall = !!noopReuseInstall;
   const installEnv = pmEnv(pm, layout, engine);
+  if (noopReuseInstall) {
+    progress("reuse marker hit: node_modules matches derived key, skipping install");
+  }
 
-  if (globalCacheEnabled && globalCacheContext?.decision?.eligible && globalCacheContext.key) {
+  if (!skippedPmInstall && globalCacheEnabled && globalCacheContext?.decision?.eligible && globalCacheContext.key) {
     const verifyEntry = await verifyGlobalCacheEntry(layout, globalCacheContext.key);
     if (verifyEntry.ok) {
       progress(`global cache hit: materializing node_modules from key ${globalCacheContext.key.slice(0, 12)}…`);
       globalMaterialize = await materializeFromGlobalCache(layout, globalCacheContext.key, projectRoot, {
-        linkStrategy: values["link-strategy"] ?? "auto"
+        linkStrategy: values["link-strategy"] ?? "auto",
+        fsConcurrency
       });
       if (globalMaterialize.ok) {
         globalCacheDecision = {
@@ -600,7 +718,9 @@ export async function cmdInstall(argv) {
         verify: values.verify ?? "integrity-required",
         linkStrategy: values["link-strategy"] ?? "auto",
         scripts: values.scripts ?? "rebuild",
-        binLinks: values["bin-links"] ?? "rootOnly"
+        binLinks: values["bin-links"] ?? "rootOnly",
+        incremental,
+        fsConcurrency
       });
       const ended = Date.now();
       cmd = "better";
@@ -643,6 +763,7 @@ export async function cmdInstall(argv) {
     : { ok: false, reason: "measure_off", exists: false, packageCount: 0 };
 
   if (
+    !noopReuseInstall &&
     globalCacheEnabled &&
     globalCacheContext?.decision?.eligible &&
     globalCacheContext.key &&
@@ -652,6 +773,7 @@ export async function cmdInstall(argv) {
     progress(`global cache miss: capturing node_modules into key ${globalCacheContext.key.slice(0, 12)}…`);
     globalCacheStored = await captureProjectNodeModulesToGlobalCache(layout, globalCacheContext.key, projectRoot, {
       linkStrategy: values["link-strategy"] ?? "auto",
+      fsConcurrency,
       lockHash: globalCacheContext.lockHash,
       lockfile: globalCacheContext.lockfile,
       fingerprint: globalCacheContext.fingerprint,
@@ -784,6 +906,7 @@ export async function cmdInstall(argv) {
     projectRoot,
     pm: { name: pm, detected: detected.pm, reason: detected.reason },
     engine,
+    engineRuntime,
     mode,
     lockfilePolicy,
     cacheRoot: layout.root,
@@ -792,6 +915,18 @@ export async function cmdInstall(argv) {
       wallTimeMs: install.wallTimeMs,
       metrics: installMetrics
     },
+    execution: {
+      mode: noopReuseInstall
+        ? "noop_reuse"
+        : globalMaterialize
+          ? "cache_materialize"
+          : engine === "better"
+            ? "replay"
+            : "pm_wrap",
+      incremental: engine === "better" ? incremental : null,
+      fsConcurrency: engine === "better" ? fsConcurrency : null
+    },
+    reuseDecision,
     cacheDecision: globalCacheDecision,
     materialize: globalMaterialize
       ? {
@@ -932,6 +1067,39 @@ export async function cmdInstall(argv) {
     report.baseline = { mode: "run", status: "complete", result: baseline };
   }
 
+  if (engine === "better" && reuseContext?.key) {
+    try {
+      const markerPayload = {
+        version: 1,
+        engine: "better",
+        globalKey: reuseContext.key,
+        lockHash: reuseContext.lockHash ?? null,
+        runtimeFingerprint: reuseContext.fingerprint ?? null,
+        scriptsMode: values.scripts ?? "rebuild",
+        linkStrategy: values["link-strategy"] ?? "auto",
+        incremental,
+        fsConcurrency,
+        updatedAt: endedAt,
+        runId
+      };
+      const markerPath = await writeReuseMarker(projectRoot, markerPayload);
+      report.reuseMarker = {
+        ok: true,
+        path: markerPath
+      };
+    } catch (err) {
+      report.reuseMarker = {
+        ok: false,
+        reason: err?.message ?? String(err)
+      };
+    }
+  } else {
+    report.reuseMarker = {
+      ok: false,
+      reason: "not_written"
+    };
+  }
+
   await fs.writeFile(path.join(layout.runsDir, `${runId}.json`), `${JSON.stringify(report, null, 2)}\n`);
 
   const state = await loadState(layout);
@@ -1046,6 +1214,9 @@ export async function cmdInstall(argv) {
     globalCacheEnabled
       ? `- global cache: ${globalCacheDecision.hit ? "hit" : "miss"} (${globalCacheDecision.reason})`
       : "- global cache: disabled",
+    engine === "better"
+      ? `- reuse marker: ${reuseDecision.hit ? "hit" : "miss"} (${reuseDecision.reason})`
+      : "- reuse marker: n/a",
     `- cache root: ${layout.root}`,
     `- run report: ${path.join(layout.runsDir, `${runId}.json`)}`
   ];
