@@ -367,6 +367,29 @@ test("engine validation: should reject invalid parity-check mode", async () => {
   }
 });
 
+test("engine validation: should reject invalid measure-cache mode", async () => {
+  const dir = await makeTempDir("better-invalid-measure-cache-");
+  try {
+    await writeJson(path.join(dir, "package.json"), {
+      name: "invalid-measure-cache-test",
+      version: "1.0.0"
+    });
+
+    const betterBin = path.resolve(process.cwd(), "bin", "better.js");
+    await assert.rejects(
+      execFileAsync(process.execPath, [betterBin, "install", "--measure-cache", "invalid"], {
+        cwd: dir
+      }),
+      (err) => {
+        assert.ok(err.stderr.includes("Unknown --measure-cache"));
+        return true;
+      }
+    );
+  } finally {
+    await rmrf(dir);
+  }
+});
+
 test("engine validation: should reject invalid lockfile-policy", async () => {
   const dir = await makeTempDir("better-invalid-lockfile-");
   try {
@@ -385,6 +408,26 @@ test("engine validation: should reject invalid lockfile-policy", async () => {
         return true;
       }
     );
+  } finally {
+    await rmrf(dir);
+  }
+});
+
+test("bun engine: fast mode should skip cache size scan by default", { skip: !hasBun || !hasSystemTar }, async () => {
+  const dir = await makeTempDir("better-bun-fast-skip-cache-");
+  try {
+    await writeLocalDepProject(dir, { projectName: "bun-fast-skip-cache-test" });
+
+    const betterBin = path.resolve(process.cwd(), "bin", "better.js");
+    const { stdout } = await execFileAsync(process.execPath, [betterBin, "install", "--engine", "bun", "--json"], {
+      cwd: dir,
+      timeout: 60000
+    });
+
+    const report = extractJson(stdout);
+    assert.equal(report.cache?.before?.reason, "measure_cache_off");
+    assert.equal(report.cache?.after?.reason, "measure_cache_off");
+    assert.equal(report.nodeModules?.path?.includes("node_modules"), true);
   } finally {
     await rmrf(dir);
   }

@@ -98,6 +98,7 @@ export async function countInstalledPackages(nodeModulesDir) {
 
 export async function collectNodeModulesSnapshot(projectRoot, opts = {}) {
   const nodeModulesPath = path.join(projectRoot, "node_modules");
+  const includePackageCount = opts.includePackageCount !== false;
   const present = await exists(nodeModulesPath);
   if (!present) {
     return {
@@ -117,7 +118,7 @@ export async function collectNodeModulesSnapshot(projectRoot, opts = {}) {
       coreMode: opts.coreMode ?? "auto",
       duFallback: opts.duFallback ?? "auto"
     }),
-    countInstalledPackages(nodeModulesPath)
+    includePackageCount ? countInstalledPackages(nodeModulesPath) : Promise.resolve(null)
   ]);
 
   if (!size.ok) {

@@ -258,6 +258,7 @@ export async function cmdInstall(argv) {
                  [--frozen] [--production] [--cache-root PATH] [--project-root PATH]
                  [--global-cache] [--cache-mode strict|relaxed] [--cache-scripts rebuild|off]
                  [--cache-read-only] [--cache-key-salt STRING]
+                 [--measure-cache auto|on|off]
                  [--core-mode auto|js|rust] [--fs-concurrency N] [--no-incremental]
                  [--parity-check auto|off|warn|strict]
                  [-- --<pm-specific flags>]
@@ -288,6 +289,7 @@ export async function cmdInstall(argv) {
       "parity-package-set": { type: "string", default: "auto" }, // auto|on|off
       measure: { type: "string", default: "on" }, // on|off
       "measure-mode": { type: "string", default: "auto" }, // auto|fast|precise
+      "measure-cache": { type: "string", default: "auto" }, // auto|on|off
       "global-cache": { type: "boolean", default: false },
       "cache-mode": { type: "string", default: "strict" }, // strict|relaxed
       "cache-scripts": { type: "string", default: "rebuild" }, // rebuild|off
@@ -334,6 +336,7 @@ export async function cmdInstall(argv) {
     "parity-package-set",
     "measure",
     "measure-mode",
+    "measure-cache",
     "global-cache",
     "cache-mode",
     "cache-scripts",
@@ -436,6 +439,10 @@ export async function cmdInstall(argv) {
   if (measureMode !== "auto" && measureMode !== "fast" && measureMode !== "precise") {
     throw new Error(`Unknown --measure-mode '${measureMode}'. Expected auto|fast|precise.`);
   }
+  const measureCacheMode = values["measure-cache"];
+  if (measureCacheMode !== "auto" && measureCacheMode !== "on" && measureCacheMode !== "off") {
+    throw new Error(`Unknown --measure-cache '${measureCacheMode}'. Expected auto|on|off.`);
+  }
 
   const globalCacheEnabled = values["global-cache"] === true;
   const cacheMode = values["cache-mode"] ?? "strict";
@@ -462,13 +469,18 @@ export async function cmdInstall(argv) {
   const pmCacheDir = engine === "bun"
     ? (layout.pm.bun || layout.pm.npm)
     : pm === "pnpm" ? layout.pm.pnpmStore : pm === "yarn" ? layout.pm.yarn : layout.pm.npm;
+  const bunFastTrack = engine === "bun" && measure === "on" && measureMode === "fast";
+  const shouldMeasureCache = measure === "on" && (
+    measureCacheMode === "on" || (measureCacheMode === "auto" && !bunFastTrack)
+  );
+  const includePackageCount = !(engine === "bun" && measureMode === "fast");
   const scanCoreMode = measureMode === "fast" ? "off" : "auto";
   const duFallback = measureMode === "precise" ? "off" : "auto";
-  const beforeCache = measure === "on"
+  const beforeCache = shouldMeasureCache
     ? await scanTreeWithBestEngine(pmCacheDir, { coreMode: scanCoreMode, duFallback })
-    : { ok: false, reason: "measure_off" };
+    : { ok: false, reason: measure === "off" ? "measure_off" : "measure_cache_off" };
   const beforeNodeModules = measure === "on"
-    ? await collectNodeModulesSnapshot(projectRoot, { coreMode: scanCoreMode, duFallback })
+    ? await collectNodeModulesSnapshot(projectRoot, { coreMode: scanCoreMode, duFallback, includePackageCount })
     : { ok: false, reason: "measure_off", exists: false, packageCount: 0 };
 
   const c = pmInstallCommand(pm, passthrough, engine, {
@@ -755,12 +767,18 @@ export async function cmdInstall(argv) {
     }
   }
 
-  progress(measure === "on" ? "post-install: measuring cache and node_modules sizes" : "post-install: measurement disabled");
-  const afterCache = measure === "on"
+  progress(
+    measure === "off"
+      ? "post-install: measurement disabled"
+      : shouldMeasureCache
+        ? "post-install: measuring cache and node_modules sizes"
+        : "post-install: measuring node_modules sizes (pm cache scan skipped)"
+  );
+  const afterCache = shouldMeasureCache
     ? await scanTreeWithBestEngine(pmCacheDir, { coreMode: scanCoreMode, duFallback })
-    : { ok: false, reason: "measure_off" };
+    : { ok: false, reason: measure === "off" ? "measure_off" : "measure_cache_off" };
   const nodeModules = measure === "on"
-    ? await collectNodeModulesSnapshot(projectRoot, { coreMode: scanCoreMode, duFallback })
+    ? await collectNodeModulesSnapshot(projectRoot, { coreMode: scanCoreMode, duFallback, includePackageCount })
     : { ok: false, reason: "measure_off", exists: false, packageCount: 0 };
 
   if (
