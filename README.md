@@ -35,6 +35,9 @@ node /path/to/better/bin/better.js doctor
 node /path/to/better/bin/better.js cache stats
 node /path/to/better/bin/better.js benchmark --pm npm --engine pm --cold-rounds 1 --warm-rounds 3
 node /path/to/better/bin/better.js lock --json
+node /path/to/better/bin/better.js lock --pm npm --json
+node /path/to/better/bin/better.js lock --pm pnpm --json
+node /path/to/better/bin/better.js lock --pm bun --json
 node /path/to/better/bin/better.js lock verify --json
 node /path/to/better/bin/better.js run lint -- --fix
 node /path/to/better/bin/better.js lint -- --max-warnings=0

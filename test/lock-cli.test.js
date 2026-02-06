@@ -108,3 +108,47 @@ test("lock verify fails when lockfile drifts", async () => {
     await rmrf(dir);
   }
 });
+
+test("lock generate supports bun lockfile when --pm bun is set", async () => {
+  const dir = await makeTempDir("better-lock-bun-explicit-");
+  try {
+    await writeJson(path.join(dir, "package.json"), { name: "lock-bun-test", version: "1.0.0" });
+    await fs.writeFile(path.join(dir, "bun.lock"), "lockfileVersion = 0\n");
+
+    const { stdout } = await execFileAsync(process.execPath, [betterBin, "lock", "--pm", "bun", "--json"], {
+      cwd: dir,
+      env: { ...process.env, BETTER_LOG_LEVEL: "silent" }
+    });
+    const report = JSON.parse(stdout);
+    assert.equal(report.ok, true);
+    assert.equal(report.kind, "better.lock.generate");
+    assert.equal(report.lockfile.file, "bun.lock");
+
+    const lockFile = path.join(dir, "better.lock.json");
+    const doc = JSON.parse(await fs.readFile(lockFile, "utf8"));
+    assert.equal(doc.pm.selected, "bun");
+    assert.equal(doc.lockfile.file, "bun.lock");
+  } finally {
+    await rmrf(dir);
+  }
+});
+
+test("lock auto-detects bun when only bun lockfile exists", async () => {
+  const dir = await makeTempDir("better-lock-bun-auto-");
+  try {
+    await writeJson(path.join(dir, "package.json"), { name: "lock-bun-auto-test", version: "1.0.0" });
+    await fs.writeFile(path.join(dir, "bun.lockb"), "binary-lock-placeholder");
+
+    const { stdout } = await execFileAsync(process.execPath, [betterBin, "lock", "--json"], {
+      cwd: dir,
+      env: { ...process.env, BETTER_LOG_LEVEL: "silent" }
+    });
+    const report = JSON.parse(stdout);
+    assert.equal(report.ok, true);
+    assert.equal(report.lockfile.file, "bun.lockb");
+    assert.equal(report.pm.selected, "bun");
+    assert.equal(report.pm.reason, "bun.lockb");
+  } finally {
+    await rmrf(dir);
+  }
+});

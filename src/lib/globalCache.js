@@ -59,6 +59,8 @@ export async function resolvePrimaryLockfile(projectRoot, opts = {}) {
   const candidates = [];
   if (engine === "bun") {
     candidates.push("bun.lock", "bun.lockb");
+  } else if (pm === "bun") {
+    candidates.push("bun.lock", "bun.lockb");
   } else if (pm === "pnpm") {
     candidates.push("pnpm-lock.yaml");
   } else if (pm === "yarn") {

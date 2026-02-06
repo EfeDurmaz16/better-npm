@@ -5,7 +5,7 @@ import { printJson, printText } from "../lib/output.js";
 import { detectPackageManager } from "../pm/detect.js";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
 import { getRuntimeConfig } from "../lib/config.js";
-import { hashLockfile, buildRuntimeFingerprint, deriveGlobalCacheContext } from "../lib/globalCache.js";
+import { hashLockfile, buildRuntimeFingerprint, deriveGlobalCacheContext, resolvePrimaryLockfile } from "../lib/globalCache.js";
 
 async function exists(p) {
   try {
@@ -19,6 +19,29 @@ async function exists(p) {
 async function readJson(filePath) {
   const raw = await fs.readFile(filePath, "utf8");
   return JSON.parse(raw);
+}
+
+async function detectLockPackageManager(projectRoot) {
+  const pkgPath = path.join(projectRoot, "package.json");
+  if (await exists(pkgPath)) {
+    try {
+      const pkg = JSON.parse(await fs.readFile(pkgPath, "utf8"));
+      const declared = typeof pkg?.packageManager === "string" ? pkg.packageManager : "";
+      const [name] = declared.split("@");
+      if (name === "npm" || name === "pnpm" || name === "yarn" || name === "bun") {
+        return { pm: name, reason: "package.json#packageManager" };
+      }
+    } catch {
+      // ignore invalid package.json and continue with file-based detection
+    }
+  }
+
+  const detected = await detectPackageManager(projectRoot);
+  if (detected.reason !== "default") return detected;
+
+  const bunLock = await resolvePrimaryLockfile(projectRoot, { pm: "bun", engine: "pm" });
+  if (bunLock?.file) return { pm: "bun", reason: bunLock.file };
+  return detected;
 }
 
 async function resolveLockProjectRoot(startDir, projectRootFlag) {
@@ -57,7 +80,7 @@ export async function cmdLock(argv) {
   if (argv.includes("--help") || argv.includes("-h")) {
     printText(`Usage:
   better lock [generate] [--json] [--project-root PATH] [--out FILE]
-              [--pm auto|npm|pnpm|yarn] [--engine pm|bun|better]
+              [--pm auto|npm|pnpm|yarn|bun] [--engine pm|bun|better]
               [--cache-mode strict|relaxed] [--cache-scripts rebuild|off]
               [--frozen] [--production] [--cache-key-salt VALUE]
   better lock verify [--json] [--project-root PATH] [--file FILE]
@@ -88,7 +111,7 @@ export async function cmdLock(argv) {
   const action = positionals[0] === "verify" ? "verify" : "generate";
   const resolvedRoot = await resolveLockProjectRoot(process.cwd(), values["project-root"]);
   const projectRoot = resolvedRoot.root;
-  const detected = await detectPackageManager(projectRoot);
+  const detected = await detectLockPackageManager(projectRoot);
   const pm = values.pm === "auto" ? detected.pm : values.pm;
   const engine = String(values.engine ?? "pm");
   const cacheMode = String(values["cache-mode"] ?? "strict");
@@ -97,8 +120,8 @@ export async function cmdLock(argv) {
   const production = values.production === true;
   const cacheKeySalt = values["cache-key-salt"] ?? null;
 
-  if (pm !== "npm" && pm !== "pnpm" && pm !== "yarn") {
-    throw new Error(`Unknown --pm '${pm}'. Expected npm|pnpm|yarn|auto.`);
+  if (pm !== "npm" && pm !== "pnpm" && pm !== "yarn" && pm !== "bun") {
+    throw new Error(`Unknown --pm '${pm}'. Expected npm|pnpm|yarn|bun|auto.`);
   }
   if (engine !== "pm" && engine !== "bun" && engine !== "better") {
     throw new Error(`Unknown --engine '${engine}'. Expected pm|bun|better.`);
