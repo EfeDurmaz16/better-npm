@@ -7,6 +7,7 @@ import { childLogger } from "../lib/log.js";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
 import { queryBatch, summarizeVuln, parseSeverity } from "../lib/osv.js";
 import { buildVulnGraph, suggestUpgrades, graphToJson, formatExposurePath } from "../lib/vulnGraph.js";
+import { resolveWorkspacePackages } from "../lib/workspaces.js";
 
 async function readJsonFile(filePath) {
   try {
@@ -186,6 +187,7 @@ Options:
   --fix                 Show upgrade suggestions
   --fail-on LEVEL       Exit with code 1 if vulns at this severity or above [default: none]
   --timeout MS          API timeout in milliseconds [default: 15000]
+  --workspace           Scan all workspace packages
 `);
     return;
   }
@@ -200,7 +202,8 @@ Options:
       severity: { type: "string", default: "low" },
       fix: { type: "boolean", default: false },
       "fail-on": { type: "string", default: "none" },
-      timeout: { type: "string", default: "15000" }
+      timeout: { type: "string", default: "15000" },
+      workspace: { type: "boolean", default: false }
     },
     allowPositionals: true,
     strict: false
@@ -224,6 +227,56 @@ Options:
   const projectRoot = resolvedRoot.root;
 
   logger.info("audit.start", { projectRoot });
+
+  // Workspace mode: scan all workspace packages
+  if (values.workspace) {
+    const wsResult = await resolveWorkspacePackages(projectRoot);
+    if (!wsResult.ok) {
+      throw new Error(`No workspace configuration found in ${projectRoot}.`);
+    }
+
+    if (!jsonOutput) printText(`Scanning ${wsResult.packages.length} workspace packages...`);
+
+    const allPackages = [];
+    const mergedDepTree = { __root__: { version: "0.0.0", dependencies: {} } };
+    const lockfiles = [];
+
+    for (const pkg of wsResult.packages) {
+      const lockResult = await resolvePackagesFromLockfile(pkg.dir);
+      if (lockResult.ok) {
+        allPackages.push(...lockResult.packages);
+        Object.assign(mergedDepTree, lockResult.depTree);
+        Object.assign(mergedDepTree.__root__.dependencies, lockResult.depTree.__root__?.dependencies ?? {});
+        lockfiles.push({ name: pkg.name, lockfile: lockResult.lockfile });
+        if (!jsonOutput) printText(`  ${pkg.name}: ${lockResult.packages.length} packages (${lockResult.lockfile})`);
+      }
+    }
+
+    // Also scan the root lockfile
+    const rootLock = await resolvePackagesFromLockfile(projectRoot);
+    if (rootLock.ok) {
+      allPackages.push(...rootLock.packages);
+      Object.assign(mergedDepTree, rootLock.depTree);
+      Object.assign(mergedDepTree.__root__.dependencies, rootLock.depTree.__root__?.dependencies ?? {});
+    }
+
+    // Deduplicate and continue with merged results
+    const seen = new Set();
+    const uniquePackages = allPackages.filter(p => {
+      const key = `${p.name}@${p.version}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    if (!jsonOutput) printText(`Total: ${uniquePackages.length} unique packages across ${wsResult.packages.length} workspaces`);
+
+    const scanResult = await queryBatch(uniquePackages);
+    if (!scanResult.ok) throw new Error(`OSV API error: ${scanResult.reason}`);
+
+    const graph = buildVulnGraph(scanResult.results, mergedDepTree);
+    return finalizeAudit({ graph, uniquePackages, projectRoot, lockfile: "workspace", jsonOutput, minSeverity, severityOrder, failOn, values, logger });
+  }
 
   // Step 1: Resolve packages from lockfile
   if (!jsonOutput) printText("Resolving packages from lockfile...");
@@ -256,7 +309,11 @@ Options:
   // Step 3: Build vulnerability graph
   const graph = buildVulnGraph(scanResult.results, depTree);
 
-  // Step 4: Filter by severity
+  return finalizeAudit({ graph, uniquePackages, projectRoot, lockfile, jsonOutput, minSeverity, severityOrder, failOn, values, logger });
+}
+
+function finalizeAudit({ graph, uniquePackages, projectRoot, lockfile, jsonOutput, minSeverity, severityOrder, failOn, values, logger }) {
+  // Filter by severity
   const minIdx = severityOrder[minSeverity];
   const filteredVulns = [];
   for (const [, node] of graph.nodes) {
@@ -266,7 +323,7 @@ Options:
     }
   }
 
-  // Step 5: Generate report
+  // Generate report
   const report = {
     ok: true,
     kind: "better.audit.report",
@@ -281,7 +338,6 @@ Options:
   if (jsonOutput) {
     printJson(report);
   } else {
-    // Text output
     const summary = graph.summary;
 
     printText("");
@@ -291,7 +347,6 @@ Options:
       printText(`Found ${summary.totalVulnerabilities} vulnerabilities in ${summary.affectedPackages} packages`);
       printText("");
 
-      // Severity breakdown
       const counts = summary.severityCounts;
       const parts = [];
       if (counts.critical > 0) parts.push(`  critical: ${counts.critical}`);
@@ -301,11 +356,9 @@ Options:
       printText(parts.join("\n"));
       printText("");
 
-      // Risk level
       printText(`Overall risk: ${summary.riskLevel} (score: ${summary.overallRiskScore}/100)`);
       printText("");
 
-      // List vulnerabilities
       for (const node of filteredVulns) {
         printText(`${node.isDirect ? "direct" : "transitive"} | ${node.name}@${node.version} | ${node.severity}`);
         for (const vuln of node.vulns) {
@@ -323,7 +376,6 @@ Options:
         printText("");
       }
 
-      // Upgrade suggestions
       if (values.fix) {
         const suggestions = suggestUpgrades(graph);
         if (suggestions.length > 0) {
@@ -337,7 +389,7 @@ Options:
     }
   }
 
-  // Step 6: Set exit code based on --fail-on
+  // Set exit code based on --fail-on
   if (failOn !== "none") {
     const failIdx = severityOrder[failOn];
     for (const [, node] of graph.nodes) {
