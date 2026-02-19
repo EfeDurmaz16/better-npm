@@ -105,9 +105,25 @@ export function tryLoadNapiAddon() {
   if (_napiAddon !== undefined) return _napiAddon;
   const require = createRequire(import.meta.url);
   const root = betterInstallRoot();
-  const candidates = [
-    path.join(root, "crates", "better-napi", "better-core.darwin-arm64.node"),
-  ];
+  const platform = process.platform;
+  const arch = process.arch;
+  const napiTriple =
+    platform === "darwin" && arch === "arm64" ? "darwin-arm64" :
+    platform === "darwin" && arch === "x64" ? "darwin-x64" :
+    platform === "linux" && arch === "x64" ? "linux-x64-gnu" :
+    platform === "linux" && arch === "arm64" ? "linux-arm64-gnu" :
+    null;
+  const candidates = [];
+  if (napiTriple) {
+    // Platform-specific pre-built addon (CI artifact)
+    candidates.push(path.join(root, "crates", "better-napi", `better-core.${napiTriple}.node`));
+  }
+  // Generic local dev build
+  candidates.push(path.join(root, "crates", "better-napi", "better-core.node"));
+  // Fallback: old hardcoded name
+  if (napiTriple === "darwin-arm64") {
+    candidates.push(path.join(root, "crates", "better-napi", "better-core.darwin-arm64.node"));
+  }
   for (const p of candidates) {
     try {
       _napiAddon = require(p);
@@ -145,6 +161,17 @@ export function runBetterCoreMaterializeNapi(srcDir, destDir, opts = {}) {
   if (opts.profile) napiOpts.profile = String(opts.profile);
   const result = addon.materialize(srcDir, destDir, napiOpts);
   if (!result || typeof result !== "object") throw new Error("napi materialize returned invalid result");
+  return result;
+}
+
+export function runBetterCoreFetchAndExtractNapi(lockfilePath, cacheDir, opts = {}) {
+  const addon = tryLoadNapiAddon();
+  if (!addon || typeof addon.fetchAndExtract !== "function") return null;
+  const napiOpts = {};
+  if (opts.linkStrategy) napiOpts.linkStrategy = String(opts.linkStrategy);
+  if (opts.jobs != null) napiOpts.jobs = Number(opts.jobs);
+  const result = addon.fetchAndExtract(lockfilePath, cacheDir, napiOpts);
+  if (!result || typeof result !== "object") throw new Error("napi fetchAndExtract returned invalid result");
   return result;
 }
 

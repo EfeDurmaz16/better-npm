@@ -16,6 +16,7 @@ import {
   captureProjectNodeModulesToGlobalCache
 } from "../lib/globalCache.js";
 import { readManifest, writeManifest, getCasInventory, manifestPath } from "../engine/better/cas.js";
+import { getFileCasStats, gcFileCas } from "../engine/better/fileCas.js";
 
 async function listFiles(dir) {
   try {
@@ -87,6 +88,13 @@ async function scanEntriesMetadata(dir) {
     }
   }
   return { entries, oldest, newest };
+}
+
+function formatBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
 async function collectHitMissFromRunReports(runsDir) {
@@ -222,6 +230,11 @@ export async function cmdCache(argv) {
       } catch { casInfo = null; }
     }
 
+    let fileCasStats = null;
+    try {
+      fileCasStats = await getFileCasStats(path.join(layout.root, "file-store"));
+    } catch { fileCasStats = null; }
+
     const out = {
       ok: true,
       kind: "better.cache.stats",
@@ -257,7 +270,8 @@ export async function cmdCache(argv) {
       },
       trackedPackages: Object.keys(state.cachePackages ?? {}).length,
       projects: Object.values(state.projects ?? {}),
-      cas: casInfo
+      cas: casInfo,
+      fileCas: fileCasStats
     };
 
     if (values.json) printJson(out);
@@ -282,6 +296,15 @@ export async function cmdCache(argv) {
         lines.push(`- CAS blobs: ${casInfo.blobCount} (${casInfo.orphanedBlobCount} orphaned)`);
         lines.push(`- CAS refcount total: ${casInfo.totalRefCount}`);
       }
+      if (fileCasStats) {
+        lines.push(`- File CAS: ${fileCasStats.uniqueFiles} unique files (${formatBytes(fileCasStats.totalFileBytes)})`);
+        lines.push(`- File CAS manifests: ${fileCasStats.packageManifests}`);
+        if (fileCasStats.uniqueFiles > 0 && fileCasStats.packageManifests > 0) {
+          const avgFilesPerPkg = (fileCasStats.uniqueFiles / fileCasStats.packageManifests).toFixed(1);
+          const dedupRatio = fileCasStats.packageManifests > 0 ? (fileCasStats.uniqueFiles / fileCasStats.packageManifests).toFixed(2) : "n/a";
+          lines.push(`- File CAS dedup: ${avgFilesPerPkg} avg files/pkg (ratio: ${dedupRatio})`);
+        }
+      }
       printText(lines.join("\n"));
     }
     return;
@@ -298,6 +321,15 @@ export async function cmdCache(argv) {
     const deletedTmp = await gcDir(layout.tmpDir, cutoffMs, dryRun);
     const entriesRemoved = deletedRuns.length + deletedAnalyses.length + deletedTmp.length;
     const bytesFreed = [...deletedRuns, ...deletedAnalyses, ...deletedTmp].reduce((sum, item) => sum + Number(item.size ?? 0), 0);
+
+    // File CAS garbage collection
+    let fileCasGcResult = null;
+    try {
+      const fileCasRoot = path.join(layout.root, "file-store");
+      fileCasGcResult = await gcFileCas(fileCasRoot, { dryRun });
+    } catch (err) {
+      commandLogger.warn("cache.gc.filecas.error", { error: err.message });
+    }
 
     // Enhanced GC: target-size based eviction
     let targetSizeEvictions = [];
@@ -368,6 +400,7 @@ export async function cmdCache(argv) {
       targetSizeBytesFreed: targetSizeEvictions.reduce((sum, e) => sum + (e.size ?? 0), 0),
       maxAgeEvictions: maxAgeEvictions.length,
       maxAgeBytesFreed: maxAgeEvictions.reduce((sum, e) => sum + (e.size ?? 0), 0),
+      fileCasGc: fileCasGcResult,
       deleted: {
         runs: deletedRuns,
         analyses: deletedAnalyses,
@@ -400,6 +433,10 @@ export async function cmdCache(argv) {
       }
       if (maxAgeEvictions.length > 0) {
         lines.push(`- max-age evictions: ${maxAgeEvictions.length} (${(out.maxAgeBytesFreed / 1024 / 1024).toFixed(1)} MiB)`);
+      }
+      if (fileCasGcResult) {
+        lines.push(`- File CAS GC: ${fileCasGcResult.removed} files removed (${formatBytes(fileCasGcResult.bytesFreed)})`);
+        lines.push(`- File CAS kept: ${fileCasGcResult.referencedCount} referenced files`);
       }
       printText(lines.join("\n"));
     }

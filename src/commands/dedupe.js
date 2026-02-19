@@ -6,7 +6,7 @@ import { getRuntimeConfig } from "../lib/config.js";
 import { childLogger } from "../lib/log.js";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
 
-// ========== Inline Semver Implementation (Zero Dependencies) ==========
+// ---------- Inline Semver Implementation (Zero Dependencies) ----------
 
 function parseSemver(version) {
   const match = version.match(/^(\d+)\.(\d+)\.(\d+)(?:-(.+))?(?:\+(.+))?$/);
@@ -177,7 +177,7 @@ function findBestVersion(versions, ranges) {
   return null;
 }
 
-// ========== Package Lock Analysis ==========
+// ---------- Package Lock Analysis ----------
 
 async function exists(p) {
   try {
@@ -334,7 +334,7 @@ async function analyzeDuplicates(projectRoot, packageLock) {
   return duplicates;
 }
 
-// ========== Command Implementation ==========
+// ---------- Command Implementation ----------
 
 export async function cmdDedupe(argv) {
   if (argv.includes("--help") || argv.includes("-h")) {

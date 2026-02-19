@@ -25,3 +25,75 @@ jobs:
       - run: npm run format:check
       - run: npm run build
       - run: npm run coverage
+
+  build-native:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            napi-name: better-core.darwin-arm64.node
+            rust-target: aarch64-apple-darwin
+          - os: macos-13
+            target: x86_64-apple-darwin
+            napi-name: better-core.darwin-x64.node
+            rust-target: x86_64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            napi-name: better-core.linux-x64-gnu.node
+            rust-target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            napi-name: better-core.linux-arm64-gnu.node
+            rust-target: aarch64-unknown-linux-gnu
+            cross: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-target }}
+
+      - name: Install cross-compilation tools (ARM64 Linux)
+        if: matrix.cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+      - name: Use Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+
+      - name: Build better-core binary
+        run: cargo build --release --target ${{ matrix.rust-target }} --manifest-path crates/better-core/Cargo.toml
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+
+      - name: Build NAPI addon
+        working-directory: crates/better-napi
+        run: |
+          npm install
+          npx napi build --release --target ${{ matrix.rust-target }} --output-name better-core
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+
+      - name: Rename NAPI artifact
+        run: |
+          if [ -f crates/better-napi/better-core.node ]; then
+            cp crates/better-napi/better-core.node crates/better-napi/${{ matrix.napi-name }}
+          fi
+        shell: bash
+
+      - name: Upload native artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.target }}
+          path: |
+            crates/target/${{ matrix.rust-target }}/release/better-core
+            crates/better-napi/${{ matrix.napi-name }}
+          if-no-files-found: warn

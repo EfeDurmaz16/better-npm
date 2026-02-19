@@ -6,11 +6,14 @@ import https from "node:https";
 import crypto from "node:crypto";
 import { readNpmLockfile, detectNonRootNodeModulesEntries, listWorkspacePackageEntries, iterNodeModulesPackages } from "./npmLockfile.js";
 import { casKeyFromIntegrity, tarballPath, unpackedPath, ensureCasDirsForKey, writeTarballToCas } from "./cas.js";
-import { verifyFileIntegrity } from "./ssri.js";
-import { extractTgz } from "./tar.js";
-import { splitLockfilePath, ensureEmptyDir, materializeTree, atomicReplaceDir } from "./materialize.js";
+import { verifyFileIntegrity, parseIntegrity } from "./ssri.js";
+import { extractTgz, extractTarBuffer } from "./tar.js";
+import { createGunzip } from "node:zlib";
+import { splitLockfilePath, ensureEmptyDir, materializeTree, atomicReplaceDir, createLimiter } from "./materialize.js";
 import { writeRootBinLinks } from "./bins.js";
 import { runCommand } from "../../lib/spawn.js";
+import { tryLoadNapiAddon, runBetterCoreFetchAndExtractNapi } from "../../lib/core.js";
+import { ingestPackageToFileCas, materializeFromFileCas, hasFileCasManifest } from "./fileCas.js";
 
 async function exists(p) {
   try {
@@ -160,16 +163,45 @@ function evaluatePlatformSupport(meta, runtime) {
   };
 }
 
-async function downloadToFile(url, destFile) {
+async function detectExtractedPackageDir(destDir) {
+  const explicit = path.join(destDir, "package");
+  if (await exists(path.join(explicit, "package.json"))) return explicit;
+  if (await exists(path.join(destDir, "package.json"))) return destDir;
+  const entries = await fs.readdir(destDir, { withFileTypes: true });
+  const dirs = entries.filter((e) => e.isDirectory() && e.name !== ".better_extracted").map((e) => e.name).sort();
+  if (dirs.length === 1) {
+    const candidate = path.join(destDir, dirs[0]);
+    if (await exists(path.join(candidate, "package.json"))) return candidate;
+  }
+  throw new Error(`tar extract missing package root in ${destDir}`);
+}
+
+function createSharedAgents() {
+  return {
+    https: new https.Agent({ keepAlive: true, maxSockets: 16 }),
+    http: new http.Agent({ keepAlive: true, maxSockets: 16 })
+  };
+}
+
+function destroySharedAgents(agents) {
+  if (agents) {
+    agents.https.destroy();
+    agents.http.destroy();
+  }
+}
+
+async function downloadToFile(url, destFile, agents) {
   await fs.mkdir(path.dirname(destFile), { recursive: true });
   const tmp = `${destFile}.tmp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
-  const client = url.startsWith("https://") ? https : http;
+  const isHttps = url.startsWith("https://");
+  const client = isHttps ? https : http;
+  const agent = agents ? (isHttps ? agents.https : agents.http) : undefined;
   await new Promise((resolve, reject) => {
-    const req = client.get(url, (res) => {
+    const req = client.get(url, { agent }, (res) => {
       if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         res.resume();
-        downloadToFile(res.headers.location, destFile).then(resolve, reject);
+        downloadToFile(res.headers.location, destFile, agents).then(resolve, reject);
         return;
       }
       if (res.statusCode !== 200) {
@@ -187,7 +219,115 @@ async function downloadToFile(url, destFile) {
   await fs.rename(tmp, destFile);
 }
 
-async function ensureTarballAvailable(layout, key, resolved, projectRoot) {
+/**
+ * Streaming download+hash+extract in a single pass.
+ * Tees the HTTP response into: (a) CAS file write, (b) hash computation, (c) gunzip->tar buffer.
+ * Returns { tarPath, hashOk, extractedBuf } so caller can write to CAS and extract without re-reading.
+ */
+async function streamingDownloadVerifyExtract(url, casFileDest, integrity, unpackDir, agents) {
+  await fs.mkdir(path.dirname(casFileDest), { recursive: true });
+  await fs.mkdir(unpackDir, { recursive: true });
+  const tmp = `${casFileDest}.tmp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  const parsed = parseIntegrity(integrity);
+  const sha512 = parsed.find((p) => p.algorithm === "sha512");
+  const chosen = sha512 ?? parsed[0];
+  if (!chosen) throw new Error("No supported integrity hash for streaming verify");
+
+  const isHttps = url.startsWith("https://");
+  const client = isHttps ? https : http;
+  const agent = agents ? (isHttps ? agents.https : agents.http) : undefined;
+
+  const result = await new Promise((resolve, reject) => {
+    function doFetch(fetchUrl) {
+      const fetchClient = fetchUrl.startsWith("https://") ? https : http;
+      const fetchAgent = agents ? (fetchUrl.startsWith("https://") ? agents.https : agents.http) : undefined;
+      const req = fetchClient.get(fetchUrl, { agent: fetchAgent }, (res) => {
+        if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          res.resume();
+          doFetch(res.headers.location);
+          return;
+        }
+        if (res.statusCode !== 200) {
+          reject(new Error(`download failed: ${fetchUrl} status=${res.statusCode}`));
+          res.resume();
+          return;
+        }
+
+        const hasher = crypto.createHash(chosen.algorithm);
+        const fileOut = fssync.createWriteStream(tmp);
+        const gunzip = createGunzip();
+        const tarChunks = [];
+
+        let fileFinished = false;
+        let gunzipFinished = false;
+
+        function maybeResolve() {
+          if (fileFinished && gunzipFinished) {
+            const digest = hasher.digest();
+            const expected = Buffer.from(chosen.base64, "base64");
+            resolve({
+              hashOk: digest.equals(expected),
+              algorithm: chosen.algorithm,
+              tarBuf: Buffer.concat(tarChunks)
+            });
+          }
+        }
+
+        // Tee: each chunk goes to hasher, file, and gunzip
+        res.on("data", (chunk) => {
+          hasher.update(chunk);
+          fileOut.write(chunk);
+          gunzip.write(chunk);
+        });
+        res.on("end", () => {
+          fileOut.end();
+          gunzip.end();
+        });
+        res.on("error", reject);
+
+        fileOut.on("finish", () => { fileFinished = true; fileOut.close(() => maybeResolve()); });
+        fileOut.on("error", reject);
+
+        gunzip.on("data", (chunk) => tarChunks.push(chunk));
+        gunzip.on("end", () => { gunzipFinished = true; maybeResolve(); });
+        gunzip.on("error", reject);
+      });
+      req.on("error", reject);
+    }
+    doFetch(url);
+  });
+
+  // Finalize CAS file
+  await fs.rename(tmp, casFileDest);
+
+  // Verify integrity
+  if (!result.hashOk) {
+    // Clean up the bad file
+    await fs.rm(casFileDest, { force: true }).catch(() => {});
+    throw new Error(`Integrity check failed during streaming download (${result.algorithm})`);
+  }
+
+  // Extract tar buffer to unpack dir
+  await extractTarBuffer(result.tarBuf, unpackDir);
+
+  return { tarPath: casFileDest, hashOk: true };
+}
+
+function verifiedMarkerPath(layout, key) {
+  return tarballPath(layout, key) + ".verified";
+}
+
+async function isAlreadyVerified(layout, key) {
+  return exists(verifiedMarkerPath(layout, key));
+}
+
+async function markVerified(layout, key) {
+  const p = verifiedMarkerPath(layout, key);
+  await fs.writeFile(p, "1\n").catch(() => {});
+}
+
+async function ensureTarballAvailable(layout, key, resolved, projectRoot, agents) {
   const dest = tarballPath(layout, key);
   if (await exists(dest)) return { path: dest, reused: true };
   await ensureCasDirsForKey(layout, key);
@@ -199,7 +339,7 @@ async function ensureTarballAvailable(layout, key, resolved, projectRoot) {
     return { path: wrote.path, reused: wrote.reused };
   }
   if (isHttpUrl(resolved)) {
-    await downloadToFile(resolved, dest);
+    await downloadToFile(resolved, dest, agents);
     return { path: dest, reused: false };
   }
   throw new Error(`Unsupported resolved URL: ${resolved}`);
@@ -331,7 +471,14 @@ export async function installFromNpmLockfile(projectRoot, layout, opts = {}) {
     binRelinked: 0
   };
   const packageCacheEntries = [];
+  const fileCasStats = { ingested: 0, ingestFailed: 0, totalFiles: 0, newFiles: 0, existingFiles: 0, totalBytes: 0 };
+  const fileCasMaterializeStats = { linked: 0, copied: 0, symlinks: 0, fallback: 0 };
 
+  const agents = createSharedAgents();
+  try {
+
+  // === Phase A: Filter & categorize all packages (fast, single pass) ===
+  const toInstall = []; // items needing download/extract/materialize
   for (const it of items) {
     const relPath = it.relPath;
     const meta = it.meta || {};
@@ -366,7 +513,7 @@ export async function installFromNpmLockfile(projectRoot, layout, opts = {}) {
     if (isLink) {
       const segments = splitLockfilePath(relPath);
       const destPkgDir = installMode === "full_replace"
-        ? path.join(stagingNm, ...segments.slice(1)) // drop leading node_modules
+        ? path.join(stagingNm, ...segments.slice(1))
         : path.join(projectRoot, ...segments);
       const targetAbs = resolveWorkspaceTargetAbs({ lock, projectRoot, relPath, meta, workspaceByName });
       if (installMode === "incremental") {
@@ -421,7 +568,7 @@ export async function installFromNpmLockfile(projectRoot, layout, opts = {}) {
     const pkgVersion = meta?.version ?? null;
     const segments = splitLockfilePath(relPath);
     const destPkgDir = installMode === "full_replace"
-      ? path.join(stagingNm, ...segments.slice(1)) // drop leading node_modules
+      ? path.join(stagingNm, ...segments.slice(1))
       : path.join(projectRoot, ...segments);
     if (installMode === "incremental") {
       const isUpToDate = await isInstalledPackageUpToDate(destPkgDir, pkgName, pkgVersion);
@@ -447,46 +594,197 @@ export async function installFromNpmLockfile(projectRoot, layout, opts = {}) {
       throw new Error(`Unable to derive CAS key for ${relPath} (integrity missing/invalid).`);
     }
 
-    const tar = await ensureTarballAvailable(layout, key, resolved, projectRoot);
-    if (tar.reused) extracted.reusedTarballs += 1;
-    else extracted.downloadedTarballs += 1;
+    toInstall.push({ relPath, meta, resolved, integrity, pkgName, pkgVersion, key, segments, destPkgDir });
+  }
 
-    packageCacheEntries.push({
-      name: pkgName,
-      version: pkgVersion,
-      relPath,
-      source: resolved,
-      cacheHit: tar.reused,
-      cacheMiss: !tar.reused,
-      cas: {
-        algorithm: key.algorithm,
-        keyHex: key.hex
+  // === Rust fast path: pre-populate CAS via NAPI if available ===
+  if (toInstall.length > 0) {
+    try {
+      const napiResult = runBetterCoreFetchAndExtractNapi(lockfilePath, layout.root, {
+        jobs: fsConcurrency
+      });
+      if (napiResult) {
+        // Rust populated the CAS cache with tarballs + unpacked dirs;
+        // JS Phase B+C below will find cache hits and skip HTTP downloads.
       }
-    });
-
-    const ver = await verifyFileIntegrity(tar.path, integrity, { required: verify === "integrity-required" });
-    if (verify === "integrity-required" && !ver.ok) {
-      throw new Error(`Integrity check failed for ${relPath} (${ver.algorithm})`);
-    }
-
-    const unpackDir = unpackedPath(layout, key);
-    const extractRes = await extractTgz(tar.path, unpackDir);
-    if (extractRes.reused) extracted.reusedUnpacked += 1;
-    else extracted.extractedUnpacked += 1;
-
-    // Support tarballs that extract to package/ or a source-specific top-level folder.
-    const srcPkgDir = extractRes.packageDir;
-
-    if (installMode === "incremental") {
-      await fs.rm(destPkgDir, { recursive: true, force: true });
-    }
-    await fs.mkdir(path.dirname(destPkgDir), { recursive: true });
-    await materializeTree(srcPkgDir, destPkgDir, { linkStrategy, fsConcurrency });
-    packagesByPath.set(relPath, destPkgDir);
-    if (installMode === "incremental") {
-      incrementalOps.relinked += 1;
+    } catch {
+      // NAPI addon unavailable or fetch failed — JS pipeline handles everything below.
     }
   }
+
+  // === Phase B+C: Concurrent download+verify+extract (16 concurrent) ===
+  // Cache hits: verify marker check + extract from disk
+  // Cache misses: streaming download -> tee(hash, CAS write, gunzip->extract)
+  const fetchExtractLimiter = createLimiter(16);
+  const extractResults = await Promise.all(
+    toInstall.map((item) =>
+      fetchExtractLimiter(async () => {
+        await ensureCasDirsForKey(layout, item.key);
+        const tarDest = tarballPath(layout, item.key);
+        const unpackDir = unpackedPath(layout, item.key);
+        const tarExists = await exists(tarDest);
+
+        if (tarExists) {
+          // Cache hit path: skip verify if already verified, extract from disk
+          extracted.reusedTarballs += 1;
+          const skipVerify = await isAlreadyVerified(layout, item.key);
+          if (!skipVerify) {
+            const ver = await verifyFileIntegrity(tarDest, item.integrity, { required: verify === "integrity-required" });
+            if (verify === "integrity-required" && !ver.ok) {
+              throw new Error(`Integrity check failed for ${item.relPath} (${ver.algorithm})`);
+            }
+            if (ver.ok) await markVerified(layout, item.key);
+          }
+          const extractRes = await extractTgz(tarDest, unpackDir);
+          if (extractRes.reused) extracted.reusedUnpacked += 1;
+          else extracted.extractedUnpacked += 1;
+          packageCacheEntries.push({
+            name: item.pkgName, version: item.pkgVersion, relPath: item.relPath,
+            source: item.resolved, cacheHit: true, cacheMiss: false,
+            cas: { algorithm: item.key.algorithm, keyHex: item.key.hex }
+          });
+          return { ...item, extractRes };
+        }
+
+        // Cache miss: streaming download+verify+extract in single pass
+        extracted.downloadedTarballs += 1;
+        if (!isHttpUrl(item.resolved)) {
+          // File URL or other: fall back to sequential path
+          if (isFileUrl(item.resolved)) {
+            const fp = fileUrlToPath(item.resolved);
+            const abs = path.resolve(projectRoot, fp);
+            await writeTarballToCas(layout, item.key, abs);
+          } else {
+            throw new Error(`Unsupported resolved URL: ${item.resolved}`);
+          }
+          const ver = await verifyFileIntegrity(tarDest, item.integrity, { required: verify === "integrity-required" });
+          if (verify === "integrity-required" && !ver.ok) {
+            throw new Error(`Integrity check failed for ${item.relPath} (${ver.algorithm})`);
+          }
+          if (ver.ok) await markVerified(layout, item.key);
+          const extractRes = await extractTgz(tarDest, unpackDir);
+          extracted.extractedUnpacked += 1;
+          packageCacheEntries.push({
+            name: item.pkgName, version: item.pkgVersion, relPath: item.relPath,
+            source: item.resolved, cacheHit: false, cacheMiss: true,
+            cas: { algorithm: item.key.algorithm, keyHex: item.key.hex }
+          });
+          return { ...item, extractRes };
+        }
+
+        // Streaming HTTP: download + hash + extract in one pass
+        await fs.mkdir(unpackDir, { recursive: true });
+        // Clear any stale extraction
+        const marker = path.join(unpackDir, ".better_extracted");
+        const hasMarker = await exists(marker);
+        if (hasMarker) {
+          await fs.rm(unpackDir, { recursive: true, force: true });
+          await fs.mkdir(unpackDir, { recursive: true });
+        }
+
+        await streamingDownloadVerifyExtract(item.resolved, tarDest, item.integrity, unpackDir, agents);
+        await markVerified(layout, item.key);
+        await fs.writeFile(marker, "ok\n");
+
+        // Detect package dir after extraction
+        const extractRes = { ok: true, reused: false, packageDir: await detectExtractedPackageDir(unpackDir) };
+        extracted.extractedUnpacked += 1;
+        packageCacheEntries.push({
+          name: item.pkgName, version: item.pkgVersion, relPath: item.relPath,
+          source: item.resolved, cacheHit: false, cacheMiss: true,
+          cas: { algorithm: item.key.algorithm, keyHex: item.key.hex }
+        });
+        return { ...item, extractRes };
+      })
+    )
+  );
+
+  // === Phase D-alt: File CAS ingest (if file CAS store available) ===
+  const fileCasRoot = path.join(layout.root, "file-store");
+  const ingestLimiter = createLimiter(fsConcurrency);
+  await Promise.all(
+    extractResults.map((item) =>
+      ingestLimiter(async () => {
+        try {
+          const result = await ingestPackageToFileCas(
+            fileCasRoot,
+            item.key.algorithm,
+            item.key.hex,
+            item.extractRes.packageDir
+          );
+          fileCasStats.ingested++;
+          fileCasStats.totalFiles += result.stats.totalFiles;
+          fileCasStats.newFiles += result.stats.newFiles;
+          fileCasStats.existingFiles += result.stats.existingFiles;
+          fileCasStats.totalBytes += result.stats.totalBytes;
+        } catch (err) {
+          fileCasStats.ingestFailed++;
+          // Non-fatal: fall back to regular materialize below
+        }
+      })
+    )
+  );
+
+  // === Phase D-prep: Batch mkdir for all destination directories ===
+  {
+    const dirsNeeded = new Set();
+    for (const item of extractResults) {
+      // Collect parent dir of each destination and the destination itself
+      dirsNeeded.add(path.dirname(item.destPkgDir));
+      dirsNeeded.add(item.destPkgDir);
+    }
+    // Sort shortest-first so parents are created before children
+    const sorted = [...dirsNeeded].sort((a, b) => a.length - b.length);
+    // Incremental mode: remove stale destinations first (concurrently)
+    if (installMode === "incremental") {
+      const rmLimiter = createLimiter(fsConcurrency);
+      await Promise.all(
+        extractResults.map((item) =>
+          rmLimiter(() => fs.rm(item.destPkgDir, { recursive: true, force: true }))
+        )
+      );
+    }
+    // Create all directories in batch
+    const mkdirLimiter = createLimiter(fsConcurrency);
+    await Promise.all(
+      sorted.map((dir) => mkdirLimiter(() => fs.mkdir(dir, { recursive: true })))
+    );
+  }
+
+  // === Phase D: Concurrent materialize (16 concurrent) ===
+  // Try file CAS first, fall back to regular materializeTree if not available
+  const materializeLimiter = createLimiter(fsConcurrency);
+  await Promise.all(
+    extractResults.map((item) =>
+      materializeLimiter(async () => {
+        // Try file CAS materialize first
+        const casResult = await materializeFromFileCas(
+          fileCasRoot,
+          item.key.algorithm,
+          item.key.hex,
+          item.destPkgDir,
+          { linkStrategy }
+        );
+
+        if (casResult.ok) {
+          // File CAS materialize succeeded
+          fileCasMaterializeStats.linked += casResult.stats.linked;
+          fileCasMaterializeStats.copied += casResult.stats.copied;
+          fileCasMaterializeStats.symlinks += casResult.stats.symlinks;
+        } else {
+          // File CAS manifest not found, fall back to regular materialize
+          fileCasMaterializeStats.fallback++;
+          const srcPkgDir = item.extractRes.packageDir;
+          await materializeTree(srcPkgDir, item.destPkgDir, { linkStrategy, fsConcurrency });
+        }
+
+        packagesByPath.set(item.relPath, item.destPkgDir);
+        if (installMode === "incremental") {
+          incrementalOps.relinked += 1;
+        }
+      })
+    )
+  );
 
   if (installMode === "full_replace") {
     // Atomically replace node_modules
@@ -512,6 +810,10 @@ export async function installFromNpmLockfile(projectRoot, layout, opts = {}) {
     clean: installMode === "incremental"
   });
   incrementalOps.binRelinked = Number(bins?.linksWritten ?? 0);
+
+  } finally {
+    destroySharedAgents(agents);
+  }
 
   // Scripts/native addons: Phase 3 uses npm rebuild fallback.
   let scriptsResult = null;
@@ -543,6 +845,10 @@ export async function installFromNpmLockfile(projectRoot, layout, opts = {}) {
     incrementalOps,
     packages: packageCacheEntries,
     scripts: scriptsResult,
-    binLinks: { mode: binLinks }
+    binLinks: { mode: binLinks },
+    fileCasStats: {
+      ...fileCasStats,
+      materialize: fileCasMaterializeStats
+    }
   };
 }

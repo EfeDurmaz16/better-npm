@@ -42,7 +42,7 @@ export function splitLockfilePath(relPath) {
   return relPath.split("/").filter(Boolean);
 }
 
-function createLimiter(maxConcurrent) {
+export function createLimiter(maxConcurrent) {
   const concurrency = Math.max(1, Number(maxConcurrent) || 1);
   let active = 0;
   const queue = [];

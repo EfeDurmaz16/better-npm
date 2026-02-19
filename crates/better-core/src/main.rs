@@ -15,8 +15,37 @@ enum Command {
         jobs: usize,
         profile: MaterializeProfile,
     },
+    Install {
+        lockfile: PathBuf,
+        project_root: PathBuf,
+        cache_root: PathBuf,
+        link_strategy: LinkStrategy,
+        jobs: usize,
+    },
     Version,
     Help { error: Option<String> },
+}
+
+fn default_cache_root() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    #[cfg(target_os = "macos")]
+    {
+        PathBuf::from(home).join("Library/Caches/better")
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(home).join("AppData/Local"))
+            .join("better/cache")
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        std::env::var("XDG_CACHE_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(home).join(".cache"))
+            .join("better")
+    }
 }
 
 fn parse_args() -> Command {
@@ -42,6 +71,9 @@ fn parse_args() -> Command {
         .unwrap_or(8);
     jobs = jobs.clamp(1, 64);
     let mut profile = MaterializeProfile::Auto;
+    let mut lockfile: Option<PathBuf> = None;
+    let mut project_root: Option<PathBuf> = None;
+    let mut cache_root: Option<PathBuf> = None;
     let mut i = 1usize;
     while i < args.len() {
         match args[i].as_str() {
@@ -135,6 +167,33 @@ fn parse_args() -> Command {
                 }
                 i += 2;
             }
+            "--lockfile" => {
+                if i + 1 >= args.len() {
+                    return Command::Help {
+                        error: Some("--lockfile requires a value".to_string()),
+                    };
+                }
+                lockfile = Some(PathBuf::from(&args[i + 1]));
+                i += 2;
+            }
+            "--project-root" => {
+                if i + 1 >= args.len() {
+                    return Command::Help {
+                        error: Some("--project-root requires a value".to_string()),
+                    };
+                }
+                project_root = Some(PathBuf::from(&args[i + 1]));
+                i += 2;
+            }
+            "--cache-root" => {
+                if i + 1 >= args.len() {
+                    return Command::Help {
+                        error: Some("--cache-root requires a value".to_string()),
+                    };
+                }
+                cache_root = Some(PathBuf::from(&args[i + 1]));
+                i += 2;
+            }
             other => {
                 return Command::Help {
                     error: Some(format!("unknown flag: {other}")),
@@ -168,6 +227,18 @@ fn parse_args() -> Command {
                 error: Some("materialize requires --src <path> and --dest <path>".to_string()),
             },
         },
+        "install" => {
+            let lockfile = lockfile.unwrap_or_else(|| PathBuf::from("package-lock.json"));
+            let project_root = project_root.unwrap_or_else(|| PathBuf::from("."));
+            let cache_root = cache_root.unwrap_or_else(default_cache_root);
+            Command::Install {
+                lockfile,
+                project_root,
+                cache_root,
+                link_strategy,
+                jobs,
+            }
+        }
         _ => Command::Help {
             error: Some(format!("unknown command: {sub}")),
         },
@@ -185,6 +256,7 @@ Usage:
   better-core analyze --root <path> [--graph]
   better-core scan --root <path>
   better-core materialize --src <path> --dest <path> [--link-strategy auto|hardlink|copy] [--jobs N] [--profile auto|io-heavy|small-files]
+  better-core install [--lockfile <path>] [--project-root <path>] [--cache-root <path>] [--link-strategy auto|hardlink|copy] [--jobs N]
   better-core version
 "
     );
@@ -304,5 +376,145 @@ fn main() {
                 std::process::exit(1);
             }
         },
+        Command::Install {
+            lockfile,
+            project_root,
+            cache_root,
+            link_strategy,
+            jobs,
+        } => {
+            let started = Instant::now();
+
+            // Step 1: Resolve packages from lockfile
+            let resolve_result = match resolve_from_lockfile(&lockfile) {
+                Ok(result) => result,
+                Err(reason) => {
+                    let mut w = JsonWriter::new();
+                    w.begin_object();
+                    w.key("ok");
+                    w.value_bool(false);
+                    w.key("kind");
+                    w.value_string("better.install.report");
+                    w.key("reason");
+                    w.value_string(&reason);
+                    w.end_object();
+                    w.out.push('\n');
+                    print!("{}", w.finish());
+                    std::process::exit(1);
+                }
+            };
+
+            // Step 2: Fetch packages to CAS
+            let fetch_result = match fetch_packages(&resolve_result.packages, &cache_root) {
+                Ok(result) => result,
+                Err(reason) => {
+                    let mut w = JsonWriter::new();
+                    w.begin_object();
+                    w.key("ok");
+                    w.value_bool(false);
+                    w.key("kind");
+                    w.value_string("better.install.report");
+                    w.key("reason");
+                    w.value_string(&reason);
+                    w.end_object();
+                    w.out.push('\n');
+                    print!("{}", w.finish());
+                    std::process::exit(1);
+                }
+            };
+
+            // Step 3: Materialize packages to node_modules
+            let layout = CasLayout::new(&cache_root);
+            let node_modules = project_root.join("node_modules");
+            let mut total_files = 0u64;
+            let mut total_dirs = 0u64;
+            let mut total_symlinks = 0u64;
+
+            for pkg in &resolve_result.packages {
+                // Get unpacked path from CAS
+                let (algo, hex) = match cas_key_from_integrity(&pkg.integrity) {
+                    Some(key) => key,
+                    None => continue,
+                };
+
+                let unpacked = unpacked_path(&layout, &algo, &hex);
+
+                // Find package subdirectory (npm tarballs extract to "package/")
+                let src_dir = unpacked.join("package");
+                if !src_dir.exists() {
+                    continue;
+                }
+
+                // Destination is node_modules + rel_path (strip "node_modules/" prefix)
+                let dest_path = if pkg.rel_path.starts_with("node_modules/") {
+                    node_modules.join(&pkg.rel_path[13..])
+                } else {
+                    node_modules.join(&pkg.rel_path)
+                };
+
+                // Materialize this package
+                match materialize_tree(&src_dir, &dest_path, link_strategy, jobs, MaterializeProfile::Auto) {
+                    Ok(report) => {
+                        total_files += report.stats.files;
+                        total_dirs += report.stats.directories;
+                        total_symlinks += report.stats.symlinks;
+                    }
+                    Err(reason) => {
+                        let mut w = JsonWriter::new();
+                        w.begin_object();
+                        w.key("ok");
+                        w.value_bool(false);
+                        w.key("kind");
+                        w.value_string("better.install.report");
+                        w.key("reason");
+                        w.value_string(&format!("Failed to materialize {}: {}", pkg.name, reason));
+                        w.end_object();
+                        w.out.push('\n');
+                        print!("{}", w.finish());
+                        std::process::exit(1);
+                    }
+                }
+            }
+
+            let duration_ms = started.elapsed().as_millis() as u64;
+
+            // Output JSON result
+            let mut w = JsonWriter::new();
+            w.begin_object();
+            w.key("ok");
+            w.value_bool(true);
+            w.key("kind");
+            w.value_string("better.install.report");
+            w.key("schemaVersion");
+            w.value_u64(1);
+            w.key("lockfile");
+            w.value_string(&lockfile.to_string_lossy());
+            w.key("projectRoot");
+            w.value_string(&project_root.to_string_lossy());
+            w.key("cacheRoot");
+            w.value_string(&cache_root.to_string_lossy());
+            w.key("durationMs");
+            w.value_u64(duration_ms);
+            w.key("stats");
+            w.begin_object();
+            w.key("packagesResolved");
+            w.value_u64(resolve_result.packages.len() as u64);
+            w.key("packagesFetched");
+            w.value_u64(fetch_result.packages_fetched);
+            w.key("packagesCached");
+            w.value_u64(fetch_result.packages_cached);
+            w.key("bytesDownloaded");
+            w.value_u64(fetch_result.bytes_downloaded);
+            w.key("files");
+            w.value_u64(total_files);
+            w.key("directories");
+            w.value_u64(total_dirs);
+            w.key("symlinks");
+            w.value_u64(total_symlinks);
+            w.end_object();
+            w.end_object();
+            w.out.push('\n');
+            print!("{}", w.finish());
+        }
     }
 }

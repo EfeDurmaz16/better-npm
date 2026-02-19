@@ -4,7 +4,8 @@ use std::path::Path;
 use napi_derive::napi;
 
 use better_core::{
-    analyze, materialize_tree, scan_tree, resolve_from_lockfile, LinkStrategy, MaterializeProfile,
+    analyze, materialize_tree, scan_tree, resolve_from_lockfile, fetch_packages,
+    LinkStrategy, MaterializeProfile,
 };
 
 // --- Scan ---
@@ -360,6 +361,67 @@ pub fn resolve(lockfile_path: String) -> NapiResolveResult {
             reason: Some(reason),
             packages: vec![],
             lockfile_version: 0.0,
+        },
+    }
+}
+
+// --- Fetch and Extract ---
+
+#[napi(object)]
+pub struct NapiFetchOpts {
+    pub jobs: Option<f64>,
+}
+
+#[napi(object)]
+pub struct NapiFetchResult {
+    pub ok: bool,
+    pub reason: Option<String>,
+    #[napi(js_name = "packagesFetched")]
+    pub packages_fetched: f64,
+    #[napi(js_name = "packagesCached")]
+    pub packages_cached: f64,
+    #[napi(js_name = "bytesDownloaded")]
+    pub bytes_downloaded: f64,
+}
+
+#[napi]
+pub fn fetch_and_extract(
+    lockfile_path: String,
+    cache_dir: String,
+    _opts: Option<NapiFetchOpts>,
+) -> NapiFetchResult {
+    let lockfile = Path::new(&lockfile_path);
+    let cache = Path::new(&cache_dir);
+
+    // Resolve packages from lockfile
+    let packages = match resolve_from_lockfile(lockfile) {
+        Ok(result) => result.packages,
+        Err(reason) => {
+            return NapiFetchResult {
+                ok: false,
+                reason: Some(reason),
+                packages_fetched: 0.0,
+                packages_cached: 0.0,
+                bytes_downloaded: 0.0,
+            }
+        }
+    };
+
+    // Fetch packages
+    match fetch_packages(&packages, cache) {
+        Ok(fetch_result) => NapiFetchResult {
+            ok: true,
+            reason: None,
+            packages_fetched: fetch_result.packages_fetched as f64,
+            packages_cached: fetch_result.packages_cached as f64,
+            bytes_downloaded: fetch_result.bytes_downloaded as f64,
+        },
+        Err(reason) => NapiFetchResult {
+            ok: false,
+            reason: Some(reason),
+            packages_fetched: 0.0,
+            packages_cached: 0.0,
+            bytes_downloaded: 0.0,
         },
     }
 }
