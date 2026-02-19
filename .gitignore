@@ -22,3 +22,9 @@ health.json
 
 # Native addon build artifacts
 crates/better-napi/*.node
+
+# Next.js build output
+apps/landing/.next/
+
+# Landing page lockfile (uses workspace root)
+apps/landing/pnpm-lock.yaml
