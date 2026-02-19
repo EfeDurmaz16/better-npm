@@ -7,6 +7,10 @@ import { cmdServe } from "./commands/serve.js";
 import { cmdBenchmark } from "./commands/benchmark.js";
 import { cmdRun } from "./commands/run.js";
 import { cmdLock } from "./commands/lock.js";
+import { cmdPolicy } from "./commands/policy.js";
+import { cmdWorkspace } from "./commands/workspace.js";
+import { cmdAudit } from "./commands/audit.js";
+import { cmdDashboard } from "./commands/dashboard.js";
 import { printJson, printText, toErrorJson } from "./lib/output.js";
 import { resolveRuntimeConfig, setRuntimeConfig } from "./lib/config.js";
 import { configureLogger, logger } from "./lib/log.js";
@@ -25,6 +29,10 @@ Commands:
   serve              Start web UI server for dependency visualization
   benchmark          Run comparative cold/warm install benchmark
   lock               Generate/verify Better lock metadata
+  policy <subcmd>    Dependency policy enforcement (check, init)
+  workspace <subcmd> Workspace management (list, info, graph, changed, run)
+  audit              Scan dependencies for known vulnerabilities (OSV.dev)
+  dashboard          Interactive TUI dashboard for project health
   run <script>       Run package.json scripts via npm/pnpm/yarn
   lint|test|dev|build  Script aliases for better run
 
@@ -107,6 +115,18 @@ export async function runCli(argv) {
         break;
       case "lock":
         await cmdLock(rest);
+        break;
+      case "policy":
+        await cmdPolicy(rest);
+        break;
+      case "workspace":
+        await cmdWorkspace(rest);
+        break;
+      case "audit":
+        await cmdAudit(rest);
+        break;
+      case "dashboard":
+        await cmdDashboard(rest);
         break;
       case "run":
         await cmdRun(rest);
