@@ -1027,13 +1027,13 @@ Workspace options:
   }
 
   let workspaceInstallResult = null;
-  if (!skippedPmInstall && workspaceResolved.ok) {
-    // Workspace install path
+  if (!skippedPmInstall && workspaceResolved.ok && engine !== "better") {
+    // Workspace install path (not used for better engine, which handles workspace links natively)
     progress(`workspace detected: ${workspaceResolved.type}, ${workspaceResolved.packages.length} package(s)`);
     const wsStartMs = Date.now();
     workspaceInstallResult = await workspaceInstall(workspaceResolved, {
       pm,
-      engine: engine === "better" ? "pm" : engine, // workspace install uses PM, not better engine
+      engine,
       passthrough,
       frozen,
       production,
