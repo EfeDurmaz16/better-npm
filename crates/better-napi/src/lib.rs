@@ -4,7 +4,7 @@ use std::path::Path;
 use napi_derive::napi;
 
 use better_core::{
-    analyze, materialize_tree, scan_tree, LinkStrategy, MaterializeProfile,
+    analyze, materialize_tree, scan_tree, resolve_from_lockfile, LinkStrategy, MaterializeProfile,
 };
 
 // --- Scan ---
@@ -309,6 +309,57 @@ pub fn materialize(
             stats: None,
             phase_durations: None,
             fallback_reasons: None,
+        },
+    }
+}
+
+// --- Resolve ---
+
+#[napi(object)]
+pub struct NapiResolvedPackage {
+    pub name: String,
+    pub version: String,
+    #[napi(js_name = "relPath")]
+    pub rel_path: String,
+    #[napi(js_name = "resolvedUrl")]
+    pub resolved_url: String,
+    pub integrity: String,
+}
+
+#[napi(object)]
+pub struct NapiResolveResult {
+    pub ok: bool,
+    pub reason: Option<String>,
+    pub packages: Vec<NapiResolvedPackage>,
+    #[napi(js_name = "lockfileVersion")]
+    pub lockfile_version: f64,
+}
+
+#[napi]
+pub fn resolve(lockfile_path: String) -> NapiResolveResult {
+    let path = Path::new(&lockfile_path);
+    match resolve_from_lockfile(path) {
+        Ok(result) => NapiResolveResult {
+            ok: true,
+            reason: None,
+            packages: result
+                .packages
+                .iter()
+                .map(|p| NapiResolvedPackage {
+                    name: p.name.clone(),
+                    version: p.version.clone(),
+                    rel_path: p.rel_path.clone(),
+                    resolved_url: p.resolved_url.clone(),
+                    integrity: p.integrity.clone(),
+                })
+                .collect(),
+            lockfile_version: result.lockfile_version as f64,
+        },
+        Err(reason) => NapiResolveResult {
+            ok: false,
+            reason: Some(reason),
+            packages: vec![],
+            lockfile_version: 0.0,
         },
     }
 }

@@ -1343,3 +1343,229 @@ pub fn write_materialize_json(
     w.out.push('\n');
     w.finish()
 }
+
+// --- Install engine: resolve and fetch ---
+
+#[derive(Clone)]
+pub struct ResolvedPackage {
+    pub name: String,
+    pub version: String,
+    pub rel_path: String,
+    pub resolved_url: String,
+    pub integrity: String,
+}
+
+#[derive(Clone)]
+pub struct ResolveResult {
+    pub packages: Vec<ResolvedPackage>,
+    pub lockfile_version: u64,
+}
+
+/// Parse package-lock.json and extract packages to install
+pub fn resolve_from_lockfile(lockfile_path: &Path) -> Result<ResolveResult, String> {
+    let content = fs::read_to_string(lockfile_path).map_err(|e| e.to_string())?;
+
+    // Simple JSON parsing without serde
+    let packages = parse_npm_lockfile(&content)?;
+
+    Ok(ResolveResult {
+        packages,
+        lockfile_version: 3,
+    })
+}
+
+fn parse_npm_lockfile(json: &str) -> Result<Vec<ResolvedPackage>, String> {
+    let mut packages = Vec::new();
+
+    // Find the "packages" object
+    let packages_start = json.find(r#""packages""#)
+        .ok_or_else(|| "Missing 'packages' field in lockfile".to_string())?;
+
+    let after_packages = &json[packages_start..];
+    let obj_start = after_packages.find('{')
+        .ok_or_else(|| "Malformed packages object".to_string())?;
+
+    // Simple state machine to parse package entries
+    let packages_str = &after_packages[obj_start..];
+    let mut current_key = String::new();
+    let mut in_key = false;
+    let mut in_string = false;
+    let mut escape_next = false;
+    let mut brace_depth = 0;
+    let mut collecting_entry = false;
+    let mut entry_data = String::new();
+
+    for ch in packages_str.chars() {
+        if escape_next {
+            if collecting_entry {
+                entry_data.push(ch);
+            }
+            escape_next = false;
+            continue;
+        }
+
+        if ch == '\\' {
+            escape_next = true;
+            if collecting_entry {
+                entry_data.push(ch);
+            }
+            continue;
+        }
+
+        if ch == '"' && !escape_next {
+            in_string = !in_string;
+            if collecting_entry {
+                entry_data.push(ch);
+            }
+            continue;
+        }
+
+        if in_string {
+            if in_key {
+                current_key.push(ch);
+            } else if collecting_entry {
+                entry_data.push(ch);
+            }
+            continue;
+        }
+
+        if ch == '{' {
+            brace_depth += 1;
+            if brace_depth == 2 && !current_key.is_empty() && current_key.starts_with("node_modules/") {
+                collecting_entry = true;
+                entry_data.clear();
+            }
+            if collecting_entry {
+                entry_data.push(ch);
+            }
+        } else if ch == '}' {
+            if collecting_entry && brace_depth == 2 {
+                // Parse this entry
+                if let Ok(pkg) = parse_package_entry(&current_key, &entry_data) {
+                    packages.push(pkg);
+                }
+                collecting_entry = false;
+                entry_data.clear();
+            }
+            brace_depth -= 1;
+            if brace_depth == 0 {
+                break;
+            }
+            if collecting_entry {
+                entry_data.push(ch);
+            }
+        } else if collecting_entry {
+            entry_data.push(ch);
+        }
+
+        // Track keys at depth 1
+        if brace_depth == 1 && ch == '"' && !in_key {
+            in_key = true;
+            current_key.clear();
+        } else if in_key && ch == '"' {
+            in_key = false;
+        }
+    }
+
+    Ok(packages)
+}
+
+fn parse_package_entry(rel_path: &str, entry_json: &str) -> Result<ResolvedPackage, String> {
+    let name = extract_json_field(entry_json, "name")
+        .unwrap_or_else(|| package_name_from_path(rel_path));
+    let version = extract_json_field(entry_json, "version")
+        .ok_or_else(|| format!("Missing version for {}", rel_path))?;
+    let resolved = extract_json_field(entry_json, "resolved")
+        .ok_or_else(|| format!("Missing resolved URL for {}", rel_path))?;
+    let integrity = extract_json_field(entry_json, "integrity")
+        .ok_or_else(|| format!("Missing integrity for {}", rel_path))?;
+
+    Ok(ResolvedPackage {
+        name,
+        version,
+        rel_path: rel_path.to_string(),
+        resolved_url: resolved,
+        integrity,
+    })
+}
+
+fn extract_json_field(json: &str, field_name: &str) -> Option<String> {
+    let needle = format!(r#""{}"#, field_name);
+    let start = json.find(&needle)?;
+    let after = &json[start + needle.len()..];
+    let colon = after.find(':')?;
+    let mut rest = after[colon + 1..].trim_start();
+
+    if !rest.starts_with('"') {
+        return None;
+    }
+
+    rest = &rest[1..];
+    let mut result = String::new();
+    let mut chars = rest.chars();
+
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => break,
+            '\\' => {
+                if let Some(esc) = chars.next() {
+                    result.push(match esc {
+                        '"' => '"',
+                        '\\' => '\\',
+                        'n' => '\n',
+                        'r' => '\r',
+                        't' => '\t',
+                        '/' => '/',
+                        other => other,
+                    });
+                }
+            }
+            other => result.push(other),
+        }
+    }
+
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
+    }
+}
+
+fn package_name_from_path(rel_path: &str) -> String {
+    let parts: Vec<&str> = rel_path.split('/').collect();
+    if let Some(idx) = parts.iter().position(|&p| p == "node_modules") {
+        if idx + 1 < parts.len() {
+            let first = parts[idx + 1];
+            if first.starts_with('@') && idx + 2 < parts.len() {
+                return format!("{}/{}", first, parts[idx + 2]);
+            }
+            return first.to_string();
+        }
+    }
+    "unknown".to_string()
+}
+
+#[derive(Clone)]
+pub struct FetchResult {
+    pub packages_fetched: u64,
+    pub packages_cached: u64,
+    pub bytes_downloaded: u64,
+}
+
+/// Fetch tarballs for resolved packages (stub - actual HTTP download would be added)
+pub fn fetch_packages(
+    _packages: &[ResolvedPackage],
+    _cache_dir: &Path,
+) -> Result<FetchResult, String> {
+    // This is a stub - a full implementation would:
+    // 1. Check if tarball exists in CAS (content-addressed store)
+    // 2. Download from resolved_url if not cached
+    // 3. Verify integrity hash
+    // 4. Extract to CAS directory
+
+    Ok(FetchResult {
+        packages_fetched: 0,
+        packages_cached: 0,
+        bytes_downloaded: 0,
+    })
+}
