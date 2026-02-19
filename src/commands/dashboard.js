@@ -56,6 +56,20 @@ async function loadBenchmarkData(projectRoot) {
   return null;
 }
 
+async function loadAuditData(projectRoot) {
+  const candidates = [
+    path.join(projectRoot, "audit.json"),
+    path.join(projectRoot, ".better", "audit.json")
+  ];
+
+  for (const p of candidates) {
+    const data = await readJsonFile(p);
+    if (data?.kind === "better.audit.report") return data;
+  }
+
+  return null;
+}
+
 function buildDepTree(lockData) {
   if (!lockData?.packages) return null;
 
@@ -206,11 +220,12 @@ Keyboard:
   };
 
   // Load data sources in parallel
-  const [installReport, healthReport, benchmarkData, cacheStats] = await Promise.all([
+  const [installReport, healthReport, benchmarkData, cacheStats, auditData] = await Promise.all([
     findLatestRun(layout.runsDir ?? path.join(layout.root, "runs")),
     loadHealthReport(projectRoot),
     loadBenchmarkData(projectRoot),
-    loadCacheStats(layout)
+    loadCacheStats(layout),
+    loadAuditData(projectRoot)
   ]);
 
   // Build dependency tree from lockfile
@@ -225,7 +240,7 @@ Keyboard:
     cacheStats,
     benchmarkData,
     depTree,
-    vulnData: null // would need audit data
+    vulnData: auditData
   });
 
   logger.info("dashboard.end");
