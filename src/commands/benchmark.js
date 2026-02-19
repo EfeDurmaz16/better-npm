@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -38,6 +39,13 @@ function p95(values) {
   return sorted[index];
 }
 
+function stddev(values) {
+  if (values.length < 2) return null;
+  const avg = mean(values);
+  const squaredDiffs = values.map(v => (v - avg) ** 2);
+  return Math.sqrt(squaredDiffs.reduce((sum, d) => sum + d, 0) / (values.length - 1));
+}
+
 function computeStats(samples, key = "wallTimeMs") {
   const values = samples
     .map((sample) => sample?.[key])
@@ -49,16 +57,22 @@ function computeStats(samples, key = "wallTimeMs") {
       max: null,
       mean: null,
       median: null,
-      p95: null
+      p95: null,
+      stddev: null,
+      p95Spread: null
     };
   }
+  const p95Val = p95(values);
+  const medianVal = median(values);
   return {
     count: values.length,
     min: Math.min(...values),
     max: Math.max(...values),
     mean: mean(values),
-    median: median(values),
-    p95: p95(values)
+    median: medianVal,
+    p95: p95Val,
+    stddev: stddev(values),
+    p95Spread: p95Val != null && medianVal != null ? p95Val - medianVal : null
   };
 }
 
@@ -184,12 +198,14 @@ function betterInstallArgs(projectRoot, pm, engine, opts = {}) {
   return args;
 }
 
-async function runVariant(variant, ctx, roundMeta) {
+async function runVariant(variant, ctx, roundMeta, skipCleanup = false) {
   const { projectRoot, pm, engine, frozen, production, timeoutMs } = ctx;
   const env = { ...process.env, ...variant.env };
   const nodeModulesPath = path.join(projectRoot, "node_modules");
   const startedAt = Date.now();
-  await rmrf(nodeModulesPath);
+  if (!skipCleanup) {
+    await rmrf(nodeModulesPath);
+  }
   const cleanupWallTimeMs = Date.now() - startedAt;
 
   if (variant.kind === "raw") {
@@ -298,6 +314,15 @@ function buildVariants(projectRoot, pm, engine, opts = {}) {
   return variants;
 }
 
+function classifyError(sample) {
+  if (sample.timedOut) return "timeout";
+  if (sample.exitCode !== 0) return "nonzero_exit";
+  if (!sample.reportFound) return "missing_report";
+  if (sample.reportKind !== "better.install.report") return "invalid_report_kind";
+  if (sample.ok === false) return "report_not_ok";
+  return "unknown";
+}
+
 function formatSampleFailure(sample) {
   const details = [];
   details.push(`exit=${sample.exitCode}`);
@@ -312,6 +337,7 @@ function formatSampleFailure(sample) {
     const compact = String(sample.stderrTail).replace(/\s+/g, " ").trim();
     if (compact) details.push(`stderrTail=${compact.slice(0, 300)}`);
   }
+  details.push(`errorClass=${classifyError(sample)}`);
   return details.join(", ");
 }
 
@@ -345,6 +371,18 @@ function summarizeVariant(samples) {
   };
 }
 
+function collectEnvironment() {
+  return {
+    platform: process.platform,
+    arch: process.arch,
+    cpus: os.cpus().length,
+    cpuModel: os.cpus()[0]?.model ?? null,
+    totalMemoryBytes: os.totalmem(),
+    nodeVersion: process.version,
+    fsType: process.platform === "darwin" ? "apfs" : process.platform === "win32" ? "ntfs" : "ext4"
+  };
+}
+
 function buildComparison(summary) {
   const rawWarmMedian = summary.raw?.stats?.warm?.median;
   const betterWarmMedian = summary.betterMinimal?.stats?.warm?.median;
@@ -374,7 +412,7 @@ export async function cmdBenchmark(argv) {
   if (argv.includes("--help") || argv.includes("-h")) {
     printText(`Usage:
   better benchmark [--json] [--project-root PATH] [--pm auto|npm|pnpm|yarn] [--engine pm|bun|better]
-                   [--cold-rounds N] [--warm-rounds N] [--timeout-ms N]
+                   [--cold-rounds N] [--warm-rounds N] [--timeout-ms N] [--scenario cold_miss|warm_hit|reuse_noop|all]
                    [--frozen] [--production] [--include-full] [--cache-root PATH]
                    [--core-mode auto|js|rust] [--fs-concurrency N] [--no-incremental]
 `);
@@ -390,6 +428,7 @@ export async function cmdBenchmark(argv) {
       "project-root": { type: "string" },
       pm: { type: "string", default: "auto" },
       engine: { type: "string", default: "pm" },
+      scenario: { type: "string", default: "all" },
       frozen: { type: "boolean", default: false },
       production: { type: "boolean", default: false },
       "cold-rounds": { type: "string", default: "1" },
@@ -413,11 +452,15 @@ export async function cmdBenchmark(argv) {
   const detected = await detectPackageManager(projectRoot);
   const pm = values.pm === "auto" ? detected.pm : values.pm;
   const engine = values.engine;
+  const scenario = values.scenario ?? "all";
   if (!["npm", "pnpm", "yarn"].includes(pm)) {
     throw new Error(`Unknown --pm '${pm}'. Expected npm|pnpm|yarn|auto.`);
   }
   if (!["pm", "bun", "better"].includes(engine)) {
     throw new Error(`Unknown --engine '${engine}'. Expected pm|bun|better.`);
+  }
+  if (!["cold_miss", "warm_hit", "reuse_noop", "all"].includes(scenario)) {
+    throw new Error(`Unknown --scenario '${scenario}'. Expected cold_miss|warm_hit|reuse_noop|all.`);
   }
   if (engine === "better" && pm !== "npm") {
     throw new Error("engine=better benchmark requires --pm npm.");
@@ -427,14 +470,18 @@ export async function cmdBenchmark(argv) {
   const warmRounds = Math.max(0, Number.parseInt(values["warm-rounds"], 10) || 0);
   const timeoutMs = Math.max(10_000, Number.parseInt(values["timeout-ms"], 10) || 600_000);
   const coreMode = String(values["core-mode"] ?? "auto").toLowerCase();
-  if (coreMode !== "auto" && coreMode !== "js" && coreMode !== "rust") {
-    throw new Error(`Unknown --core-mode '${values["core-mode"]}'. Expected auto|js|rust.`);
+  if (coreMode !== "auto" && coreMode !== "js" && coreMode !== "rust" && coreMode !== "napi") {
+    throw new Error(`Unknown --core-mode '${values["core-mode"]}'. Expected auto|js|rust|napi.`);
   }
   const fsConcurrency = Math.max(1, Math.min(128, Number.parseInt(values["fs-concurrency"], 10) || 16));
   const incremental = values["no-incremental"] ? false : true;
   if (coldRounds === 0 && warmRounds === 0) {
     throw new Error("At least one of --cold-rounds or --warm-rounds must be greater than 0.");
   }
+
+  const runCold = scenario === "cold_miss" || scenario === "all";
+  const runWarm = scenario === "warm_hit" || scenario === "reuse_noop" || scenario === "all";
+  const isReuseNoop = scenario === "reuse_noop";
 
   const cacheBase = values["cache-root"]
     ? getCacheRoot(values["cache-root"])
@@ -449,6 +496,23 @@ export async function cmdBenchmark(argv) {
     incremental
   });
 
+  // Lockfile parity
+  let parity = null;
+  try {
+    const pkgLockPath = path.join(projectRoot, "package-lock.json");
+    const pnpmLockPath = path.join(projectRoot, "pnpm-lock.yaml");
+    const yarnLockPath = path.join(projectRoot, "yarn.lock");
+    const lockPaths = [pkgLockPath, pnpmLockPath, yarnLockPath];
+    const lockHashes = {};
+    for (const lp of lockPaths) {
+      try {
+        const raw = await fs.readFile(lp);
+        lockHashes[path.basename(lp)] = crypto.createHash("sha256").update(raw).digest("hex");
+      } catch { /* file doesn't exist */ }
+    }
+    parity = { lockfiles: lockHashes, verified: Object.keys(lockHashes).length > 0 };
+  } catch { parity = null; }
+
   const perVariantSamples = {};
   for (const variant of variants) {
     perVariantSamples[variant.name] = [];
@@ -458,13 +522,14 @@ export async function cmdBenchmark(argv) {
     projectRoot,
     pm,
     engine,
+    scenario,
     coldRounds,
     warmRounds,
     timeoutMs
   });
 
   for (const variant of variants) {
-    if (coldRounds > 0) {
+    if (runCold && coldRounds > 0) {
       for (let round = 1; round <= coldRounds; round += 1) {
         const runCacheRoot = path.join(cacheBase, "cold", variant.name, String(round));
         let layout = cacheLayout(runCacheRoot);
@@ -504,7 +569,7 @@ export async function cmdBenchmark(argv) {
       }
     }
 
-    if (warmRounds > 0) {
+    if (runWarm && warmRounds > 0) {
       const runCacheRoot = path.join(cacheBase, "warm", variant.name);
       let layout = cacheLayout(runCacheRoot);
       layout = await ensureCacheDirs(layout, { projectRootForFallback: projectRoot });
@@ -557,7 +622,8 @@ export async function cmdBenchmark(argv) {
                 production: values.production === true,
                 timeoutMs
               },
-              { phase: "warm", round, cacheRoot: layout.root }
+              { phase: "warm", round, cacheRoot: layout.root },
+              isReuseNoop
             ),
           commandLogger
         );
@@ -583,14 +649,40 @@ export async function cmdBenchmark(argv) {
     variantsSummary[name] = summarizeVariant(samples);
   }
   const comparison = buildComparison(variantsSummary);
+
+  const byScenario = [];
+  if (runCold) {
+    const coldRaw = variantsSummary.raw?.stats?.cold?.median;
+    const coldBetter = variantsSummary.betterMinimal?.stats?.cold?.median;
+    byScenario.push({
+      scenario: "cold_miss",
+      rawMedianMs: coldRaw ?? null,
+      betterMedianMs: coldBetter ?? null,
+      deltaMs: coldRaw != null && coldBetter != null ? coldBetter - coldRaw : null,
+      deltaPercent: coldRaw != null && coldBetter != null && coldRaw > 0 ? ((coldBetter - coldRaw) / coldRaw) * 100 : null
+    });
+  }
+  if (runWarm) {
+    byScenario.push({
+      scenario: isReuseNoop ? "reuse_noop" : "warm_hit",
+      rawMedianMs: comparison.rawWarmMedianMs,
+      betterMedianMs: comparison.betterWarmMedianMs,
+      deltaMs: comparison.deltaMs,
+      deltaPercent: comparison.deltaPercent
+    });
+  }
+
   const report = {
     ok: true,
     kind: "better.benchmark",
-    schemaVersion: 1,
+    schemaVersion: 2,
     projectRoot,
     projectRootResolution: resolvedRoot,
     pm: { selected: pm, detected: detected.pm, reason: detected.reason },
     engine,
+    scenario,
+    env: collectEnvironment(),
+    parity,
     config: {
       coldRounds,
       warmRounds,
@@ -604,7 +696,10 @@ export async function cmdBenchmark(argv) {
       cacheRootBase: cacheBase
     },
     variants: variantsSummary,
-    comparison
+    comparison: {
+      ...comparison,
+      byScenario
+    }
   };
 
   if (values.json) {
@@ -614,6 +709,8 @@ export async function cmdBenchmark(argv) {
       "better benchmark",
       `- project root: ${projectRoot}`,
       `- pm/engine: ${pm}/${engine}`,
+      `- scenario: ${scenario}`,
+      `- env: ${process.platform}/${process.arch} node ${process.version}`,
       `- cold rounds: ${coldRounds}, warm rounds: ${warmRounds}`,
       `- raw warm median: ${comparison.rawWarmMedianMs == null ? "n/a" : `${comparison.rawWarmMedianMs.toFixed(1)} ms`}`,
       `- better warm median: ${comparison.betterWarmMedianMs == null ? "n/a" : `${comparison.betterWarmMedianMs.toFixed(1)} ms`}`,

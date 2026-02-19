@@ -19,3 +19,6 @@ target/
 # Local benchmark artifacts
 benchmark.json
 health.json
+
+# Native addon build artifacts
+crates/better-napi/*.node

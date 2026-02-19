@@ -1,0 +1,103 @@
+# Better Policy Check - GitHub Action Template
+# Add this to your repository's .github/workflows/ directory
+name: Better Policy Check
+
+on:
+  pull_request:
+    branches: [main, master]
+  push:
+    branches: [main, master]
+
+jobs:
+  policy-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Better
+        run: npm install -g better-npm
+
+      - name: Run Better Policy Check
+        id: policy
+        run: |
+          better policy check --json > policy-report.json; exit_code=$?
+          echo "exit_code=$exit_code" >> $GITHUB_OUTPUT
+          exit $exit_code
+        continue-on-error: true
+
+      - name: Parse Policy Results
+        if: always()
+        id: parse
+        run: |
+          if [ -f policy-report.json ]; then
+            SCORE=$(node -e "const r=require('./policy-report.json'); console.log(r.score ?? 'N/A')")
+            VIOLATIONS=$(node -e "const r=require('./policy-report.json'); console.log(r.summary?.violations ?? 0)")
+            ERRORS=$(node -e "const r=require('./policy-report.json'); console.log(r.summary?.errors ?? 0)")
+            PASS=$(node -e "const r=require('./policy-report.json'); console.log(r.pass ? 'PASS' : 'FAIL')")
+            echo "score=$SCORE" >> $GITHUB_OUTPUT
+            echo "violations=$VIOLATIONS" >> $GITHUB_OUTPUT
+            echo "errors=$ERRORS" >> $GITHUB_OUTPUT
+            echo "pass=$PASS" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const score = '${{ steps.parse.outputs.score }}';
+            const violations = '${{ steps.parse.outputs.violations }}';
+            const errors = '${{ steps.parse.outputs.errors }}';
+            const pass = '${{ steps.parse.outputs.pass }}';
+            const body = [
+              '## Better Policy Check Results',
+              '',
+              `| Metric | Value |`,
+              `|--------|-------|`,
+              `| Status | ${pass === 'PASS' ? '✅ PASS' : '❌ FAIL'} |`,
+              `| Score | ${score}/100 |`,
+              `| Violations | ${violations} |`,
+              `| Errors | ${errors} |`,
+              '',
+              '<details>',
+              '<summary>Full Report</summary>',
+              '',
+              '```json',
+              require('fs').existsSync('policy-report.json') ? require('fs').readFileSync('policy-report.json', 'utf8') : 'No report generated',
+              '```',
+              '',
+              '</details>',
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body?.includes('Better Policy Check Results'));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: Fail on policy violations
+        if: steps.parse.outputs.pass == 'FAIL'
+        run: exit 1

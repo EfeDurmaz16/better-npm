@@ -15,6 +15,7 @@ import {
   materializeFromGlobalCache,
   captureProjectNodeModulesToGlobalCache
 } from "../lib/globalCache.js";
+import { readManifest, writeManifest, getCasInventory, manifestPath } from "../engine/better/cas.js";
 
 async function listFiles(dir) {
   try {
@@ -150,8 +151,9 @@ export async function cmdCache(argv) {
 
   if (!sub || sub === "help" || sub === "--help" || sub === "-h") {
     printText(`Usage:
-  better cache stats [--json] [--cache-root PATH]
-  better cache gc [--dry-run] [--keep-days N] [--json] [--cache-root PATH]
+  better cache stats [--json] [--verbose] [--cache-root PATH]
+  better cache gc [--dry-run] [--keep-days N] [--target-size BYTES] [--max-age DAYS] [--json] [--cache-root PATH]
+  better cache doctor [--json] [--cache-root PATH]
   better cache explain <name@version|runId> [--json] [--cache-root PATH]
   better cache warm [--project-root PATH] [--pm auto|npm|pnpm|yarn] [--engine pm|bun|better]
                     [--cache-mode strict|relaxed] [--cache-key-salt VALUE] [--cache-scripts rebuild|off]
@@ -174,6 +176,9 @@ export async function cmdCache(argv) {
       "cache-root": { type: "string", default: runtime.cacheRoot ?? undefined },
       "dry-run": { type: "boolean", default: false },
       "keep-days": { type: "string", default: "30" },
+      "target-size": { type: "string" },
+      "max-age": { type: "string" },
+      verbose: { type: "boolean", default: false },
       "project-root": { type: "string" },
       pm: { type: "string", default: "auto" },
       engine: { type: "string", default: "pm" },
@@ -210,6 +215,13 @@ export async function cmdCache(argv) {
     const misses = Number(persisted.cacheMisses ?? runHitMiss.misses ?? 0);
     const ratio = hits + misses > 0 ? hits / (hits + misses) : null;
 
+    let casInfo = null;
+    if (values.verbose) {
+      try {
+        casInfo = await getCasInventory(layout);
+      } catch { casInfo = null; }
+    }
+
     const out = {
       ok: true,
       kind: "better.cache.stats",
@@ -244,29 +256,33 @@ export async function cmdCache(argv) {
         gcPolicy: state.gc ?? null
       },
       trackedPackages: Object.keys(state.cachePackages ?? {}).length,
-      projects: Object.values(state.projects ?? {})
+      projects: Object.values(state.projects ?? {}),
+      cas: casInfo
     };
 
     if (values.json) printJson(out);
     else {
-      printText(
-        [
-          "better cache stats",
-          `- root: ${layout.root}`,
-          `- total: ${(out.sizes.totalBytes / 1024 / 1024).toFixed(1)} MiB`,
-          `- bun cache: ${(out.sizes.pm.bunBytes / 1024 / 1024).toFixed(1)} MiB`,
-          `- npm cache: ${(out.sizes.pm.npmBytes / 1024 / 1024).toFixed(1)} MiB`,
-          `- pnpm store: ${(out.sizes.pm.pnpmStoreBytes / 1024 / 1024).toFixed(1)} MiB`,
-          `- yarn cache: ${(out.sizes.pm.yarnBytes / 1024 / 1024).toFixed(1)} MiB`,
-          `- entries: ${out.entries.total}`,
-          `- oldest/newest: ${out.entries.oldestEntry ?? "n/a"} / ${out.entries.newestEntry ?? "n/a"}`,
-          `- hit ratio: ${out.hitRatio.ratio == null ? "n/a" : `${(out.hitRatio.ratio * 100).toFixed(1)}%`} (${out.hitRatio.hits}/${out.hitRatio.hits + out.hitRatio.misses})`,
-          `- global cache entries: ${out.globalCache.entries}`,
-          `- materialized projects: ${out.globalCache.materializedProjects}`,
-          `- tracked packages: ${out.trackedPackages}`,
-          `- projects: ${out.projects.length}`
-        ].join("\n")
-      );
+      const lines = [
+        "better cache stats",
+        `- root: ${layout.root}`,
+        `- total: ${(out.sizes.totalBytes / 1024 / 1024).toFixed(1)} MiB`,
+        `- bun cache: ${(out.sizes.pm.bunBytes / 1024 / 1024).toFixed(1)} MiB`,
+        `- npm cache: ${(out.sizes.pm.npmBytes / 1024 / 1024).toFixed(1)} MiB`,
+        `- pnpm store: ${(out.sizes.pm.pnpmStoreBytes / 1024 / 1024).toFixed(1)} MiB`,
+        `- yarn cache: ${(out.sizes.pm.yarnBytes / 1024 / 1024).toFixed(1)} MiB`,
+        `- entries: ${out.entries.total}`,
+        `- oldest/newest: ${out.entries.oldestEntry ?? "n/a"} / ${out.entries.newestEntry ?? "n/a"}`,
+        `- hit ratio: ${out.hitRatio.ratio == null ? "n/a" : `${(out.hitRatio.ratio * 100).toFixed(1)}%`} (${out.hitRatio.hits}/${out.hitRatio.hits + out.hitRatio.misses})`,
+        `- global cache entries: ${out.globalCache.entries}`,
+        `- materialized projects: ${out.globalCache.materializedProjects}`,
+        `- tracked packages: ${out.trackedPackages}`,
+        `- projects: ${out.projects.length}`
+      ];
+      if (casInfo) {
+        lines.push(`- CAS blobs: ${casInfo.blobCount} (${casInfo.orphanedBlobCount} orphaned)`);
+        lines.push(`- CAS refcount total: ${casInfo.totalRefCount}`);
+      }
+      printText(lines.join("\n"));
     }
     return;
   }
@@ -283,6 +299,62 @@ export async function cmdCache(argv) {
     const entriesRemoved = deletedRuns.length + deletedAnalyses.length + deletedTmp.length;
     const bytesFreed = [...deletedRuns, ...deletedAnalyses, ...deletedTmp].reduce((sum, item) => sum + Number(item.size ?? 0), 0);
 
+    // Enhanced GC: target-size based eviction
+    let targetSizeEvictions = [];
+    if (values["target-size"]) {
+      const targetBytes = Number(values["target-size"]);
+      if (Number.isFinite(targetBytes) && targetBytes > 0) {
+        const total = await scanTree(layout.root);
+        if (total.physicalBytes > targetBytes) {
+          const excess = total.physicalBytes - targetBytes;
+          // LRU eviction from materializations
+          const matDir = layout.store?.materializationsDir;
+          if (matDir) {
+            const matEntries = await listFiles(matDir);
+            const entryMeta = [];
+            for (const ent of matEntries) {
+              if (!ent.isDirectory()) continue;
+              const subDir = path.join(matDir, ent.name);
+              const subEntries = await listFiles(subDir);
+              for (const sub of subEntries) {
+                if (!sub.isDirectory()) continue;
+                const fullPath = path.join(subDir, sub.name);
+                try {
+                  const st = await fs.stat(fullPath);
+                  entryMeta.push({ path: fullPath, mtimeMs: st.mtimeMs, size: st.size });
+                } catch { /* skip */ }
+              }
+            }
+            // Sort by oldest first (LRU)
+            entryMeta.sort((a, b) => a.mtimeMs - b.mtimeMs);
+            let freed = 0;
+            for (const entry of entryMeta) {
+              if (freed >= excess) break;
+              if (!dryRun) {
+                await fs.rm(entry.path, { recursive: true, force: true });
+              }
+              freed += entry.size;
+              targetSizeEvictions.push({ path: entry.path, size: entry.size, ageMs: Date.now() - entry.mtimeMs });
+            }
+          }
+        }
+      }
+    }
+
+    // Enhanced GC: max-age based eviction
+    let maxAgeEvictions = [];
+    if (values["max-age"]) {
+      const maxAgeDays = Number(values["max-age"]);
+      if (Number.isFinite(maxAgeDays) && maxAgeDays > 0) {
+        const ageCutoffMs = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
+        const matDir = layout.store?.materializationsDir;
+        if (matDir) {
+          const maxAgeDeleted = await gcDir(matDir, ageCutoffMs, dryRun);
+          maxAgeEvictions = maxAgeDeleted;
+        }
+      }
+    }
+
     const out = {
       ok: true,
       kind: "better.cache.gc",
@@ -292,6 +364,10 @@ export async function cmdCache(argv) {
       keepDays,
       entriesRemoved,
       bytesFreed,
+      targetSizeEvictions: targetSizeEvictions.length,
+      targetSizeBytesFreed: targetSizeEvictions.reduce((sum, e) => sum + (e.size ?? 0), 0),
+      maxAgeEvictions: maxAgeEvictions.length,
+      maxAgeBytesFreed: maxAgeEvictions.reduce((sum, e) => sum + (e.size ?? 0), 0),
       deleted: {
         runs: deletedRuns,
         analyses: deletedAnalyses,
@@ -310,17 +386,22 @@ export async function cmdCache(argv) {
     }
     if (values.json) printJson(out);
     else {
-      printText(
-        [
-          `better cache gc${dryRun ? " (dry-run)" : ""}`,
-          `- keep days: ${keepDays}`,
-          `- entries: ${entriesRemoved}`,
-          `- bytes: ${(bytesFreed / 1024 / 1024).toFixed(1)} MiB`,
-          `- deleted runs: ${deletedRuns.length}`,
-          `- deleted analyses: ${deletedAnalyses.length}`,
-          `- deleted tmp: ${deletedTmp.length}`
-        ].join("\n")
-      );
+      const lines = [
+        `better cache gc${dryRun ? " (dry-run)" : ""}`,
+        `- keep days: ${keepDays}`,
+        `- entries: ${entriesRemoved}`,
+        `- bytes: ${(bytesFreed / 1024 / 1024).toFixed(1)} MiB`,
+        `- deleted runs: ${deletedRuns.length}`,
+        `- deleted analyses: ${deletedAnalyses.length}`,
+        `- deleted tmp: ${deletedTmp.length}`
+      ];
+      if (targetSizeEvictions.length > 0) {
+        lines.push(`- target-size evictions: ${targetSizeEvictions.length} (${(out.targetSizeBytesFreed / 1024 / 1024).toFixed(1)} MiB)`);
+      }
+      if (maxAgeEvictions.length > 0) {
+        lines.push(`- max-age evictions: ${maxAgeEvictions.length} (${(out.maxAgeBytesFreed / 1024 / 1024).toFixed(1)} MiB)`);
+      }
+      printText(lines.join("\n"));
     }
     return;
   }
@@ -688,6 +769,100 @@ export async function cmdCache(argv) {
     const out = { ok: true, kind: "better.cache.import", schemaVersion: 1, cacheRoot: layout.root, inPath };
     if (values.json) printJson(out);
     else printText(`Imported cache from ${inPath}`);
+    return;
+  }
+
+  if (sub === "doctor") {
+    commandLogger.info("cache.doctor.start", { cacheRoot: layout.root });
+
+    // Check CAS integrity
+    const casInventory = await getCasInventory(layout);
+
+    // Check cache directory structure
+    const checks = [];
+    const dirs = [layout.pm.npm, layout.pm.pnpmStore, layout.pm.yarn, layout.pm.bun, layout.runsDir, layout.analysesDir];
+    for (const dir of dirs) {
+      try {
+        await fs.access(dir);
+        checks.push({ path: dir, status: "ok" });
+      } catch {
+        checks.push({ path: dir, status: "missing" });
+      }
+    }
+
+    // Check manifest integrity
+    let manifestStatus = "ok";
+    try {
+      const manifest = await readManifest(layout);
+      if (!manifest || typeof manifest !== "object") manifestStatus = "corrupt";
+      if (!manifest.blobs || !manifest.refCounts) manifestStatus = "incomplete";
+    } catch {
+      manifestStatus = "missing";
+    }
+
+    // FS capability detection
+    const fsCapabilities = {
+      platform: process.platform,
+      hardlinks: true,
+      symlinks: process.platform !== "win32",
+      reflinks: process.platform === "darwin" || process.platform === "linux",
+      caseSensitive: process.platform !== "darwin" && process.platform !== "win32"
+    };
+
+    // Test hardlink capability
+    try {
+      const testSrc = path.join(layout.tmpDir, `.better-doctor-test-${Date.now()}`);
+      const testDst = `${testSrc}.link`;
+      await fs.writeFile(testSrc, "test");
+      await fs.link(testSrc, testDst);
+      await fs.unlink(testDst);
+      await fs.unlink(testSrc);
+    } catch {
+      fsCapabilities.hardlinks = false;
+    }
+
+    const state = await loadState(layout);
+    const integrityOk = manifestStatus === "ok" && casInventory.orphanedBlobCount === 0;
+
+    const out = {
+      ok: integrityOk,
+      kind: "better.cache.doctor",
+      schemaVersion: 1,
+      cacheRoot: layout.root,
+      integrity: {
+        status: integrityOk ? "healthy" : "needs_attention",
+        manifestStatus,
+        orphanedBlobs: casInventory.orphanedBlobCount,
+        totalBlobs: casInventory.blobCount,
+        totalRefCount: casInventory.totalRefCount
+      },
+      directoryChecks: checks,
+      fsCapabilities,
+      globalCache: {
+        entries: Object.keys(state.cacheEntries ?? {}).length,
+        materializedProjects: Object.keys(state.materializationIndex ?? {}).length
+      },
+      recommendations: [
+        ...(casInventory.orphanedBlobCount > 0 ? ["Run 'better cache gc' to clean orphaned blobs"] : []),
+        ...(manifestStatus !== "ok" ? ["CAS manifest needs repair - run 'better cache gc --rebuild-manifest'"] : []),
+        ...(!fsCapabilities.hardlinks ? ["Hardlinks not available - installs will use copy mode"] : [])
+      ]
+    };
+
+    if (values.json) printJson(out);
+    else {
+      printText([
+        "better cache doctor",
+        `- status: ${out.integrity.status}`,
+        `- manifest: ${manifestStatus}`,
+        `- blobs: ${casInventory.blobCount} (${casInventory.orphanedBlobCount} orphaned)`,
+        `- refcount total: ${casInventory.totalRefCount}`,
+        `- hardlinks: ${fsCapabilities.hardlinks ? "yes" : "no"}`,
+        `- reflinks: ${fsCapabilities.reflinks ? "possible" : "no"}`,
+        `- cache entries: ${out.globalCache.entries}`,
+        ...out.recommendations.map(r => `  ! ${r}`)
+      ].join("\n"));
+    }
     return;
   }
 

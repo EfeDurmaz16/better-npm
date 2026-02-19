@@ -16,7 +16,9 @@
     "typecheck": "node --check ./src/cli.js",
     "dev": "node ./bin/better.js --help",
     "core:build": "cargo build --manifest-path crates/Cargo.toml -p better-core --release",
-    "core:build:debug": "cargo build --manifest-path crates/Cargo.toml -p better-core"
+    "core:build:debug": "cargo build --manifest-path crates/Cargo.toml -p better-core",
+    "napi:build": "cargo build --manifest-path crates/Cargo.toml -p better-napi --release && cp crates/target/release/libbetter_napi.dylib crates/better-napi/better-core.darwin-arm64.node",
+    "napi:build:debug": "cargo build --manifest-path crates/Cargo.toml -p better-napi && cp crates/target/debug/libbetter_napi.dylib crates/better-napi/better-core.darwin-arm64.node"
   },
   "engines": {
     "node": ">=20"
