@@ -3,4 +3,12 @@ name = "better-core"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "better_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "better-core"
+path = "src/main.rs"
+
 [dependencies]
