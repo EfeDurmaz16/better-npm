@@ -10,6 +10,7 @@ import { shortHash } from "../lib/hash.js";
 import { enrichPackagesWithManifest } from "../lib/packageMeta.js";
 import { getRuntimeConfig } from "../lib/config.js";
 import { childLogger } from "../lib/log.js";
+import { resolveWorkspacePackages, isWorkspace } from "../lib/workspaces.js";
 
 async function serveUi(analysis) {
   const html = await fs.readFile(new URL("../ui/index.html", import.meta.url), "utf8");
@@ -164,7 +165,7 @@ function buildDeprecatedPackages(packages) {
   return entries;
 }
 
-async function buildReport(baseAnalysis, projectRoot) {
+async function buildReport(baseAnalysis, projectRoot, workspaceData = null) {
   if (!baseAnalysis?.ok) return baseAnalysis;
 
   const packages = await enrichPackagesWithManifest(baseAnalysis.packages ?? []);
@@ -178,7 +179,7 @@ async function buildReport(baseAnalysis, projectRoot) {
   const logicalSizeBytes = baseAnalysis.nodeModules?.logicalBytes ?? 0;
   const physicalSizeBytes = baseAnalysis.nodeModules?.physicalBytes ?? 0;
 
-  return {
+  const report = {
     ...baseAnalysis,
     schemaVersion: 2,
     generatedAt: nowIso(),
@@ -200,6 +201,93 @@ async function buildReport(baseAnalysis, projectRoot) {
     },
     largestPackages
   };
+
+  if (workspaceData) {
+    report.workspaces = workspaceData;
+  }
+
+  return report;
+}
+
+async function analyzeWorkspace(projectRoot, options, commandLogger) {
+  const resolved = await resolveWorkspacePackages(projectRoot);
+  if (!resolved.ok) {
+    return { ok: false, reason: resolved.reason };
+  }
+
+  const workspacePackages = [];
+  const allPackagesByNameVersion = new Map();
+
+  for (const wp of resolved.packages) {
+    commandLogger.info("analyze.workspace.package", { name: wp.name, dir: wp.relativeDir });
+
+    const { analysis, engine } = await analyzeWithBestEngine(wp.dir, options);
+
+    if (!analysis.ok) {
+      workspacePackages.push({
+        name: wp.name,
+        dir: wp.relativeDir,
+        ok: false,
+        reason: analysis.reason
+      });
+      continue;
+    }
+
+    const packages = await enrichPackagesWithManifest(analysis.packages ?? []);
+
+    // Track all packages by name@version across workspaces
+    for (const pkg of packages) {
+      const key = `${pkg.name}@${pkg.version}`;
+      if (!allPackagesByNameVersion.has(key)) {
+        allPackagesByNameVersion.set(key, { pkg, foundIn: [] });
+      }
+      allPackagesByNameVersion.get(key).foundIn.push(wp.name);
+    }
+
+    const directNames = await readDirectDependencyNames(wp.dir);
+    const duplicatesDetailed = buildDuplicateDetails(packages, analysis.duplicates ?? []);
+    const largestPackages = buildLargestPackages(packages, 10);
+
+    workspacePackages.push({
+      name: wp.name,
+      dir: wp.relativeDir,
+      ok: true,
+      engine,
+      analysis: {
+        totalPackages: packages.length,
+        directDependencies: directNames.size,
+        logicalSizeBytes: analysis.nodeModules?.logicalBytes ?? 0,
+        physicalSizeBytes: analysis.nodeModules?.physicalBytes ?? 0,
+        duplicates: duplicatesDetailed.length,
+        largestPackages
+      }
+    });
+  }
+
+  // Find cross-workspace duplicates
+  const crossWorkspaceDuplicates = [];
+  const packagesByName = new Map();
+
+  for (const [key, data] of allPackagesByNameVersion.entries()) {
+    const name = data.pkg.name;
+    if (!packagesByName.has(name)) {
+      packagesByName.set(name, []);
+    }
+    packagesByName.get(name).push({ version: data.pkg.version, foundIn: data.foundIn });
+  }
+
+  for (const [name, versions] of packagesByName.entries()) {
+    if (versions.length > 1) {
+      crossWorkspaceDuplicates.push({ name, versions });
+    }
+  }
+
+  return {
+    enabled: true,
+    type: resolved.type,
+    packages: workspacePackages,
+    crossWorkspaceDuplicates
+  };
 }
 
 export async function cmdAnalyze(argv) {
@@ -207,6 +295,7 @@ export async function cmdAnalyze(argv) {
     printText(`Usage:
   better analyze [--json] [--out FILE] [--serve] [--no-graph]
                  [--core|--no-core] [--cache-root PATH] [--no-save]
+                 [--workspace]
 `);
     return;
   }
@@ -224,7 +313,8 @@ export async function cmdAnalyze(argv) {
       core: { type: "boolean", default: false },
       "no-core": { type: "boolean", default: false },
       "cache-root": { type: "string", default: runtime.cacheRoot ?? undefined },
-      save: { type: "boolean", default: true }
+      save: { type: "boolean", default: true },
+      workspace: { type: "boolean", default: false }
     },
     allowPositionals: true,
     strict: false
@@ -232,14 +322,29 @@ export async function cmdAnalyze(argv) {
 
   const projectRoot = process.cwd();
   const coreMode = values["no-core"] ? "off" : values.core ? "force" : "auto";
-  commandLogger.info("analyze.start", { projectRoot, coreMode });
+  commandLogger.info("analyze.start", { projectRoot, coreMode, workspace: values.workspace });
+
+  let workspaceData = null;
+
+  if (values.workspace) {
+    workspaceData = await analyzeWorkspace(projectRoot, {
+      includeGraph: !values["no-graph"],
+      coreMode
+    }, commandLogger);
+
+    if (!workspaceData.enabled) {
+      printText(`better analyze: workspace mode requested but no workspaces found (${workspaceData.reason})`);
+      process.exitCode = 1;
+      return;
+    }
+  }
 
   const { analysis, engine } = await analyzeWithBestEngine(projectRoot, {
     includeGraph: !values["no-graph"],
     coreMode
   });
-  const report = await buildReport(analysis, projectRoot);
-  commandLogger.info("analyze.done", { engine, ok: report.ok });
+  const report = await buildReport(analysis, projectRoot, workspaceData);
+  commandLogger.info("analyze.done", { engine, ok: report.ok, workspace: values.workspace });
 
   if (values.save) {
     const cacheRoot = getCacheRoot(values["cache-root"]);
@@ -279,21 +384,54 @@ export async function cmdAnalyze(argv) {
       process.exitCode = 1;
       return;
     }
-    const top = [...report.largestPackages]
-      .slice(0, 10);
-    printText(
-      [
-        "better analyze",
-        `- packages: ${report.summary.totalPackages}`,
-        `- direct dependencies: ${report.summary.directDependencies}`,
-        `- max depth: ${report.summary.maxDepth} (p95: ${report.depth?.p95Depth ?? 0})`,
-        `- duplicates: ${report.duplicatesDetailed.length}`,
-        `- deprecated: ${report.deprecated.totalDeprecated}`,
-        `- node_modules (logical/physical): ${(report.summary.logicalSizeBytes / 1024 / 1024).toFixed(1)} MiB / ${(report.summary.physicalSizeBytes / 1024 / 1024).toFixed(1)} MiB`,
-        "- top packages by (attributed) physical bytes:",
-        ...top.map((p) => `  - ${p.key}: ${(p.physicalBytes / 1024 / 1024).toFixed(1)} MiB`)
-      ].join("\n")
-    );
+
+    const lines = [
+      "better analyze",
+      `- packages: ${report.summary.totalPackages}`,
+      `- direct dependencies: ${report.summary.directDependencies}`,
+      `- max depth: ${report.summary.maxDepth} (p95: ${report.depth?.p95Depth ?? 0})`,
+      `- duplicates: ${report.duplicatesDetailed.length}`,
+      `- deprecated: ${report.deprecated.totalDeprecated}`,
+      `- node_modules (logical/physical): ${(report.summary.logicalSizeBytes / 1024 / 1024).toFixed(1)} MiB / ${(report.summary.physicalSizeBytes / 1024 / 1024).toFixed(1)} MiB`
+    ];
+
+    if (workspaceData?.enabled) {
+      lines.push("");
+      lines.push(`workspace analysis (${workspaceData.type}):`);
+      lines.push(`- workspace packages: ${workspaceData.packages.length}`);
+
+      for (const wp of workspaceData.packages) {
+        if (!wp.ok) {
+          lines.push(`  - ${wp.name} (${wp.dir}): ${wp.reason}`);
+          continue;
+        }
+        lines.push(`  - ${wp.name} (${wp.dir}):`);
+        lines.push(`    - packages: ${wp.analysis.totalPackages}`);
+        lines.push(`    - direct deps: ${wp.analysis.directDependencies}`);
+        lines.push(`    - size: ${(wp.analysis.physicalSizeBytes / 1024 / 1024).toFixed(1)} MiB`);
+        lines.push(`    - duplicates: ${wp.analysis.duplicates}`);
+      }
+
+      if (workspaceData.crossWorkspaceDuplicates.length > 0) {
+        lines.push("");
+        lines.push(`cross-workspace duplicates: ${workspaceData.crossWorkspaceDuplicates.length}`);
+        for (const dup of workspaceData.crossWorkspaceDuplicates.slice(0, 10)) {
+          lines.push(`  - ${dup.name}:`);
+          for (const v of dup.versions) {
+            lines.push(`    - ${v.version} in [${v.foundIn.join(", ")}]`);
+          }
+        }
+        if (workspaceData.crossWorkspaceDuplicates.length > 10) {
+          lines.push(`  ... and ${workspaceData.crossWorkspaceDuplicates.length - 10} more`);
+        }
+      }
+    } else {
+      const top = [...report.largestPackages].slice(0, 10);
+      lines.push("- top packages by (attributed) physical bytes:");
+      lines.push(...top.map((p) => `  - ${p.key}: ${(p.physicalBytes / 1024 / 1024).toFixed(1)} MiB`));
+    }
+
+    printText(lines.join("\n"));
     return;
   }
 

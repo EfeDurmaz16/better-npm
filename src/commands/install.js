@@ -23,7 +23,9 @@ import {
   entryBytesFromNodeModulesSnapshot
 } from "../lib/globalCache.js";
 import { evaluateReuseMarker, writeReuseMarker } from "../lib/reuseMarker.js";
-import { findBetterCore } from "../lib/core.js";
+import { findBetterCore, tryLoadNapiAddon } from "../lib/core.js";
+import { resolveWorkspacePackages, workspaceSummary } from "../lib/workspaces.js";
+import { executionPlan, affectedPackages } from "../lib/topoSort.js";
 
 async function exists(p) {
   try {
@@ -288,6 +290,25 @@ async function resolveReplayRuntime(coreMode) {
   };
   if (coreMode === "js") return runtime;
 
+  // Try napi addon first
+  if (coreMode === "napi" || coreMode === "auto") {
+    const addon = tryLoadNapiAddon();
+    if (addon) {
+      return {
+        ...runtime,
+        selected: "napi",
+        fallbackUsed: true,
+        fallbackReason: "napi_replay_not_implemented"
+      };
+    } else if (coreMode === "napi") {
+      return {
+        ...runtime,
+        fallbackUsed: true,
+        fallbackReason: "napi_addon_not_found"
+      };
+    }
+  }
+
   const corePath = await findBetterCore();
   if (!corePath) {
     if (coreMode === "rust") {
@@ -326,6 +347,152 @@ async function runLifecycleRebuild(pm, projectRoot, jsonOutput, env) {
   });
 }
 
+async function workspaceInstall(workspaceResolved, options) {
+  const {
+    pm,
+    engine,
+    passthrough,
+    frozen,
+    production,
+    yarnBerry,
+    concurrency,
+    useTopo,
+    layout,
+    jsonOutput,
+    progress
+  } = options;
+
+  const plan = useTopo ? executionPlan(workspaceResolved.packages) : null;
+
+  if (plan && !plan.ok) {
+    return {
+      ok: false,
+      reason: plan.reason,
+      cycles: plan.cycles,
+      installed: []
+    };
+  }
+
+  const installed = [];
+  const env = pmEnv(pm, layout, engine);
+  const cmd = pmInstallCommand(pm, passthrough, engine, { frozen, production, yarnBerry });
+
+  if (plan && plan.ok) {
+    // Topological order: install level by level
+    for (let levelIdx = 0; levelIdx < plan.plan.length; levelIdx++) {
+      const level = plan.plan[levelIdx];
+      const levelPackages = level.parallel;
+
+      progress(`workspace level ${levelIdx + 1}/${plan.totalLevels}: installing ${levelPackages.length} package(s)`);
+
+      // Run installs in parallel up to concurrency limit
+      const batches = [];
+      for (let i = 0; i < levelPackages.length; i += concurrency) {
+        batches.push(levelPackages.slice(i, i + concurrency));
+      }
+
+      for (const batch of batches) {
+        const promises = batch.map(async (pkgName) => {
+          const pkg = workspaceResolved.packages.find(p => p.name === pkgName);
+          if (!pkg) return { name: pkgName, ok: false, reason: "package_not_found" };
+
+          const startMs = Date.now();
+          const result = await runCommand(cmd.cmd, cmd.args, {
+            cwd: pkg.dir,
+            env,
+            passthroughStdio: !jsonOutput,
+            captureLimitBytes: 256 * 1024
+          });
+          const endMs = Date.now();
+
+          return {
+            name: pkgName,
+            dir: pkg.dir,
+            wallTimeMs: endMs - startMs,
+            ok: result.exitCode === 0,
+            exitCode: result.exitCode,
+            stdout: result.stdout,
+            stderr: result.stderr
+          };
+        });
+
+        const batchResults = await Promise.all(promises);
+        installed.push(...batchResults);
+
+        // Fail fast if any install fails
+        const failed = batchResults.find(r => !r.ok);
+        if (failed) {
+          return {
+            ok: false,
+            reason: "workspace_install_failed",
+            failedPackage: failed.name,
+            installed
+          };
+        }
+      }
+    }
+
+    return {
+      ok: true,
+      installed,
+      executionPlan: {
+        levels: plan.plan.map(l => l.parallel),
+        maxParallelism: plan.maxParallelism
+      }
+    };
+  } else {
+    // No topological order: install all in parallel
+    progress(`workspace: installing ${workspaceResolved.packages.length} package(s) in parallel`);
+
+    const batches = [];
+    for (let i = 0; i < workspaceResolved.packages.length; i += concurrency) {
+      batches.push(workspaceResolved.packages.slice(i, i + concurrency));
+    }
+
+    for (const batch of batches) {
+      const promises = batch.map(async (pkg) => {
+        const startMs = Date.now();
+        const result = await runCommand(cmd.cmd, cmd.args, {
+          cwd: pkg.dir,
+          env,
+          passthroughStdio: !jsonOutput,
+          captureLimitBytes: 256 * 1024
+        });
+        const endMs = Date.now();
+
+        return {
+          name: pkg.name,
+          dir: pkg.dir,
+          wallTimeMs: endMs - startMs,
+          ok: result.exitCode === 0,
+          exitCode: result.exitCode,
+          stdout: result.stdout,
+          stderr: result.stderr
+        };
+      });
+
+      const batchResults = await Promise.all(promises);
+      installed.push(...batchResults);
+
+      const failed = batchResults.find(r => !r.ok);
+      if (failed) {
+        return {
+          ok: false,
+          reason: "workspace_install_failed",
+          failedPackage: failed.name,
+          installed
+        };
+      }
+    }
+
+    return {
+      ok: true,
+      installed,
+      executionPlan: null
+    };
+  }
+}
+
 export async function cmdInstall(argv) {
   if (argv.includes("--help") || argv.includes("-h")) {
     printText(`Usage:
@@ -334,9 +501,15 @@ export async function cmdInstall(argv) {
                  [--global-cache] [--cache-mode strict|relaxed] [--cache-scripts rebuild|off]
                  [--cache-read-only] [--cache-key-salt STRING]
                  [--measure-cache auto|on|off]
-                 [--core-mode auto|js|rust] [--fs-concurrency N] [--no-incremental]
+                 [--core-mode auto|js|rust|napi] [--fs-concurrency N] [--no-incremental]
                  [--parity-check auto|off|warn|strict]
+                 [--workspace PKG | -w PKG] [--workspace-concurrency N] [--workspace-topo]
                  [-- --<pm-specific flags>]
+
+Workspace options:
+  --workspace, -w PKG    Install only specific workspace package (can repeat)
+  --workspace-concurrency N   Max parallel workspace installs (default: 4)
+  --workspace-topo       Install in topological order (default: true)
 `);
     return;
   }
@@ -378,7 +551,12 @@ export async function cmdInstall(argv) {
       verify: { type: "string" }, // integrity-required|best-effort
       scripts: { type: "string" }, // rebuild|off
       "link-strategy": { type: "string" }, // auto|hardlink|copy
-      "bin-links": { type: "string" } // rootOnly
+      "bin-links": { type: "string" }, // rootOnly
+      // Workspace flags
+      workspace: { type: "string", multiple: true },
+      w: { type: "string", multiple: true },
+      "workspace-concurrency": { type: "string", default: "4" },
+      "workspace-topo": { type: "boolean", default: true }
     },
     allowPositionals: true,
     strict: false
@@ -424,7 +602,11 @@ export async function cmdInstall(argv) {
     "verify",
     "scripts",
     "link-strategy",
-    "bin-links"
+    "bin-links",
+    "workspace",
+    "w",
+    "workspace-concurrency",
+    "workspace-topo"
   ]);
   const passIndex = positionals.indexOf("--");
   const passthroughPositionals = passIndex >= 0 ? positionals.slice(passIndex + 1) : positionals;
@@ -444,6 +626,26 @@ export async function cmdInstall(argv) {
         "cwd has its own package.json but install resolved to parent root; use --project-root . to install current directory"
       );
     }
+  }
+
+  // Detect workspace configuration
+  const workspaceFilter = [...(values.workspace ?? []), ...(values.w ?? [])];
+  const workspaceConcurrency = Math.max(1, Number.parseInt(values["workspace-concurrency"], 10) || 4);
+  const workspaceTopo = values["workspace-topo"] !== false;
+  let workspaceResolved = await resolveWorkspacePackages(projectRoot);
+
+  if (workspaceResolved.ok && workspaceFilter.length > 0) {
+    // Filter to specific workspaces + their dependencies
+    const requestedSet = new Set(workspaceFilter);
+    const needed = affectedPackages(workspaceResolved.packages, workspaceFilter);
+    workspaceResolved = {
+      ...workspaceResolved,
+      packages: workspaceResolved.packages.filter(p => needed.includes(p.name)),
+      filtered: true,
+      requestedPackages: workspaceFilter
+    };
+  } else if (workspaceResolved.ok) {
+    workspaceResolved = { ...workspaceResolved, filtered: false };
   }
 
   const cacheRoot = getCacheRoot(values["cache-root"]);
@@ -536,8 +738,8 @@ export async function cmdInstall(argv) {
   const cacheReadOnly = values["cache-read-only"] === true;
   const cacheKeySalt = values["cache-key-salt"] ?? null;
   const coreMode = String(values["core-mode"] ?? "auto").toLowerCase();
-  if (coreMode !== "auto" && coreMode !== "js" && coreMode !== "rust") {
-    throw new Error(`Unknown --core-mode '${values["core-mode"]}'. Expected auto|js|rust.`);
+  if (coreMode !== "auto" && coreMode !== "js" && coreMode !== "rust" && coreMode !== "napi") {
+    throw new Error(`Unknown --core-mode '${values["core-mode"]}'. Expected auto|js|rust|napi.`);
   }
   const fsConcurrency = Math.max(1, Math.min(128, Number.parseInt(values["fs-concurrency"], 10) || 16));
   const incremental = values["no-incremental"] ? false : values.incremental !== false;
@@ -824,7 +1026,49 @@ export async function cmdInstall(argv) {
     }
   }
 
-  if (!skippedPmInstall) {
+  let workspaceInstallResult = null;
+  if (!skippedPmInstall && workspaceResolved.ok) {
+    // Workspace install path
+    progress(`workspace detected: ${workspaceResolved.type}, ${workspaceResolved.packages.length} package(s)`);
+    const wsStartMs = Date.now();
+    workspaceInstallResult = await workspaceInstall(workspaceResolved, {
+      pm,
+      engine: engine === "better" ? "pm" : engine, // workspace install uses PM, not better engine
+      passthrough,
+      frozen,
+      production,
+      yarnBerry,
+      concurrency: workspaceConcurrency,
+      useTopo: workspaceTopo,
+      layout,
+      jsonOutput: values.json,
+      progress
+    });
+    const wsEndMs = Date.now();
+
+    if (!workspaceInstallResult.ok) {
+      const err = new Error(`Workspace install failed: ${workspaceInstallResult.reason}`);
+      err.workspaceInstallResult = workspaceInstallResult;
+      throw err;
+    }
+
+    cmd = c.cmd;
+    args = c.args;
+    install = {
+      cmd,
+      args,
+      cwd: projectRoot,
+      startedAt: wsStartMs,
+      endedAt: wsEndMs,
+      wallTimeMs: wsEndMs - wsStartMs,
+      exitCode: 0,
+      signal: null,
+      stdout: "",
+      stderr: "",
+      stdoutTail: "",
+      stderrTail: ""
+    };
+  } else if (!skippedPmInstall) {
     if (engine === "better") {
       progress("engine=better: materializing from package-lock.json (experimental)");
       const started = Date.now();
@@ -1145,6 +1389,37 @@ export async function cmdInstall(argv) {
     report.parity = parityResult;
   }
 
+  // Add workspace info to report
+  if (workspaceResolved.ok && workspaceInstallResult) {
+    report.workspaces = {
+      type: workspaceResolved.type,
+      packageCount: workspaceResolved.packages.length,
+      filtered: workspaceResolved.filtered ?? false,
+      requestedPackages: workspaceResolved.requestedPackages ?? null,
+      installed: workspaceInstallResult.installed.map(i => ({
+        name: i.name,
+        dir: i.dir,
+        wallTimeMs: i.wallTimeMs,
+        ok: i.ok
+      })),
+      executionPlan: workspaceInstallResult.executionPlan
+        ? {
+            levels: workspaceInstallResult.executionPlan.levels,
+            maxParallelism: workspaceInstallResult.executionPlan.maxParallelism
+          }
+        : null,
+      concurrency: workspaceConcurrency,
+      topologicalOrder: workspaceTopo
+    };
+  } else if (workspaceResolved.ok) {
+    report.workspaces = {
+      type: workspaceResolved.type,
+      packageCount: workspaceResolved.packages.length,
+      installed: null,
+      reason: "workspace_install_skipped"
+    };
+  }
+
   // Add lockfile migration info if using bun engine with allow-engine policy
   if (engine === "bun" && lockfilePolicy === "allow-engine") {
     report.lockfileMigration = {
@@ -1387,6 +1662,22 @@ export async function cmdInstall(argv) {
 
   if (parityResult && parityResult.warnings.length > 0) {
     outputLines.push(`- parity warnings: ${parityResult.warnings.join("; ")}`);
+  }
+
+  if (report.workspaces) {
+    const ws = report.workspaces;
+    if (ws.installed) {
+      const successCount = ws.installed.filter(i => i.ok).length;
+      const failCount = ws.installed.filter(i => !i.ok).length;
+      const totalTime = ws.installed.reduce((sum, i) => sum + i.wallTimeMs, 0);
+      outputLines.push(`- workspaces: ${ws.type}, ${ws.packageCount} package(s), ${successCount} ok, ${failCount} failed`);
+      outputLines.push(`- workspace time: ${totalTime} ms (concurrency=${ws.concurrency}, topo=${ws.topologicalOrder})`);
+      if (ws.filtered) {
+        outputLines.push(`- workspace filter: ${ws.requestedPackages.join(", ")}`);
+      }
+    } else {
+      outputLines.push(`- workspaces: ${ws.type}, ${ws.packageCount} package(s) (${ws.reason})`);
+    }
   }
 
   printText(outputLines.join("\n"));

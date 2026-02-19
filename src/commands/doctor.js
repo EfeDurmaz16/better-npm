@@ -8,6 +8,7 @@ import { getRuntimeConfig } from "../lib/config.js";
 import { childLogger } from "../lib/log.js";
 import { detectPackageManager } from "../pm/detect.js";
 import { runCommand } from "../lib/spawn.js";
+import { resolveWorkspacePackages, isWorkspace } from "../lib/workspaces.js";
 
 async function exists(p) {
   try {
@@ -360,11 +361,93 @@ function securityFindingsFromAudit(audit) {
   return findings;
 }
 
+function findInconsistentVersions(workspacePackages) {
+  const depMap = new Map();
+
+  for (const wp of workspacePackages) {
+    for (const [depName, version] of Object.entries(wp.dependencies)) {
+      if (!depMap.has(depName)) {
+        depMap.set(depName, []);
+      }
+      depMap.get(depName).push({ package: wp.name, version });
+    }
+  }
+
+  const inconsistencies = [];
+  for (const [depName, usages] of depMap.entries()) {
+    const uniqueVersions = [...new Set(usages.map(u => u.version))];
+    if (uniqueVersions.length > 1) {
+      const packages = usages.map(u => u.package);
+      const versions = usages.map(u => ({ package: u.package, version: u.version }));
+      inconsistencies.push({
+        id: "inconsistent_versions",
+        rule: "inconsistent-versions",
+        dependency: depName,
+        packages,
+        versions,
+        severity: "warning",
+        impact: Math.min(12, uniqueVersions.length * 3),
+        recommendation: "Align dependency versions across workspace packages to avoid subtle bugs."
+      });
+    }
+  }
+
+  return inconsistencies;
+}
+
+async function runDoctorOnPackage(pkgDir, opts = {}) {
+  const coreMode = opts.coreMode ?? "auto";
+  const securityMode = opts.securityMode ?? "off";
+  const runtime = opts.runtime ?? {};
+
+  const res = await analyzeWithBestEngine(pkgDir, { includeGraph: false, coreMode });
+  if (!res.analysis?.ok) {
+    return {
+      ok: false,
+      reason: res.analysis?.reason ?? "analysis_failed",
+      score: 0,
+      findings: [],
+      deduction: 100
+    };
+  }
+
+  const analysis = res.analysis;
+  const packages = await enrichPackagesWithManifest(analysis.packages ?? []);
+  const lockfileStaleReason = await getLockfileStaleReason(pkgDir);
+
+  let audit = null;
+  let securityFindings = [];
+  if (securityMode !== "off") {
+    audit = await runSecurityAudit(pkgDir, { timeoutMs: securityMode === "on" ? 20_000 : 2_500 });
+    securityFindings = securityFindingsFromAudit(audit);
+  }
+
+  const findings = buildHealthFindings(analysis, packages, {
+    maxDepth: runtime.doctor?.maxDepth,
+    p95Depth: runtime.doctor?.p95Depth,
+    largeNodeModulesBytes: runtime.doctor?.largeNodeModulesBytes,
+    lockfileStaleReason,
+    securityFindings
+  });
+
+  const { score, deduction } = scoreFromAnalysis(analysis, { findings });
+
+  return {
+    ok: true,
+    analysis,
+    packages,
+    findings,
+    score,
+    deduction,
+    audit
+  };
+}
+
 export async function cmdDoctor(argv) {
   if (argv.includes("--help") || argv.includes("-h")) {
     printText(`Usage:
   better doctor [--json] [--threshold N] [--fix] [--from FILE]
-                [--security auto|on|off] [--core|--no-core]
+                [--security auto|on|off] [--core|--no-core] [--workspace]
 `);
     return;
   }
@@ -381,19 +464,118 @@ export async function cmdDoctor(argv) {
       security: { type: "string", default: "auto" }, // auto|on|off
       "fail-on": { type: "string", default: "fail" },
       core: { type: "boolean", default: false },
-      "no-core": { type: "boolean", default: false }
+      "no-core": { type: "boolean", default: false },
+      workspace: { type: "boolean", default: false }
     },
     allowPositionals: true,
     strict: false
   });
+
+  const projectRoot = process.cwd();
+  const thresholdRaw = Number(values.threshold);
+  const threshold = Number.isFinite(thresholdRaw) ? Math.max(0, Math.min(100, thresholdRaw)) : 70;
+  const securityMode = values.security;
+  if (!["auto", "on", "off"].includes(securityMode)) {
+    throw new Error(`Unknown --security '${securityMode}'. Expected auto|on|off.`);
+  }
+  const coreMode = values["no-core"] ? "off" : values.core ? "force" : "auto";
+
+  if (values.workspace) {
+    const workspaceResolved = await resolveWorkspacePackages(projectRoot);
+    if (!workspaceResolved.ok) {
+      const out = { ok: false, kind: "better.doctor", schemaVersion: 2, reason: "not_a_workspace" };
+      if (values.json) printJson(out);
+      else printText("better doctor: --workspace specified but no workspace detected");
+      process.exitCode = 1;
+      return;
+    }
+
+    commandLogger.info("doctor.workspace.start", { packageCount: workspaceResolved.packages.length });
+
+    const packageResults = [];
+    let totalDepCount = 0;
+
+    for (const wp of workspaceResolved.packages) {
+      const result = await runDoctorOnPackage(wp.dir, { coreMode, securityMode, runtime });
+      const depCount = Object.keys(wp.dependencies).length;
+      totalDepCount += depCount;
+      packageResults.push({
+        name: wp.name,
+        version: wp.version,
+        relativeDir: wp.relativeDir,
+        score: result.score,
+        findingCount: result.findings?.length ?? 0,
+        findings: result.findings ?? [],
+        depCount
+      });
+    }
+
+    const crossWorkspaceFindings = findInconsistentVersions(workspaceResolved.packages);
+
+    const aggregateScore = totalDepCount > 0
+      ? Math.round(
+          packageResults.reduce((sum, pkg) => sum + pkg.score * pkg.depCount, 0) / totalDepCount
+        )
+      : 100;
+
+    const out = {
+      ok: true,
+      kind: "better.doctor",
+      schemaVersion: 2,
+      projectRoot,
+      healthScore: {
+        score: aggregateScore,
+        threshold,
+        maxScore: 100,
+        deduction: 100 - aggregateScore,
+        belowThreshold: aggregateScore < threshold
+      },
+      workspaces: {
+        enabled: true,
+        aggregateScore,
+        packages: packageResults.map(pkg => ({
+          name: pkg.name,
+          score: pkg.score,
+          findingCount: pkg.findingCount
+        })),
+        crossWorkspaceFindings
+      },
+      packageResults
+    };
+
+    if (values.json) {
+      printJson(out);
+    } else {
+      const lines = [
+        "better doctor (workspace mode)",
+        `- aggregate health score: ${aggregateScore}/100 (threshold: ${threshold})`,
+        `- workspace packages: ${workspaceResolved.packages.length}`,
+        "",
+        "Per-package scores:"
+      ];
+      for (const pkg of packageResults) {
+        lines.push(`  - ${pkg.name}: ${pkg.score}/100 (${pkg.findingCount} findings)`);
+      }
+      if (crossWorkspaceFindings.length > 0) {
+        lines.push("");
+        lines.push("Cross-workspace findings:");
+        for (const finding of crossWorkspaceFindings) {
+          lines.push(`  - [${finding.severity}] ${finding.dependency}: ${finding.versions.length} different versions (impact ${finding.impact})`);
+        }
+      }
+      printText(lines.join("\n"));
+    }
+
+    process.exitCode = aggregateScore < threshold ? 1 : 0;
+    return;
+  }
 
   let analysis;
   if (values.from) {
     const raw = await fs.readFile(path.resolve(values.from), "utf8");
     analysis = JSON.parse(raw);
   } else {
-    const coreMode = values["no-core"] ? "off" : values.core ? "force" : "auto";
-    const res = await analyzeWithBestEngine(process.cwd(), { includeGraph: false, coreMode });
+    const res = await analyzeWithBestEngine(projectRoot, { includeGraph: false, coreMode });
     analysis = res.analysis;
   }
 
@@ -407,12 +589,6 @@ export async function cmdDoctor(argv) {
 
   let packages = await enrichPackagesWithManifest(analysis.packages ?? []);
   const lockfileStaleReason = await getLockfileStaleReason(analysis.projectRoot);
-  const thresholdRaw = Number(values.threshold);
-  const threshold = Number.isFinite(thresholdRaw) ? Math.max(0, Math.min(100, thresholdRaw)) : 70;
-  const securityMode = values.security;
-  if (!["auto", "on", "off"].includes(securityMode)) {
-    throw new Error(`Unknown --security '${securityMode}'. Expected auto|on|off.`);
-  }
   let audit = null;
   let securityFindings = [];
   if (securityMode !== "off") {
@@ -479,7 +655,26 @@ export async function cmdDoctor(argv) {
       securityAdvisories: findings.some((f) => String(f.id).startsWith("security_"))
     },
     securityAudit: audit,
-    fixes
+    fixes,
+    policySummary: (() => {
+      const policyConfig = runtime?.policy ?? null;
+      if (!policyConfig || !policyConfig.rules || policyConfig.rules.length === 0) {
+        return { configured: false, note: "No policy rules configured. Run 'better policy init' to set up." };
+      }
+      const deprecatedCount = findings.filter(f => f.id === "deprecated_package").length;
+      const duplicateCount = findings.filter(f => f.id === "duplicate_versions").length;
+      const depthViolation = findings.some(f => f.id === "excessive_depth" || f.id === "high_p95_depth");
+      const policyScore = Math.max(0, 100 - (deprecatedCount * 15 + duplicateCount * 5 + (depthViolation ? 10 : 0)));
+      return {
+        configured: true,
+        score: policyScore,
+        threshold: policyConfig.threshold ?? 70,
+        pass: policyScore >= (policyConfig.threshold ?? 70),
+        rulesCount: policyConfig.rules.length,
+        waiversCount: (policyConfig.waivers ?? []).length,
+        hint: policyScore >= (policyConfig.threshold ?? 70) ? "Policy check would pass" : "Policy check would fail - run 'better policy check' for details"
+      };
+    })()
   };
 
   if (values.json) {
@@ -491,7 +686,8 @@ export async function cmdDoctor(argv) {
         `- health score: ${score}/100 (threshold: ${threshold})`,
         `- findings: ${findings.length}`,
         `- errors/warnings/info: ${grouped.error.length}/${grouped.warning.length}/${grouped.info.length}`,
-        ...findings.slice(0, 10).map((f) => `  - [${f.severity}] ${f.title} (impact ${f.impact})`)
+        ...findings.slice(0, 10).map((f) => `  - [${f.severity}] ${f.title} (impact ${f.impact})`),
+        ...(out.policySummary?.configured ? [`- policy: ${out.policySummary.pass ? "PASS" : "FAIL"} (score ${out.policySummary.score})`] : [])
       ].join("\n")
     );
   }
