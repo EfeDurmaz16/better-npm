@@ -26,6 +26,8 @@ import { evaluateReuseMarker, writeReuseMarker } from "../lib/reuseMarker.js";
 import { findBetterCore, tryLoadNapiAddon } from "../lib/core.js";
 import { resolveWorkspacePackages, workspaceSummary } from "../lib/workspaces.js";
 import { executionPlan, affectedPackages } from "../lib/topoSort.js";
+import { loadOverrides, validateOverrides } from "../lib/overrides.js";
+import { verifyFrozenLockfile } from "../lib/frozenLockfile.js";
 
 async function exists(p) {
   try {
@@ -744,6 +746,48 @@ Workspace options:
   const fsConcurrency = Math.max(1, Math.min(128, Number.parseInt(values["fs-concurrency"], 10) || 16));
   const incremental = values["no-incremental"] ? false : values.incremental !== false;
 
+  // Frozen lockfile enforcement: verify lockfile consistency before proceeding
+  let frozenLockfileResult = null;
+  if (frozen) {
+    progress("frozen lockfile check: verifying lockfile consistency");
+    frozenLockfileResult = await verifyFrozenLockfile(projectRoot, { pm });
+    if (!frozenLockfileResult.ok) {
+      const err = new Error(
+        `Frozen lockfile check failed:\n${frozenLockfileResult.errors.join("\n")}`
+      );
+      err.frozenLockfileResult = frozenLockfileResult;
+      err.exitCode = 1;
+      throw err;
+    }
+    if (frozenLockfileResult.warnings.length > 0 && !values.json) {
+      for (const w of frozenLockfileResult.warnings) {
+        printText(`  warning: ${w}`);
+      }
+    }
+  }
+
+  // Load and report active overrides/resolutions
+  const overridesResult = await loadOverrides(projectRoot);
+  let overridesValidation = null;
+  if (overridesResult.count > 0) {
+    progress(`overrides detected: ${overridesResult.count} override(s) in ${overridesResult.format} format`);
+    // Validate overrides against lockfile if npm format
+    if (overridesResult.format === "npm") {
+      try {
+        const lockRaw = await fs.readFile(path.join(projectRoot, "package-lock.json"), "utf8");
+        const lock = JSON.parse(lockRaw);
+        overridesValidation = validateOverrides(overridesResult.flat, lock.packages ?? {});
+        if (overridesValidation.warnings.length > 0 && !values.json) {
+          for (const w of overridesValidation.warnings) {
+            printText(`  override warning: ${w.message}`);
+          }
+        }
+      } catch {
+        // lockfile not available, skip validation
+      }
+    }
+  }
+
   const runId = `${Date.now()}-${shortHash(`${projectRoot}:${pm}:${mode}`)}`;
   const startedAt = nowIso();
   const startedAtMs = Date.now();
@@ -1381,7 +1425,30 @@ Workspace options:
         : { ok: false, reason: afterCache.reason }
     },
     metrics: installMetrics,
-    baseline: values.baseline === "run" ? { mode: "run", status: "pending" } : { mode: "estimate", status: "unavailable_offline" }
+    baseline: values.baseline === "run" ? { mode: "run", status: "pending" } : { mode: "estimate", status: "unavailable_offline" },
+    frozenLockfile: frozenLockfileResult
+      ? {
+          verified: frozenLockfileResult.ok,
+          lockfile: frozenLockfileResult.lockfile,
+          hash: frozenLockfileResult.hash,
+          errors: frozenLockfileResult.errors,
+          warnings: frozenLockfileResult.warnings
+        }
+      : null,
+    overrides: overridesResult.count > 0
+      ? {
+          format: overridesResult.format,
+          count: overridesResult.count,
+          entries: overridesResult.flat,
+          validation: overridesValidation
+            ? {
+                applied: overridesValidation.valid.length,
+                warnings: overridesValidation.warnings.length,
+                details: overridesValidation.warnings
+              }
+            : null
+        }
+      : null
   };
 
   // Add parity result to report
@@ -1662,6 +1729,14 @@ Workspace options:
 
   if (parityResult && parityResult.warnings.length > 0) {
     outputLines.push(`- parity warnings: ${parityResult.warnings.join("; ")}`);
+  }
+
+  if (frozenLockfileResult) {
+    outputLines.push(`- frozen lockfile: ${frozenLockfileResult.ok ? "verified" : "FAILED"} (${frozenLockfileResult.lockfile})`);
+  }
+
+  if (overridesResult.count > 0) {
+    outputLines.push(`- overrides: ${overridesResult.count} active (${overridesResult.format} format)`);
   }
 
   if (report.workspaces) {

@@ -11,6 +11,11 @@ import { cmdPolicy } from "./commands/policy.js";
 import { cmdWorkspace } from "./commands/workspace.js";
 import { cmdAudit } from "./commands/audit.js";
 import { cmdDashboard } from "./commands/dashboard.js";
+import { cmdWhy } from "./commands/why.js";
+import { cmdLicense } from "./commands/license.js";
+import { cmdDedupe } from "./commands/dedupe.js";
+import { cmdOutdated } from "./commands/outdated.js";
+import { cmdScripts } from "./commands/scripts.js";
 import { printJson, printText, toErrorJson } from "./lib/output.js";
 import { resolveRuntimeConfig, setRuntimeConfig } from "./lib/config.js";
 import { configureLogger, logger } from "./lib/log.js";
@@ -34,6 +39,11 @@ Commands:
   audit              Scan dependencies for known vulnerabilities (OSV.dev)
   dashboard          Interactive TUI dashboard for project health
   run <script>       Run package.json scripts via npm/pnpm/yarn
+  why <package>      Show why a package is installed (dependency paths)
+  dedupe             Detect duplicate packages in node_modules
+  license            Scan node_modules for package licenses
+  outdated           Check for newer versions of installed packages
+  scripts            Manage install script sandboxing (list, allow, block)
   lint|test|dev|build  Script aliases for better run
 
 Global options:
@@ -130,6 +140,21 @@ export async function runCli(argv) {
         break;
       case "run":
         await cmdRun(rest);
+        break;
+      case "why":
+        await cmdWhy(rest);
+        break;
+      case "license":
+        await cmdLicense(rest);
+        break;
+      case "dedupe":
+        await cmdDedupe(rest);
+        break;
+      case "outdated":
+        await cmdOutdated(rest);
+        break;
+      case "scripts":
+        await cmdScripts(rest);
         break;
       case "lint":
       case "test":
