@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { runCommand } from "./spawn.js";
 
@@ -94,6 +95,57 @@ export async function runBetterCoreScan(corePath, rootDir) {
   }
   const json = JSON.parse(res.stdout);
   return json;
+}
+
+// --- napi addon loading ---
+
+let _napiAddon = undefined;
+
+export function tryLoadNapiAddon() {
+  if (_napiAddon !== undefined) return _napiAddon;
+  const require = createRequire(import.meta.url);
+  const root = betterInstallRoot();
+  const candidates = [
+    path.join(root, "crates", "better-napi", "better-core.darwin-arm64.node"),
+  ];
+  for (const p of candidates) {
+    try {
+      _napiAddon = require(p);
+      return _napiAddon;
+    } catch {
+      continue;
+    }
+  }
+  _napiAddon = null;
+  return null;
+}
+
+export function runBetterCoreAnalyzeNapi(projectRoot, opts = {}) {
+  const addon = tryLoadNapiAddon();
+  if (!addon) throw new Error("napi addon not available");
+  const result = addon.analyze(projectRoot, !!opts.includeGraph);
+  if (!result || typeof result !== "object") throw new Error("napi analyze returned invalid result");
+  return result;
+}
+
+export function runBetterCoreScanNapi(rootDir) {
+  const addon = tryLoadNapiAddon();
+  if (!addon) throw new Error("napi addon not available");
+  const result = addon.scan(rootDir);
+  if (!result || typeof result !== "object") throw new Error("napi scan returned invalid result");
+  return result;
+}
+
+export function runBetterCoreMaterializeNapi(srcDir, destDir, opts = {}) {
+  const addon = tryLoadNapiAddon();
+  if (!addon) throw new Error("napi addon not available");
+  const napiOpts = {};
+  if (opts.linkStrategy) napiOpts.linkStrategy = String(opts.linkStrategy);
+  if (opts.jobs != null) napiOpts.jobs = Number(opts.jobs);
+  if (opts.profile) napiOpts.profile = String(opts.profile);
+  const result = addon.materialize(srcDir, destDir, napiOpts);
+  if (!result || typeof result !== "object") throw new Error("napi materialize returned invalid result");
+  return result;
 }
 
 export async function runBetterCoreMaterialize(corePath, srcDir, destDir, opts = {}) {

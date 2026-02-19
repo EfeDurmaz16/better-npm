@@ -1,6 +1,24 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
+export const FALLBACK_REASONS = {
+  EPERM: "eperm",
+  EXDEV: "exdev",
+  ENOSPC: "enospc",
+  EMLINK: "emlink",
+  UNKNOWN: "unknown_link_error"
+};
+
+function classifyLinkError(err) {
+  const code = err?.code ?? "";
+  const msg = String(err?.message ?? "");
+  if (code === "EPERM" || msg.includes("EPERM") || msg.includes("operation not permitted")) return FALLBACK_REASONS.EPERM;
+  if (code === "EXDEV" || msg.includes("EXDEV") || msg.includes("cross-device")) return FALLBACK_REASONS.EXDEV;
+  if (code === "ENOSPC" || msg.includes("ENOSPC") || msg.includes("no space")) return FALLBACK_REASONS.ENOSPC;
+  if (code === "EMLINK" || msg.includes("EMLINK") || msg.includes("too many links")) return FALLBACK_REASONS.EMLINK;
+  return FALLBACK_REASONS.UNKNOWN;
+}
+
 async function exists(p) {
   try {
     await fs.access(p);
@@ -113,11 +131,17 @@ export async function materializeTree(srcDir, destDir, opts = {}) {
                 stats.filesLinked = Number(stats.filesLinked ?? 0) + 1;
               }
               return;
-            } catch {
+            } catch (linkErr) {
+              const fallbackCode = classifyLinkError(linkErr);
+              if (stats) {
+                stats.fallbackReasons = stats.fallbackReasons ?? {};
+                stats.fallbackReasons[fallbackCode] = (stats.fallbackReasons[fallbackCode] ?? 0) + 1;
+              }
               await fs.copyFile(src, dst);
               if (stats) {
                 stats.filesCopied = Number(stats.filesCopied ?? 0) + 1;
                 stats.linkFallbackCopies = Number(stats.linkFallbackCopies ?? 0) + 1;
+                stats.lastFallbackCode = fallbackCode;
               }
               return;
             }
@@ -133,6 +157,32 @@ export async function materializeTree(srcDir, destDir, opts = {}) {
   }
 
   await Promise.all(tasks);
+}
+
+export async function materializeTreeWithRetry(srcDir, destDir, opts = {}) {
+  const { maxRetries = 1, ...restOpts } = opts;
+  const fsConcurrency = restOpts.fsConcurrency ?? 16;
+
+  try {
+    await materializeTree(srcDir, destDir, restOpts);
+    return { ok: true, retried: false, attempts: 1 };
+  } catch (err) {
+    if (maxRetries <= 0) throw err;
+
+    // Retry with reduced concurrency
+    const reducedConcurrency = Math.max(1, Math.floor(fsConcurrency / 2));
+    const retryOpts = { ...restOpts, fsConcurrency: reducedConcurrency };
+
+    // Clean destination before retry
+    await ensureEmptyDir(destDir);
+
+    try {
+      await materializeTree(srcDir, destDir, retryOpts);
+      return { ok: true, retried: true, attempts: 2, reducedConcurrency, originalError: err?.message };
+    } catch (retryErr) {
+      throw retryErr;
+    }
+  }
 }
 
 export async function atomicReplaceDir(stagingDir, finalDir) {

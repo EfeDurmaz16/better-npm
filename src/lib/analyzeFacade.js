@@ -1,9 +1,26 @@
 import { analyzeProject } from "../analyze/analyzeProject.js";
-import { findBetterCore, runBetterCoreAnalyze } from "./core.js";
+import { findBetterCore, runBetterCoreAnalyze, tryLoadNapiAddon, runBetterCoreAnalyzeNapi } from "./core.js";
 
 export async function analyzeWithBestEngine(projectRoot, opts = {}) {
   const { includeGraph = true, coreMode = "auto" } = opts;
-  // coreMode: "auto" | "force" | "off"
+  // coreMode: "auto" | "napi" | "force" | "off"
+
+  // Try napi first (for "auto" or "napi" mode)
+  if (coreMode === "napi" || coreMode === "auto") {
+    const addon = tryLoadNapiAddon();
+    if (addon) {
+      try {
+        const analysis = runBetterCoreAnalyzeNapi(projectRoot, { includeGraph });
+        return { analysis, engine: "napi", corePath: null };
+      } catch (err) {
+        if (coreMode === "napi") throw err;
+        // fall through to binary/JS
+      }
+    } else if (coreMode === "napi") {
+      throw new Error("napi addon not found (build via `npm run napi:build`)");
+    }
+  }
+
   if (coreMode !== "off") {
     const corePath = await findBetterCore();
     if (corePath) {

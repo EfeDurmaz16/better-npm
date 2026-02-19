@@ -14,6 +14,11 @@ const DEFAULTS = {
     maxDepth: 15,
     p95Depth: 10,
     largeNodeModulesBytes: 500 * 1024 * 1024
+  },
+  policy: {
+    threshold: 70,
+    rules: [],
+    waivers: []
   }
 };
 
@@ -141,7 +146,7 @@ function validateAndNormalize(config) {
     normalized.coreMode = DEFAULTS.coreMode;
   }
   const coreMode = normalized.coreMode.toLowerCase();
-  normalized.coreMode = coreMode === "js" || coreMode === "rust" || coreMode === "auto"
+  normalized.coreMode = coreMode === "js" || coreMode === "rust" || coreMode === "napi" || coreMode === "auto"
     ? coreMode
     : DEFAULTS.coreMode;
   const fsConcurrency = Number(normalized.fsConcurrency);
@@ -163,6 +168,12 @@ function validateAndNormalize(config) {
   normalized.doctor.largeNodeModulesBytes = Number.isFinite(largeBytes)
     ? Math.max(10 * 1024 * 1024, largeBytes)
     : DEFAULTS.doctor.largeNodeModulesBytes;
+
+  if (!isObject(normalized.policy)) normalized.policy = { ...DEFAULTS.policy };
+  const policyThreshold = Number(normalized.policy.threshold);
+  normalized.policy.threshold = Number.isFinite(policyThreshold) ? Math.max(0, Math.min(100, policyThreshold)) : DEFAULTS.policy.threshold;
+  if (!Array.isArray(normalized.policy.rules)) normalized.policy.rules = DEFAULTS.policy.rules;
+  if (!Array.isArray(normalized.policy.waivers)) normalized.policy.waivers = DEFAULTS.policy.waivers;
 
   return normalized;
 }

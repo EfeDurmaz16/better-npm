@@ -1,5 +1,5 @@
 import { scanTree } from "./fsScan.js";
-import { findBetterCore, runBetterCoreScan } from "./core.js";
+import { findBetterCore, runBetterCoreScan, tryLoadNapiAddon, runBetterCoreScanNapi } from "./core.js";
 import { runCommand } from "./spawn.js";
 
 function parseDuKb(stdout) {
@@ -75,11 +75,11 @@ async function duScan(rootDir, opts = {}) {
 
 /**
  * Scan a directory for logical/physical size.
- * Uses better-core when available, falls back to JS scanner.
+ * Uses napi addon when available, then better-core binary, falls back to JS scanner.
  *
  * @param {string} rootDir
  * @param {Object} opts
- * @param {"auto"|"force"|"off"} opts.coreMode
+ * @param {"auto"|"napi"|"force"|"off"} opts.coreMode
  * @param {"auto"|"on"|"off"} opts.duFallback
  */
 export async function scanTreeWithBestEngine(rootDir, opts = {}) {
@@ -93,6 +93,35 @@ export async function scanTreeWithBestEngine(rootDir, opts = {}) {
       if (du.ok) return du;
     }
     return scanTree(rootDir);
+  }
+
+  // Try napi first (for "auto" or "napi" mode)
+  if (coreMode === "napi" || coreMode === "auto") {
+    const addon = tryLoadNapiAddon();
+    if (addon) {
+      try {
+        const res = runBetterCoreScanNapi(rootDir);
+        if (res && typeof res === "object") {
+          return {
+            rootDir,
+            ok: !!res.ok,
+            reason: res.reason ?? null,
+            logicalBytes: Number(res.logicalBytes ?? 0),
+            physicalBytes: Number(res.physicalBytes ?? 0),
+            physicalBytesApprox: !!res.physicalBytesApprox,
+            fileCount: Number(res.fileCount ?? 0),
+            packageCount: Number(res.packageCount ?? 0),
+            dirCount: 0,
+            symlinkCount: 0
+          };
+        }
+      } catch {
+        if (coreMode === "napi") throw new Error("napi scan failed");
+        // fall through
+      }
+    } else if (coreMode === "napi") {
+      throw new Error("napi addon not found");
+    }
   }
 
   try {

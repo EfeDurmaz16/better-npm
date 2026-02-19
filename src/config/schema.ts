@@ -5,6 +5,19 @@ export interface BetterConfig {
   healthThreshold: number; // 0-100
   telemetry: boolean;
   json: boolean;
+  policy?: {
+    threshold?: number;
+    rules?: Array<{
+      id: string;
+      severity?: 'error' | 'warning' | 'info';
+      [key: string]: unknown;
+    }>;
+    waivers?: Array<{
+      rule?: string;
+      package?: string;
+      reason?: string;
+    }>;
+  };
 }
 
 export type PartialConfig = Partial<BetterConfig>;
@@ -92,7 +105,7 @@ export function validateConfig(config: unknown): ValidationError[] {
   }
 
   // Check for unknown keys
-  const knownKeys = ['packageManager', 'cacheDir', 'logLevel', 'healthThreshold', 'telemetry', 'json'];
+  const knownKeys = ['packageManager', 'cacheDir', 'logLevel', 'healthThreshold', 'telemetry', 'json', 'policy'];
   for (const key of Object.keys(cfg)) {
     if (!knownKeys.includes(key)) {
       errors.push({

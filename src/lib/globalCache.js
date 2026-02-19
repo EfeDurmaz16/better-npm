@@ -2,8 +2,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
-import { ensureEmptyDir, materializeTree, atomicReplaceDir } from "../engine/better/materialize.js";
-import { findBetterCore, runBetterCoreMaterialize } from "./core.js";
+import { ensureEmptyDir, materializeTree, materializeTreeWithRetry, atomicReplaceDir } from "../engine/better/materialize.js";
+import { findBetterCore, runBetterCoreMaterialize, tryLoadNapiAddon, runBetterCoreMaterializeNapi } from "./core.js";
 
 async function exists(p) {
   try {
@@ -241,7 +241,9 @@ export async function materializeFromGlobalCache(layout, key, projectRoot, opts 
     filesCopied: 0,
     linkFallbackCopies: 0,
     directories: 0,
-    symlinks: 0
+    symlinks: 0,
+    fallbackReasons: {},
+    lastFallbackCode: null
   };
   await ensureEmptyDir(staging);
   const runtime = {
@@ -249,11 +251,46 @@ export async function materializeFromGlobalCache(layout, key, projectRoot, opts 
     selected: "js",
     fallbackUsed: false,
     fallbackReason: null,
-    corePath: null
+    corePath: null,
+    fallbackCode: null
   };
 
   let usedCore = false;
-  if (coreMode !== "js") {
+
+  // Try napi first
+  if (coreMode === "napi" || (coreMode !== "js" && coreMode !== "rust")) {
+    const addon = tryLoadNapiAddon();
+    if (addon) {
+      try {
+        const napiResult = runBetterCoreMaterializeNapi(verify.paths.nodeModulesPath, staging, {
+          linkStrategy,
+          jobs: fsConcurrency
+        });
+        if (napiResult?.ok === true && napiResult?.stats) {
+          stats.files = Number(napiResult.stats.files ?? 0);
+          stats.filesLinked = Number(napiResult.stats.filesLinked ?? 0);
+          stats.filesCopied = Number(napiResult.stats.filesCopied ?? 0);
+          stats.linkFallbackCopies = Number(napiResult.stats.linkFallbackCopies ?? 0);
+          stats.directories = Number(napiResult.stats.directories ?? 0);
+          stats.symlinks = Number(napiResult.stats.symlinks ?? 0);
+          runtime.selected = "napi";
+          usedCore = true;
+        }
+      } catch (err) {
+        if (coreMode === "napi") {
+          runtime.fallbackUsed = true;
+          runtime.fallbackReason = err?.message ?? "napi_materialize_failed";
+        }
+        // fall through to binary
+      }
+    } else if (coreMode === "napi") {
+      runtime.fallbackUsed = true;
+      runtime.fallbackReason = "napi_addon_not_found";
+    }
+  }
+
+  // Try binary subprocess
+  if (!usedCore && coreMode !== "js") {
     const corePath = await findBetterCore();
     if (corePath) {
       runtime.corePath = corePath;
@@ -287,6 +324,7 @@ export async function materializeFromGlobalCache(layout, key, projectRoot, opts 
 
   if (!usedCore) {
     await materializeTree(verify.paths.nodeModulesPath, staging, { linkStrategy, stats, fsConcurrency });
+    runtime.fallbackCode = stats.lastFallbackCode ?? null;
   }
   await atomicReplaceDir(staging, path.join(projectRoot, "node_modules"));
   const endedAt = Date.now();
@@ -324,19 +362,55 @@ export async function captureProjectNodeModulesToGlobalCache(layout, key, projec
     filesCopied: 0,
     linkFallbackCopies: 0,
     directories: 0,
-    symlinks: 0
+    symlinks: 0,
+    fallbackReasons: {},
+    lastFallbackCode: null
   };
   const runtime = {
     requested: coreMode,
     selected: "js",
     fallbackUsed: false,
     fallbackReason: null,
-    corePath: null
+    corePath: null,
+    fallbackCode: null
   };
 
   await ensureEmptyDir(stagingRoot);
   let usedCore = false;
-  if (coreMode !== "js") {
+
+  // Try napi first
+  if (coreMode === "napi" || (coreMode !== "js" && coreMode !== "rust")) {
+    const addon = tryLoadNapiAddon();
+    if (addon) {
+      try {
+        const napiResult = runBetterCoreMaterializeNapi(source, stagingNodeModules, {
+          linkStrategy,
+          jobs: fsConcurrency
+        });
+        if (napiResult?.ok === true && napiResult?.stats) {
+          stats.files = Number(napiResult.stats.files ?? 0);
+          stats.filesLinked = Number(napiResult.stats.filesLinked ?? 0);
+          stats.filesCopied = Number(napiResult.stats.filesCopied ?? 0);
+          stats.linkFallbackCopies = Number(napiResult.stats.linkFallbackCopies ?? 0);
+          stats.directories = Number(napiResult.stats.directories ?? 0);
+          stats.symlinks = Number(napiResult.stats.symlinks ?? 0);
+          runtime.selected = "napi";
+          usedCore = true;
+        }
+      } catch (err) {
+        if (coreMode === "napi") {
+          runtime.fallbackUsed = true;
+          runtime.fallbackReason = err?.message ?? "napi_materialize_failed";
+        }
+      }
+    } else if (coreMode === "napi") {
+      runtime.fallbackUsed = true;
+      runtime.fallbackReason = "napi_addon_not_found";
+    }
+  }
+
+  // Try binary subprocess
+  if (!usedCore && coreMode !== "js") {
     const corePath = await findBetterCore();
     if (corePath) {
       runtime.corePath = corePath;
@@ -370,6 +444,7 @@ export async function captureProjectNodeModulesToGlobalCache(layout, key, projec
 
   if (!usedCore) {
     await materializeTree(source, stagingNodeModules, { linkStrategy, stats, fsConcurrency });
+    runtime.fallbackCode = stats.lastFallbackCode ?? null;
   }
   await fs.mkdir(stagingRoot, { recursive: true });
   await fs.writeFile(
