@@ -261,9 +261,12 @@ async function streamingDownloadVerifyExtract(url, casFileDest, integrity, unpac
 
         let fileFinished = false;
         let gunzipFinished = false;
+        let resolved = false;
 
         function maybeResolve() {
+          if (resolved) return;
           if (fileFinished && gunzipFinished) {
+            resolved = true;
             const digest = hasher.digest();
             const expected = Buffer.from(chosen.base64, "base64");
             resolve({
