@@ -1,21 +1,4 @@
 import { parseArgs } from "node:util";
-import { cmdInstall } from "./commands/install.js";
-import { cmdAnalyze } from "./commands/analyze.js";
-import { cmdCache } from "./commands/cache.js";
-import { cmdDoctor } from "./commands/doctor.js";
-import { cmdServe } from "./commands/serve.js";
-import { cmdBenchmark } from "./commands/benchmark.js";
-import { cmdRun } from "./commands/run.js";
-import { cmdLock } from "./commands/lock.js";
-import { cmdPolicy } from "./commands/policy.js";
-import { cmdWorkspace } from "./commands/workspace.js";
-import { cmdAudit } from "./commands/audit.js";
-import { cmdDashboard } from "./commands/dashboard.js";
-import { cmdWhy } from "./commands/why.js";
-import { cmdLicense } from "./commands/license.js";
-import { cmdDedupe } from "./commands/dedupe.js";
-import { cmdOutdated } from "./commands/outdated.js";
-import { cmdScripts } from "./commands/scripts.js";
 import { printJson, printText, toErrorJson } from "./lib/output.js";
 import { resolveRuntimeConfig, setRuntimeConfig } from "./lib/config.js";
 import { configureLogger, logger } from "./lib/log.js";
@@ -106,61 +89,61 @@ export async function runCli(argv) {
     logger.info("command.start", { argv: rest });
     switch (command) {
       case "install":
-        await cmdInstall(rest);
+        await (await import("./commands/install.js")).cmdInstall(rest);
         break;
       case "analyze":
-        await cmdAnalyze(rest);
+        await (await import("./commands/analyze.js")).cmdAnalyze(rest);
         break;
       case "cache":
-        await cmdCache(rest);
+        await (await import("./commands/cache.js")).cmdCache(rest);
         break;
       case "doctor":
-        await cmdDoctor(rest);
+        await (await import("./commands/doctor.js")).cmdDoctor(rest);
         break;
       case "serve":
-        await cmdServe(rest);
+        await (await import("./commands/serve.js")).cmdServe(rest);
         break;
       case "benchmark":
-        await cmdBenchmark(rest);
+        await (await import("./commands/benchmark.js")).cmdBenchmark(rest);
         break;
       case "lock":
-        await cmdLock(rest);
+        await (await import("./commands/lock.js")).cmdLock(rest);
         break;
       case "policy":
-        await cmdPolicy(rest);
+        await (await import("./commands/policy.js")).cmdPolicy(rest);
         break;
       case "workspace":
-        await cmdWorkspace(rest);
+        await (await import("./commands/workspace.js")).cmdWorkspace(rest);
         break;
       case "audit":
-        await cmdAudit(rest);
+        await (await import("./commands/audit.js")).cmdAudit(rest);
         break;
       case "dashboard":
-        await cmdDashboard(rest);
+        await (await import("./commands/dashboard.js")).cmdDashboard(rest);
         break;
       case "run":
-        await cmdRun(rest);
+        await (await import("./commands/run.js")).cmdRun(rest);
         break;
       case "why":
-        await cmdWhy(rest);
+        await (await import("./commands/why.js")).cmdWhy(rest);
         break;
       case "license":
-        await cmdLicense(rest);
+        await (await import("./commands/license.js")).cmdLicense(rest);
         break;
       case "dedupe":
-        await cmdDedupe(rest);
+        await (await import("./commands/dedupe.js")).cmdDedupe(rest);
         break;
       case "outdated":
-        await cmdOutdated(rest);
+        await (await import("./commands/outdated.js")).cmdOutdated(rest);
         break;
       case "scripts":
-        await cmdScripts(rest);
+        await (await import("./commands/scripts.js")).cmdScripts(rest);
         break;
       case "lint":
       case "test":
       case "dev":
       case "build":
-        await cmdRun(rest, { aliasScript: command });
+        await (await import("./commands/run.js")).cmdRun(rest, { aliasScript: command });
         break;
       case "help":
       default:
