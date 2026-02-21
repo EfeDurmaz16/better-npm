@@ -64,44 +64,95 @@ The JS CLI automatically detects and uses the Rust binary when available, fallin
 
 ## Commands
 
-### Core
+### Install & Analyze
 
 ```bash
-better install              # Install dependencies (auto-selects fastest strategy)
-better install --dedup      # Install with cross-project file dedup
-better install --no-scripts # Skip lifecycle scripts
-better analyze              # Dependency attribution, duplicates, depth analysis
-better doctor               # Health score (0-100) with actionable rules
-better benchmark            # Comparative timing across package managers
+better install                  # Install dependencies (auto-selects fastest strategy)
+better install --dedup          # Install with cross-project file dedup
+better install --no-scripts     # Skip lifecycle scripts
+better analyze                  # Dependency attribution, duplicates, depth analysis
+better scan                     # Low-level lockfile scan
+```
+
+### Script Runner
+
+```bash
+better run <script>             # Run package.json scripts (node_modules/.bin on PATH)
+better run lint test build      # Run multiple scripts in parallel
+better test                     # Alias: better run test
+better lint                     # Alias: better run lint
+better dev                      # Alias: better run dev
+better build                    # Alias: better run build
+better start                    # Alias: better run start
+```
+
+### Dependency Intelligence
+
+```bash
+better why <package>            # Trace why a package is installed (dependency paths)
+better outdated                 # Check for newer versions on npm registry
+better dedupe                   # Detect duplicate packages with dedup analysis
+better license                  # Scan all package licenses
+better license --allow MIT,ISC  # Allow only specific licenses
+better license --deny GPL-3.0   # Deny specific licenses
+better audit                    # Security vulnerability scan via OSV.dev
+better audit --min-severity high # Filter by severity (critical/high/medium/low)
+```
+
+### Health & Diagnostics
+
+```bash
+better doctor                   # Health score (0-100) with actionable findings
+better doctor --threshold 80    # Fail if score below threshold
+better benchmark                # Comparative install timing across package managers
+better benchmark --rounds 5     # Number of benchmark rounds
+better benchmark --pm npm,bun   # Select package managers to compare
+better env                      # Show Node.js version, platform, project info
 ```
 
 ### Cache
 
 ```bash
-better cache stats          # Cache size, hit rates, storage breakdown
-better cache gc             # Garbage collect unreferenced entries
+better cache stats              # Cache size, package count, storage breakdown
+better cache gc                 # Garbage collect old entries
+better cache gc --max-age 30    # Remove entries older than N days
+better cache gc --dry-run       # Preview what would be removed
 ```
 
-### Utilities
+### Developer Tools
 
 ```bash
-better run <script>         # Run package.json scripts
-better lock                 # Generate deterministic lock metadata
-better audit                # Security vulnerability scan
+better hooks install            # Install git hooks (pre-commit, pre-push)
+better exec <script.ts>         # Run TypeScript/JavaScript (auto-detects tsx/ts-node/node)
+better init                     # Initialize a new project (generates package.json)
+better init --name my-app       # Initialize with a specific name
 ```
+
+### Aliases
+
+| Alias | Expands to |
+|-------|-----------|
+| `better i` | `better install` |
+| `better t` | `better run test` |
+| `better x` | `better exec` |
+| `better dedup` | `better dedupe` |
+| `better bench` | `better benchmark` |
+
+All commands output structured JSON for easy piping and automation.
 
 ## Architecture
 
 ```
 bin/better.js          CLI entry point (Node.js)
 src/
-  cli.js               Command router (17 commands)
+  cli.js               Command router
   engine/better/       JS install engine (fallback)
   lib/core.js          Rust binary bridge
 crates/
   better-core/         Pure Rust binary
-    src/lib.rs          Core library (resolve, fetch, materialize, CAS, bin links)
-    src/main.rs         CLI binary (install, analyze, scan, materialize)
+    src/lib.rs          Core library (resolve, fetch, materialize, CAS, bin links,
+                        license scan, audit, outdated, doctor, benchmark, ...)
+    src/main.rs         CLI binary (18 commands + aliases)
   better-napi/         Node.js native addon (NAPI bridge)
 apps/
   landing/             Next.js landing page
