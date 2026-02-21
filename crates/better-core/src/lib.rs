@@ -158,6 +158,7 @@ pub struct AnalyzeReport {
 }
 
 /// Aggregate return type for materialize_tree()
+#[derive(Default)]
 pub struct MaterializeReport {
     pub stats: MaterializeStats,
     pub phases: PhaseDurations,

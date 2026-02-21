@@ -429,6 +429,33 @@ pub fn fetch_and_extract(
 
 // --- Batch Materialize ---
 
+/// Try macOS clonefile(2) for near-instant APFS copy-on-write directory cloning.
+#[cfg(target_os = "macos")]
+fn try_clonefile(src: &Path, dst: &Path) -> bool {
+    use std::ffi::CString;
+    extern "C" {
+        fn clonefile(
+            src: *const std::os::raw::c_char,
+            dst: *const std::os::raw::c_char,
+            flags: u32,
+        ) -> std::os::raw::c_int;
+    }
+    let src_c = match CString::new(src.as_os_str().as_encoded_bytes()) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let dst_c = match CString::new(dst.as_os_str().as_encoded_bytes()) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    unsafe { clonefile(src_c.as_ptr(), dst_c.as_ptr(), 0) == 0 }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn try_clonefile(_src: &Path, _dst: &Path) -> bool {
+    false
+}
+
 #[napi(object)]
 pub struct NapiBatchEntry {
     pub src: String,
@@ -447,6 +474,7 @@ pub struct NapiBatchMaterializeResult {
     pub total_copied: f64,
     #[napi(js_name = "totalDirs")]
     pub total_dirs: f64,
+    pub cloned: f64,
     pub failed: f64,
 }
 
@@ -467,14 +495,22 @@ pub fn materialize_batch(
         .and_then(MaterializeProfile::from_arg)
         .unwrap_or(MaterializeProfile::Auto);
 
-    let jobs_per_pkg = 4; // modest per-package parallelism, rayon handles cross-package
+    let jobs_per_pkg = 4;
 
-    let results: Vec<_> = entries
+    // Try clonefile first (macOS APFS), fall back to materialize_tree
+    let results: Vec<(bool, Result<better_core::MaterializeReport, String>)> = entries
         .par_iter()
         .map(|entry| {
             let src_path = Path::new(&entry.src);
             let dest_path = Path::new(&entry.dest);
-            materialize_tree(src_path, dest_path, strategy, jobs_per_pkg, profile)
+
+            // Try clonefile — near-instant on APFS (same volume)
+            if try_clonefile(src_path, dest_path) {
+                return (true, Ok(better_core::MaterializeReport::default()));
+            }
+
+            // Fallback: traditional scan+mkdir+hardlink
+            (false, materialize_tree(src_path, dest_path, strategy, jobs_per_pkg, profile))
         })
         .collect();
 
@@ -482,9 +518,14 @@ pub fn materialize_batch(
     let mut total_linked = 0u64;
     let mut total_copied = 0u64;
     let mut total_dirs = 0u64;
+    let mut cloned = 0u64;
     let mut failed = 0u64;
 
-    for result in &results {
+    for (was_cloned, result) in &results {
+        if *was_cloned {
+            cloned += 1;
+            continue;
+        }
         match result {
             Ok(report) => {
                 total_files += report.stats.files;
@@ -509,6 +550,7 @@ pub fn materialize_batch(
         total_linked: total_linked as f64,
         total_copied: total_copied as f64,
         total_dirs: total_dirs as f64,
+        cloned: cloned as f64,
         failed: failed as f64,
     }
 }
