@@ -29,6 +29,7 @@ enum Command {
         link_strategy: LinkStrategy,
         jobs: usize,
         scripts: bool,
+        dedup: bool,
     },
     Version,
     Help { error: Option<String> },
@@ -84,6 +85,7 @@ fn parse_args() -> Command {
     let mut cache_root: Option<PathBuf> = None;
     let mut store_root: Option<PathBuf> = None;
     let mut scripts = true;
+    let mut dedup = false;
     let mut i = 1usize;
     while i < args.len() {
         match args[i].as_str() {
@@ -221,6 +223,14 @@ fn parse_args() -> Command {
                 scripts = true;
                 i += 1;
             }
+            "--dedup" => {
+                dedup = true;
+                i += 1;
+            }
+            "--no-dedup" => {
+                dedup = false;
+                i += 1;
+            }
             other => {
                 return Command::Help {
                     error: Some(format!("unknown flag: {other}")),
@@ -266,6 +276,7 @@ fn parse_args() -> Command {
                 link_strategy,
                 jobs,
                 scripts,
+                dedup,
             }
         }
         _ => Command::Help {
@@ -285,7 +296,7 @@ Usage:
   better-core analyze --root <path> [--graph]
   better-core scan --root <path>
   better-core materialize --src <path> --dest <path> [--link-strategy auto|hardlink|copy] [--jobs N] [--profile auto|io-heavy|small-files]
-  better-core install [--lockfile <path>] [--project-root <path>] [--cache-root <path>] [--store-root <path>] [--link-strategy auto|hardlink|copy] [--jobs N] [--no-scripts]
+  better-core install [--lockfile <path>] [--project-root <path>] [--cache-root <path>] [--store-root <path>] [--link-strategy auto|hardlink|copy] [--jobs N] [--no-scripts] [--dedup]
   better-core version
 "
     );
@@ -411,8 +422,9 @@ fn main() {
             cache_root,
             store_root,
             link_strategy,
-            jobs,
+            jobs: _,
             scripts,
+            dedup,
         } => {
             let started = Instant::now();
             let phase_resolve_ms;
@@ -470,107 +482,129 @@ fn main() {
             let node_modules = project_root.join("node_modules");
             let _ = std::fs::create_dir_all(&node_modules);
 
-            let mut total_files = 0u64;
-            let mut total_dirs = 0u64;
-            let mut total_symlinks = 0u64;
-            let mut cloned = 0u64;
-            let mut cas_linked = 0u64;
-            let mut cas_copied = 0u64;
-            let mut fallback_materialized = 0u64;
+            let total_files = std::sync::atomic::AtomicU64::new(0);
+            let total_dirs = std::sync::atomic::AtomicU64::new(0);
+            let total_symlinks = std::sync::atomic::AtomicU64::new(0);
+            let cloned = std::sync::atomic::AtomicU64::new(0);
+            let cas_linked = std::sync::atomic::AtomicU64::new(0);
+            let cas_copied = std::sync::atomic::AtomicU64::new(0);
+            let fallback_materialized = std::sync::atomic::AtomicU64::new(0);
 
+            // Pre-create all parent directories (must be sequential)
             for pkg in &resolve_result.packages {
-                // Get unpacked path from CAS
+                let dest_path = if pkg.rel_path.starts_with("node_modules/") {
+                    node_modules.join(&pkg.rel_path[13..])
+                } else {
+                    node_modules.join(&pkg.rel_path)
+                };
+                if let Some(parent) = dest_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+            }
+
+            // Parallel materialize all packages using rayon
+            use rayon::prelude::*;
+            let materialize_error: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+            resolve_result.packages.par_iter().for_each(|pkg| {
+                // Check for prior error
+                if materialize_error.lock().ok().and_then(|g| g.as_ref().cloned()).is_some() {
+                    return;
+                }
+
                 let (algo, hex) = match cas_key_from_integrity(&pkg.integrity) {
                     Some(key) => key,
-                    None => continue,
+                    None => return,
                 };
 
                 let unpacked = unpacked_path(&layout, &algo, &hex);
-
-                // Find package subdirectory (npm tarballs extract to "package/")
                 let src_dir = unpacked.join("package");
                 if !src_dir.exists() {
-                    continue;
+                    return;
                 }
 
-                // Destination is node_modules + rel_path (strip "node_modules/" prefix)
                 let dest_path = if pkg.rel_path.starts_with("node_modules/") {
                     node_modules.join(&pkg.rel_path[13..])
                 } else {
                     node_modules.join(&pkg.rel_path)
                 };
 
-                // Ensure parent directory exists
-                if let Some(parent) = dest_path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-
-                // Strategy 1: Try clonefile (macOS APFS, near-instant)
-                if try_clonefile_dir(&src_dir, &dest_path) {
-                    cloned += 1;
-                    continue;
-                }
-
-                // Strategy 2: Try file CAS (ingest + hardlink from global store)
-                let cas_ok = {
-                    // Ingest into file CAS if not already there
+                if dedup {
+                    // DEDUP MODE: CAS-first (cross-project hardlinks, saves disk)
+                    // Ingest into file CAS, then hardlink from global store
                     let _ = ingest_to_file_cas(&file_cas_root, &algo, &hex, &src_dir);
-
-                    // Materialize from file CAS
-                    match materialize_from_file_cas(
-                        &file_cas_root,
-                        &algo,
-                        &hex,
-                        &dest_path,
-                        link_strategy,
+                    if let Ok(result) = materialize_from_file_cas(
+                        &file_cas_root, &algo, &hex, &dest_path, link_strategy,
                     ) {
-                        Ok(result) if result.ok && result.files > 0 => {
-                            total_files += result.files;
-                            cas_linked += result.linked;
-                            cas_copied += result.copied;
-                            total_symlinks += result.symlinks;
-                            true
+                        if result.ok && result.files > 0 {
+                            total_files.fetch_add(result.files, std::sync::atomic::Ordering::Relaxed);
+                            cas_linked.fetch_add(result.linked, std::sync::atomic::Ordering::Relaxed);
+                            cas_copied.fetch_add(result.copied, std::sync::atomic::Ordering::Relaxed);
+                            total_symlinks.fetch_add(result.symlinks, std::sync::atomic::Ordering::Relaxed);
+                            return;
                         }
-                        _ => false,
                     }
-                };
-
-                if cas_ok {
-                    continue;
+                    // CAS failed, fall back to clonefile then materialize_tree
+                    if try_clonefile_dir(&src_dir, &dest_path) {
+                        cloned.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        return;
+                    }
+                } else {
+                    // SPEED MODE (default): clonefile-first (fastest on macOS APFS)
+                    // Also ingest to CAS in background for future --dedup use
+                    if try_clonefile_dir(&src_dir, &dest_path) {
+                        cloned.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        // Ingest to CAS opportunistically so --dedup works next time
+                        let _ = ingest_to_file_cas(&file_cas_root, &algo, &hex, &src_dir);
+                        return;
+                    }
+                    // clonefile failed (not APFS?), try CAS hardlinks
+                    let _ = ingest_to_file_cas(&file_cas_root, &algo, &hex, &src_dir);
+                    if let Ok(result) = materialize_from_file_cas(
+                        &file_cas_root, &algo, &hex, &dest_path, link_strategy,
+                    ) {
+                        if result.ok && result.files > 0 {
+                            total_files.fetch_add(result.files, std::sync::atomic::Ordering::Relaxed);
+                            cas_linked.fetch_add(result.linked, std::sync::atomic::Ordering::Relaxed);
+                            cas_copied.fetch_add(result.copied, std::sync::atomic::Ordering::Relaxed);
+                            total_symlinks.fetch_add(result.symlinks, std::sync::atomic::Ordering::Relaxed);
+                            return;
+                        }
+                    }
                 }
 
-                // Strategy 3: Fallback to materialize_tree (scan+mkdir+hardlink/copy)
-                match materialize_tree(
-                    &src_dir,
-                    &dest_path,
-                    link_strategy,
-                    jobs,
-                    MaterializeProfile::Auto,
-                ) {
+                // Final fallback: materialize_tree (copy files)
+                match materialize_tree(&src_dir, &dest_path, link_strategy, 4, MaterializeProfile::Auto) {
                     Ok(report) => {
-                        total_files += report.stats.files;
-                        total_dirs += report.stats.directories;
-                        total_symlinks += report.stats.symlinks;
-                        fallback_materialized += 1;
+                        total_files.fetch_add(report.stats.files, std::sync::atomic::Ordering::Relaxed);
+                        total_dirs.fetch_add(report.stats.directories, std::sync::atomic::Ordering::Relaxed);
+                        total_symlinks.fetch_add(report.stats.symlinks, std::sync::atomic::Ordering::Relaxed);
+                        fallback_materialized.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
                     Err(reason) => {
-                        let mut w = JsonWriter::new();
-                        w.begin_object();
-                        w.key("ok");
-                        w.value_bool(false);
-                        w.key("kind");
-                        w.value_string("better.install.report");
-                        w.key("reason");
-                        w.value_string(&format!(
-                            "Failed to materialize {}: {}",
-                            pkg.name, reason
-                        ));
-                        w.end_object();
-                        w.out.push('\n');
-                        print!("{}", w.finish());
-                        std::process::exit(1);
+                        if let Ok(mut guard) = materialize_error.lock() {
+                            if guard.is_none() {
+                                *guard = Some(format!("Failed to materialize {}: {}", pkg.name, reason));
+                            }
+                        }
                     }
                 }
+            });
+
+            // Check for materialization errors
+            if let Some(reason) = materialize_error.lock().ok().and_then(|g| g.clone()) {
+                let mut w = JsonWriter::new();
+                w.begin_object();
+                w.key("ok");
+                w.value_bool(false);
+                w.key("kind");
+                w.value_string("better.install.report");
+                w.key("reason");
+                w.value_string(&reason);
+                w.end_object();
+                w.out.push('\n');
+                print!("{}", w.finish());
+                std::process::exit(1);
             }
             phase_materialize_ms = t_mat.elapsed().as_millis() as u64;
 
@@ -613,6 +647,15 @@ fn main() {
             w.value_string(&cache_root.to_string_lossy());
             w.key("durationMs");
             w.value_u64(duration_ms);
+
+            // Load atomic counters
+            let total_files = total_files.load(std::sync::atomic::Ordering::Relaxed);
+            let total_dirs = total_dirs.load(std::sync::atomic::Ordering::Relaxed);
+            let total_symlinks = total_symlinks.load(std::sync::atomic::Ordering::Relaxed);
+            let cloned = cloned.load(std::sync::atomic::Ordering::Relaxed);
+            let cas_linked = cas_linked.load(std::sync::atomic::Ordering::Relaxed);
+            let cas_copied = cas_copied.load(std::sync::atomic::Ordering::Relaxed);
+            let fallback_materialized = fallback_materialized.load(std::sync::atomic::Ordering::Relaxed);
 
             w.key("stats");
             w.begin_object();

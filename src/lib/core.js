@@ -194,6 +194,7 @@ export async function runBetterCoreInstall(corePath, projectRoot, opts = {}) {
   if (opts.linkStrategy) args.push("--link-strategy", String(opts.linkStrategy));
   if (opts.jobs != null) args.push("--jobs", String(opts.jobs));
   if (opts.scripts === false) args.push("--no-scripts");
+  if (opts.dedup) args.push("--dedup");
   const res = await runCommand(corePath, args, {
     cwd: projectRoot,
     passthroughStdio: false,

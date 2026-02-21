@@ -2163,72 +2163,128 @@ pub fn materialize_from_file_cas(
         }
     };
 
-    // Parse manifest to extract file entries
-    // Format: "rel/path":{"type":"file","hash":"abc123","size":1234,"mode":420}
-    // or: "rel/path":{"type":"symlink","target":"../other"}
+    // Parse manifest to extract file entries from the "files" object.
+    // Works with single-line JSON (produced by JsonWriter).
+    // Format: {"version":1,...,"files":{"rel/path":{"type":"file","hash":"abc","size":1,"mode":420},...}}
 
     let mut file_entries = Vec::new();
     let mut symlink_entries = Vec::new();
 
-    // Simple JSON parsing - find all file/symlink entries
-    let lines: Vec<&str> = manifest_content.lines().collect();
-    let mut i = 0;
+    // Find the "files" object
+    if let Some(files_start) = manifest_content.find("\"files\"") {
+        let after_files = &manifest_content[files_start + 7..]; // skip "files"
+        if let Some(obj_start) = after_files.find('{') {
+            let files_section = &after_files[obj_start..];
 
-    while i < lines.len() {
-        let line = lines[i].trim();
+            // State machine to extract entries from the files object
+            let mut depth = 0i32;
+            let mut in_string = false;
+            let mut escape_next = false;
+            let mut current_key = String::new();
+            let mut current_entry = String::new();
+            let mut reading_key = false;
+            let mut collecting_entry = false;
+            let mut key_done = false;
 
-        // Look for a line that starts with a quoted path
-        if line.starts_with('"') && line.contains("\":{") {
-            if let Some(colon_pos) = line.find("\":{") {
-                let rel_path = &line[1..colon_pos];
-
-                // Look ahead to find type, hash, target, etc.
-                let mut entry_type = "";
-                let mut hash = String::new();
-                let mut target = String::new();
-
-                // Scan next few lines for the entry data
-                for j in i..std::cmp::min(i + 10, lines.len()) {
-                    let entry_line = lines[j].trim();
-
-                    if entry_line.contains(r#""type":"file""#) {
-                        entry_type = "file";
-                    } else if entry_line.contains(r#""type":"symlink""#) {
-                        entry_type = "symlink";
+            for ch in files_section.chars() {
+                if escape_next {
+                    if reading_key {
+                        current_key.push(ch);
+                    } else if collecting_entry {
+                        current_entry.push(ch);
                     }
-
-                    if entry_line.contains(r#""hash":"#) {
-                        if let Some(hash_start) = entry_line.find(r#""hash":""#) {
-                            let hash_value_start = hash_start + 8;
-                            if let Some(hash_end) = entry_line[hash_value_start..].find('"') {
-                                hash = entry_line[hash_value_start..hash_value_start + hash_end].to_string();
-                            }
-                        }
-                    }
-
-                    if entry_line.contains(r#""target":"#) {
-                        if let Some(target_start) = entry_line.find(r#""target":""#) {
-                            let target_value_start = target_start + 10;
-                            if let Some(target_end) = entry_line[target_value_start..].find('"') {
-                                target = entry_line[target_value_start..target_value_start + target_end].to_string();
-                            }
-                        }
-                    }
-
-                    if entry_line.contains('}') {
-                        break;
-                    }
+                    escape_next = false;
+                    continue;
                 }
 
-                if entry_type == "file" && !hash.is_empty() {
-                    file_entries.push((rel_path.to_string(), hash));
-                } else if entry_type == "symlink" && !target.is_empty() {
-                    symlink_entries.push((rel_path.to_string(), target));
+                if ch == '\\' && in_string {
+                    escape_next = true;
+                    if reading_key {
+                        current_key.push(ch);
+                    } else if collecting_entry {
+                        current_entry.push(ch);
+                    }
+                    continue;
+                }
+
+                if ch == '"' {
+                    in_string = !in_string;
+                    if depth == 1 && !collecting_entry {
+                        if !key_done && in_string {
+                            reading_key = true;
+                            current_key.clear();
+                        } else if !key_done && !in_string {
+                            reading_key = false;
+                            key_done = true;
+                        }
+                    } else if collecting_entry {
+                        current_entry.push(ch);
+                    }
+                    continue;
+                }
+
+                if in_string {
+                    if reading_key {
+                        current_key.push(ch);
+                    } else if collecting_entry {
+                        current_entry.push(ch);
+                    }
+                    continue;
+                }
+
+                // Outside string
+                if ch == '{' {
+                    depth += 1;
+                    if depth == 2 && key_done {
+                        collecting_entry = true;
+                        current_entry.clear();
+                    } else if depth > 2 && collecting_entry {
+                        current_entry.push(ch);
+                    }
+                } else if ch == '}' {
+                    if depth == 2 && collecting_entry {
+                        // Parse this entry
+                        let entry_type = if current_entry.contains("\"type\":\"file\"") {
+                            "file"
+                        } else if current_entry.contains("\"type\":\"symlink\"") {
+                            "symlink"
+                        } else {
+                            ""
+                        };
+
+                        if entry_type == "file" {
+                            if let Some(hash) =
+                                extract_json_field(&current_entry, "hash")
+                            {
+                                file_entries
+                                    .push((current_key.clone(), hash));
+                            }
+                        } else if entry_type == "symlink" {
+                            if let Some(tgt) =
+                                extract_json_field(&current_entry, "target")
+                            {
+                                symlink_entries
+                                    .push((current_key.clone(), tgt));
+                            }
+                        }
+
+                        collecting_entry = false;
+                        current_entry.clear();
+                        key_done = false;
+                    } else if depth > 2 && collecting_entry {
+                        current_entry.push(ch);
+                    }
+                    depth -= 1;
+                    if depth == 0 {
+                        break; // End of "files" object
+                    }
+                } else if ch == ',' && depth == 1 {
+                    key_done = false;
+                } else if collecting_entry {
+                    current_entry.push(ch);
                 }
             }
         }
-
-        i += 1;
     }
 
     // Collect all directories needed (sorted shortest-first)
@@ -2260,43 +2316,49 @@ pub fn materialize_from_file_cas(
             .map_err(|e| format!("Failed to create directory: {}", e))?;
     }
 
-    // Materialize files
-    let mut stats = FileCasMaterializeResult {
-        ok: true,
-        files: 0,
-        linked: 0,
-        copied: 0,
-        symlinks: 0,
-    };
+    // Materialize files in parallel using rayon
+    use rayon::prelude::*;
 
-    for (rel_path, hash) in file_entries {
-        let store_path = file_store_path(store_root, &hash);
-        let dest_path = dest_dir.join(&rel_path);
+    let file_count = AtomicU64::new(0);
+    let linked_count = AtomicU64::new(0);
+    let copied_count = AtomicU64::new(0);
 
-        stats.files += 1;
+    file_entries
+        .par_iter()
+        .for_each(|(rel_path, hash)| {
+            let store_path = file_store_path(store_root, hash);
+            let dest_path = dest_dir.join(rel_path);
 
-        match link_strategy {
-            LinkStrategy::Copy => {
-                fs::copy(&store_path, &dest_path)
-                    .map_err(|e| format!("Failed to copy file: {}", e))?;
-                stats.copied += 1;
-            }
-            LinkStrategy::Hardlink | LinkStrategy::Auto => {
-                // Try hardlink first
-                match fs::hard_link(&store_path, &dest_path) {
-                    Ok(_) => {
-                        stats.linked += 1;
+            file_count.fetch_add(1, Ordering::Relaxed);
+
+            match link_strategy {
+                LinkStrategy::Copy => {
+                    if fs::copy(&store_path, &dest_path).is_ok() {
+                        copied_count.fetch_add(1, Ordering::Relaxed);
                     }
-                    Err(_) => {
-                        // Fallback to copy
-                        fs::copy(&store_path, &dest_path)
-                            .map_err(|e| format!("Failed to copy file (hardlink failed): {}", e))?;
-                        stats.copied += 1;
+                }
+                LinkStrategy::Hardlink | LinkStrategy::Auto => {
+                    match fs::hard_link(&store_path, &dest_path) {
+                        Ok(_) => {
+                            linked_count.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(_) => {
+                            if fs::copy(&store_path, &dest_path).is_ok() {
+                                copied_count.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
                     }
                 }
             }
-        }
-    }
+        });
+
+    let mut stats = FileCasMaterializeResult {
+        ok: true,
+        files: file_count.load(Ordering::Relaxed),
+        linked: linked_count.load(Ordering::Relaxed),
+        copied: copied_count.load(Ordering::Relaxed),
+        symlinks: 0,
+    };
 
     // Create symlinks
     for (rel_path, target) in symlink_entries {
