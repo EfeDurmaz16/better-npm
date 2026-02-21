@@ -2831,3 +2831,1332 @@ fn chrono_now() -> String {
         Err(_) => "1970-01-01T00:00:00.000Z".to_string(),
     }
 }
+
+// === Phase B: High-Value Commands ===
+
+// --- B.1: Script Runner ---
+
+#[derive(Debug)]
+pub struct ScriptRunResult {
+    pub script_name: String,
+    pub command: String,
+    pub exit_code: i32,
+    pub duration_ms: u64,
+}
+
+pub fn read_package_json_scripts(project_root: &Path) -> Result<Vec<(String, String)>, String> {
+    let pkg_json = project_root.join("package.json");
+    let content = fs::read_to_string(&pkg_json)
+        .map_err(|e| format!("Failed to read package.json: {}", e))?;
+    extract_json_object_pairs(&content, "scripts")
+}
+
+/// Extract all key-value string pairs from a named JSON object field.
+/// E.g. for "scripts": {"test": "jest", "build": "tsc"} returns [("test","jest"), ("build","tsc")]
+fn extract_json_object_pairs(json: &str, object_name: &str) -> Result<Vec<(String, String)>, String> {
+    let needle = format!("\"{}\"", object_name);
+    let start = match json.find(&needle) {
+        Some(pos) => pos,
+        None => return Ok(Vec::new()),
+    };
+    let after = &json[start + needle.len()..];
+    let obj_start = match after.find('{') {
+        Some(pos) => pos,
+        None => return Ok(Vec::new()),
+    };
+    let section = &after[obj_start..];
+
+    let mut pairs = Vec::new();
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let mut esc = false;
+    let mut key = String::new();
+    let mut val = String::new();
+    let mut reading_key = false;
+    let mut reading_val = false;
+    let mut key_done = false;
+    let mut after_colon = false;
+
+    for ch in section.chars() {
+        if esc {
+            if reading_key { key.push(ch); }
+            else if reading_val { val.push(ch); }
+            esc = false;
+            continue;
+        }
+        if ch == '\\' && in_str { esc = true; continue; }
+        if ch == '"' {
+            in_str = !in_str;
+            if depth == 1 {
+                if !key_done && !after_colon && in_str {
+                    reading_key = true; key.clear();
+                } else if reading_key && !in_str {
+                    reading_key = false; key_done = true;
+                } else if key_done && after_colon && in_str {
+                    reading_val = true; val.clear();
+                } else if reading_val && !in_str {
+                    reading_val = false; key_done = false; after_colon = false;
+                    if !key.is_empty() { pairs.push((key.clone(), val.clone())); }
+                    key.clear(); val.clear();
+                }
+            }
+            continue;
+        }
+        if in_str {
+            if reading_key { key.push(ch); }
+            else if reading_val { val.push(ch); }
+            continue;
+        }
+        match ch {
+            '{' => { depth += 1; }
+            '}' => { depth -= 1; if depth == 0 { break; } }
+            ':' if depth == 1 && key_done => { after_colon = true; }
+            ',' if depth == 1 => { key_done = false; after_colon = false; }
+            _ => {}
+        }
+    }
+    Ok(pairs)
+}
+
+pub fn run_script(project_root: &Path, script_name: &str, extra_args: &[String]) -> Result<ScriptRunResult, String> {
+    let scripts = read_package_json_scripts(project_root)?;
+    let command = scripts.iter()
+        .find(|(n, _)| n == script_name)
+        .map(|(_, c)| c.clone())
+        .ok_or_else(|| format!("Missing script: \"{}\"", script_name))?;
+
+    let started = Instant::now();
+    let bin_dir = project_root.join("node_modules").join(".bin");
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", bin_dir.display(), path_var);
+
+    let mut full_cmd = command.clone();
+    if !extra_args.is_empty() {
+        full_cmd.push(' ');
+        full_cmd.push_str(&extra_args.join(" "));
+    }
+
+    let status = std::process::Command::new("sh")
+        .args(["-c", &full_cmd])
+        .current_dir(project_root)
+        .env("PATH", &new_path)
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .stdin(std::process::Stdio::inherit())
+        .status()
+        .map_err(|e| format!("Failed to run: {}", e))?;
+
+    Ok(ScriptRunResult {
+        script_name: script_name.to_string(),
+        command: full_cmd,
+        exit_code: status.code().unwrap_or(-1),
+        duration_ms: started.elapsed().as_millis() as u64,
+    })
+}
+
+pub fn run_scripts_parallel(project_root: &Path, script_names: &[String]) -> Vec<Result<ScriptRunResult, String>> {
+    let handles: Vec<_> = script_names.iter().map(|name| {
+        let root = project_root.to_path_buf();
+        let n = name.clone();
+        std::thread::spawn(move || run_script(&root, &n, &[]))
+    }).collect();
+    handles.into_iter()
+        .map(|h| h.join().unwrap_or_else(|_| Err("Thread panicked".to_string())))
+        .collect()
+}
+
+// --- B.2: License Scanner ---
+
+#[derive(Debug, Clone)]
+pub struct LicenseInfo {
+    pub name: String,
+    pub version: String,
+    pub license: String,
+}
+
+#[derive(Debug)]
+pub struct LicenseReport {
+    pub packages: Vec<LicenseInfo>,
+    pub by_license: BTreeMap<String, u64>,
+    pub total_packages: u64,
+    pub violations: Vec<LicenseInfo>,
+}
+
+pub fn scan_licenses(node_modules: &Path, allow: &[String], deny: &[String]) -> Result<LicenseReport, String> {
+    let pkg_dirs = list_packages_in_node_modules(node_modules)?;
+    let mut packages = Vec::new();
+    let mut by_license: BTreeMap<String, u64> = BTreeMap::new();
+    let mut violations = Vec::new();
+
+    for pkg_dir in &pkg_dirs {
+        let pkg_json = pkg_dir.join("package.json");
+        let content = match fs::read_to_string(&pkg_json) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let name = extract_json_field(&content, "name").unwrap_or_else(|| "unknown".to_string());
+        let version = extract_json_field(&content, "version").unwrap_or_else(|| "0.0.0".to_string());
+        let license = extract_json_field(&content, "license").unwrap_or_else(|| "UNLICENSED".to_string());
+
+        *by_license.entry(license.clone()).or_insert(0) += 1;
+
+        let info = LicenseInfo { name, version, license: license.clone() };
+
+        let is_violation = if !deny.is_empty() {
+            deny.iter().any(|d| d.eq_ignore_ascii_case(&license))
+        } else if !allow.is_empty() {
+            !allow.iter().any(|a| a.eq_ignore_ascii_case(&license))
+        } else {
+            false
+        };
+        if is_violation {
+            violations.push(info.clone());
+        }
+
+        packages.push(info);
+    }
+
+    let total = packages.len() as u64;
+    Ok(LicenseReport { packages, by_license, total_packages: total, violations })
+}
+
+// --- B.3: Dedupe Checker ---
+
+#[derive(Debug)]
+pub struct DedupeEntry {
+    pub name: String,
+    pub versions: Vec<String>,
+    pub instances: u64,
+    pub can_dedupe: bool,
+    pub saved_instances: u64,
+}
+
+#[derive(Debug)]
+pub struct DedupeReport {
+    pub duplicates: Vec<DedupeEntry>,
+    pub total_duplicates: u64,
+    pub deduplicatable: u64,
+    pub estimated_saved: u64,
+}
+
+pub fn check_dedupe(root: &Path) -> Result<DedupeReport, String> {
+    let report = analyze(root, false)?;
+    let mut entries = Vec::new();
+    let mut total_dup = 0u64;
+    let mut dedup_count = 0u64;
+    let mut estimated_saved = 0u64;
+
+    for d in &report.duplicates {
+        let can_dedupe = d.majors.len() == 1;
+        let saved = if can_dedupe { d.count.saturating_sub(1) } else { 0 };
+
+        total_dup += 1;
+        if can_dedupe { dedup_count += 1; }
+        estimated_saved += saved;
+
+        entries.push(DedupeEntry {
+            name: d.name.clone(),
+            versions: d.versions.clone(),
+            instances: d.count,
+            can_dedupe,
+            saved_instances: saved,
+        });
+    }
+
+    Ok(DedupeReport {
+        duplicates: entries,
+        total_duplicates: total_dup,
+        deduplicatable: dedup_count,
+        estimated_saved,
+    })
+}
+
+// --- B.4: Dependency Tracer (why) ---
+
+#[derive(Debug)]
+pub struct WhyReport {
+    pub package: String,
+    pub version: Option<String>,
+    pub is_direct: bool,
+    pub dependency_paths: Vec<Vec<String>>,
+    pub depended_on_by: Vec<(String, String)>,
+    pub total_paths: u64,
+}
+
+pub fn trace_dependency(project_root: &Path, lockfile: &Path, target: &str) -> Result<WhyReport, String> {
+    let content = fs::read_to_string(lockfile)
+        .map_err(|e| format!("Failed to read lockfile: {}", e))?;
+
+    // Check if direct dependency
+    let pkg_json_path = project_root.join("package.json");
+    let pkg_json = fs::read_to_string(&pkg_json_path).unwrap_or_default();
+
+    // Look in dependencies and devDependencies
+    let is_direct = {
+        let dep_check = format!("\"{}\"", target);
+        let in_deps = if let Some(pos) = pkg_json.find("\"dependencies\"") {
+            let section = &pkg_json[pos..];
+            let end = section.find('}').unwrap_or(section.len());
+            section[..end].contains(&dep_check)
+        } else { false };
+        let in_dev = if let Some(pos) = pkg_json.find("\"devDependencies\"") {
+            let section = &pkg_json[pos..];
+            let end = section.find('}').unwrap_or(section.len());
+            section[..end].contains(&dep_check)
+        } else { false };
+        in_deps || in_dev
+    };
+
+    // Parse lockfile to build dependency graph
+    let graph = parse_lockfile_graph(&content)?;
+
+    // Find target version
+    let target_version = graph.iter()
+        .find(|(_, (name, _, _))| name == target)
+        .map(|(_, (_, ver, _))| ver.clone());
+
+    // Find all packages that depend on target
+    let mut depended_on_by = Vec::new();
+    for (_, (name, version, deps)) in &graph {
+        if deps.iter().any(|d| d == target) {
+            depended_on_by.push((name.clone(), version.clone()));
+        }
+    }
+
+    // Build adjacency map: name -> [dep_names]
+    let mut adj: HashMap<String, Vec<String>> = HashMap::new();
+    let mut root_deps: Vec<String> = Vec::new();
+    for (path, (name, _, deps)) in &graph {
+        // Direct deps: paths like "node_modules/foo" (no nested node_modules)
+        let segments: Vec<&str> = path.split("node_modules/").filter(|s| !s.is_empty()).collect();
+        if segments.len() == 1 {
+            root_deps.push(name.clone());
+        }
+        adj.entry(name.clone()).or_default().extend(deps.clone());
+    }
+    adj.insert("(root)".to_string(), root_deps);
+
+    // BFS to find paths from root to target (limit to 10)
+    let mut paths: Vec<Vec<String>> = Vec::new();
+    let mut queue: VecDeque<Vec<String>> = VecDeque::new();
+    queue.push_back(vec!["(root)".to_string()]);
+
+    while let Some(path) = queue.pop_front() {
+        if paths.len() >= 10 { break; }
+        if path.len() > 10 { continue; }
+
+        let current = path.last().unwrap().clone();
+        if let Some(deps) = adj.get(&current) {
+            for dep in deps {
+                let mut new_path = path.clone();
+                new_path.push(dep.clone());
+                if dep == target {
+                    paths.push(new_path);
+                } else if !path.contains(dep) {
+                    queue.push_back(new_path);
+                }
+            }
+        }
+    }
+
+    let total = paths.len() as u64;
+    Ok(WhyReport {
+        package: target.to_string(),
+        version: target_version,
+        is_direct,
+        dependency_paths: paths,
+        depended_on_by,
+        total_paths: total,
+    })
+}
+
+fn parse_lockfile_graph(json: &str) -> Result<HashMap<String, (String, String, Vec<String>)>, String> {
+    let mut graph = HashMap::new();
+
+    let packages_start = json.find("\"packages\"")
+        .ok_or_else(|| "Missing packages in lockfile".to_string())?;
+    let after = &json[packages_start..];
+    let obj_start = after.find('{').ok_or_else(|| "Malformed lockfile".to_string())?;
+    let packages_str = &after[obj_start..];
+
+    let mut current_key = String::new();
+    let mut in_string = false;
+    let mut escape_next = false;
+    let mut brace_depth = 0i32;
+    let mut collecting_entry = false;
+    let mut entry_data = String::new();
+    let mut key_state = 0u8;
+
+    for ch in packages_str.chars() {
+        if escape_next {
+            if key_state == 1 { current_key.push(ch); }
+            else if collecting_entry { entry_data.push(ch); }
+            escape_next = false;
+            continue;
+        }
+        if ch == '\\' && in_string {
+            escape_next = true;
+            if key_state == 1 { current_key.push(ch); }
+            else if collecting_entry { entry_data.push(ch); }
+            continue;
+        }
+        if ch == '"' {
+            in_string = !in_string;
+            if brace_depth == 1 && !collecting_entry {
+                if key_state == 0 && in_string { key_state = 1; current_key.clear(); }
+                else if key_state == 1 && !in_string { key_state = 2; }
+            } else if collecting_entry { entry_data.push(ch); }
+            continue;
+        }
+        if in_string {
+            if key_state == 1 { current_key.push(ch); }
+            else if collecting_entry { entry_data.push(ch); }
+            continue;
+        }
+        if ch == '{' {
+            brace_depth += 1;
+            if brace_depth == 2 && !current_key.is_empty() {
+                collecting_entry = true;
+                entry_data.clear();
+                key_state = 0;
+            }
+            if collecting_entry && brace_depth > 2 { entry_data.push(ch); }
+        } else if ch == '}' {
+            if collecting_entry && brace_depth == 2 {
+                let name = extract_json_field(&entry_data, "name")
+                    .unwrap_or_else(|| package_name_from_path(&current_key));
+                let version = extract_json_field(&entry_data, "version").unwrap_or_default();
+                let deps = extract_dep_names(&entry_data);
+
+                if !current_key.is_empty() {
+                    graph.insert(current_key.clone(), (name, version, deps));
+                }
+
+                collecting_entry = false;
+                entry_data.clear();
+            } else if collecting_entry { entry_data.push(ch); }
+            brace_depth -= 1;
+            if brace_depth == 0 { break; }
+            if brace_depth == 1 { key_state = 0; }
+        } else if ch == ',' && brace_depth == 1 && !collecting_entry {
+            key_state = 0;
+        } else if collecting_entry {
+            entry_data.push(ch);
+        }
+    }
+
+    Ok(graph)
+}
+
+fn extract_dep_names(entry_json: &str) -> Vec<String> {
+    let needle = "\"dependencies\"";
+    let start = match entry_json.find(needle) {
+        Some(pos) => pos,
+        None => return Vec::new(),
+    };
+    let after = &entry_json[start + needle.len()..];
+    let obj_start = match after.find('{') {
+        Some(pos) => pos,
+        None => return Vec::new(),
+    };
+    let section = &after[obj_start..];
+
+    let mut names = Vec::new();
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let mut esc = false;
+    let mut current = String::new();
+    let mut reading_key = false;
+    let mut key_done = false;
+
+    for ch in section.chars() {
+        if esc { if reading_key { current.push(ch); } esc = false; continue; }
+        if ch == '\\' && in_str { esc = true; continue; }
+        if ch == '"' {
+            in_str = !in_str;
+            if depth == 1 {
+                if !key_done && in_str { reading_key = true; current.clear(); }
+                else if reading_key && !in_str {
+                    reading_key = false; key_done = true;
+                    if !current.is_empty() { names.push(current.clone()); }
+                    current.clear();
+                }
+                else if key_done && !in_str { key_done = false; }
+            }
+            continue;
+        }
+        if in_str { if reading_key { current.push(ch); } continue; }
+        match ch {
+            '{' => depth += 1,
+            '}' => { depth -= 1; if depth == 0 { break; } }
+            ',' if depth == 1 => { key_done = false; }
+            _ => {}
+        }
+    }
+    names
+}
+
+// --- B.5: Outdated Checker ---
+
+#[derive(Debug, Clone)]
+struct SemVer {
+    major: u64,
+    minor: u64,
+    patch: u64,
+}
+
+fn parse_semver(v: &str) -> Option<SemVer> {
+    let v = v.trim_start_matches('v');
+    let parts: Vec<&str> = v.split('.').collect();
+    if parts.len() < 3 { return None; }
+    Some(SemVer {
+        major: parts[0].parse().ok()?,
+        minor: parts[1].parse().ok()?,
+        patch: parts[2].split('-').next()?.parse().ok()?,
+    })
+}
+
+fn classify_update(current: &SemVer, latest: &SemVer) -> &'static str {
+    if latest.major > current.major { "major" }
+    else if latest.minor > current.minor { "minor" }
+    else if latest.patch > current.patch { "patch" }
+    else { "current" }
+}
+
+#[derive(Debug, Clone)]
+pub struct OutdatedEntry {
+    pub name: String,
+    pub current: String,
+    pub latest: String,
+    pub update_type: String,
+}
+
+#[derive(Debug)]
+pub struct OutdatedReport {
+    pub packages: Vec<OutdatedEntry>,
+    pub total_checked: u64,
+    pub outdated: u64,
+    pub major: u64,
+    pub minor: u64,
+    pub patch: u64,
+}
+
+pub fn check_outdated(_project_root: &Path, lockfile: &Path) -> Result<OutdatedReport, String> {
+    use rayon::prelude::*;
+
+    // Get packages from lockfile
+    let resolve_result = resolve_from_lockfile(lockfile)?;
+
+    // Deduplicate by name (only check each package once)
+    let mut unique: HashMap<String, String> = HashMap::new();
+    for pkg in &resolve_result.packages {
+        unique.entry(pkg.name.clone()).or_insert_with(|| pkg.version.clone());
+    }
+    let pkg_list: Vec<(String, String)> = unique.into_iter().collect();
+
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(10))
+        .build();
+
+    // Fetch latest versions in parallel
+    let results: Vec<Option<OutdatedEntry>> = pkg_list.par_iter().map(|(name, current_version)| {
+        let url = if name.starts_with('@') {
+            format!("https://registry.npmjs.org/{}", name.replace('/', "%2F"))
+        } else {
+            format!("https://registry.npmjs.org/{}", name)
+        };
+
+        let resp = match agent.get(&url).call() {
+            Ok(r) => r,
+            Err(_) => return None,
+        };
+        let body = match resp.into_string() {
+            Ok(b) => b,
+            Err(_) => return None,
+        };
+
+        // Extract dist-tags.latest
+        let dist_tags_pos = match body.find("\"dist-tags\"") {
+            Some(p) => p,
+            None => return None,
+        };
+        let dist_section = &body[dist_tags_pos..];
+        let latest = match extract_json_field(dist_section, "latest") {
+            Some(v) => v,
+            None => return None,
+        };
+
+        if latest == *current_version {
+            return None;
+        }
+
+        let current_sv = parse_semver(current_version);
+        let latest_sv = parse_semver(&latest);
+        let update_type = match (current_sv.as_ref(), latest_sv.as_ref()) {
+            (Some(c), Some(l)) => classify_update(c, l).to_string(),
+            _ => "unknown".to_string(),
+        };
+
+        if update_type == "current" { return None; }
+
+        Some(OutdatedEntry {
+            name: name.clone(),
+            current: current_version.clone(),
+            latest,
+            update_type,
+        })
+    }).collect();
+
+    let mut packages: Vec<OutdatedEntry> = results.into_iter().flatten().collect();
+    packages.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let total_checked = pkg_list.len() as u64;
+    let outdated = packages.len() as u64;
+    let major = packages.iter().filter(|p| p.update_type == "major").count() as u64;
+    let minor = packages.iter().filter(|p| p.update_type == "minor").count() as u64;
+    let patch = packages.iter().filter(|p| p.update_type == "patch").count() as u64;
+
+    Ok(OutdatedReport { packages, total_checked, outdated, major, minor, patch })
+}
+
+// --- B.6: Doctor ---
+
+#[derive(Debug, Clone)]
+pub struct DoctorFinding {
+    pub id: String,
+    pub title: String,
+    pub severity: String,
+    pub impact: i32,
+    pub recommendation: String,
+}
+
+#[derive(Debug)]
+pub struct DoctorReport {
+    pub score: i32,
+    pub threshold: i32,
+    pub findings: Vec<DoctorFinding>,
+}
+
+pub fn run_doctor(project_root: &Path, threshold: i32) -> Result<DoctorReport, String> {
+    let mut findings = Vec::new();
+    let mut deductions = 0i32;
+
+    // Check 1: Duplicates
+    let node_modules = project_root.join("node_modules");
+    if node_modules.exists() {
+        if let Ok(report) = analyze(project_root, false) {
+            for d in &report.duplicates {
+                deductions += 2;
+                findings.push(DoctorFinding {
+                    id: format!("dup-{}", d.name),
+                    title: format!("Duplicate package: {} ({} versions)", d.name, d.versions.len()),
+                    severity: "warning".to_string(),
+                    impact: -2,
+                    recommendation: format!("Run `npm dedupe` to reduce {} instances", d.count),
+                });
+            }
+
+            // Check deep nesting
+            if report.depth.max_depth > 5 {
+                deductions += 3;
+                findings.push(DoctorFinding {
+                    id: "deep-nesting".to_string(),
+                    title: format!("Deep nesting detected (max depth: {})", report.depth.max_depth),
+                    severity: "warning".to_string(),
+                    impact: -3,
+                    recommendation: "Consider flattening dependencies".to_string(),
+                });
+            }
+        }
+    } else {
+        deductions += 15;
+        findings.push(DoctorFinding {
+            id: "missing-node-modules".to_string(),
+            title: "node_modules directory not found".to_string(),
+            severity: "critical".to_string(),
+            impact: -15,
+            recommendation: "Run `better-core install` to install dependencies".to_string(),
+        });
+    }
+
+    // Check 2: Lockfile freshness
+    let pkg_json = project_root.join("package.json");
+    let lockfile = project_root.join("package-lock.json");
+    if lockfile.exists() && pkg_json.exists() {
+        let lock_mtime = fs::metadata(&lockfile).and_then(|m| m.modified()).ok();
+        let pkg_mtime = fs::metadata(&pkg_json).and_then(|m| m.modified()).ok();
+        if let (Some(lock_t), Some(pkg_t)) = (lock_mtime, pkg_mtime) {
+            if pkg_t > lock_t {
+                deductions += 10;
+                findings.push(DoctorFinding {
+                    id: "stale-lockfile".to_string(),
+                    title: "package-lock.json is older than package.json".to_string(),
+                    severity: "error".to_string(),
+                    impact: -10,
+                    recommendation: "Run `npm install` to update lockfile".to_string(),
+                });
+            }
+        }
+    } else if !lockfile.exists() {
+        deductions += 10;
+        findings.push(DoctorFinding {
+            id: "missing-lockfile".to_string(),
+            title: "No package-lock.json found".to_string(),
+            severity: "error".to_string(),
+            impact: -10,
+            recommendation: "Run `npm install` to generate a lockfile".to_string(),
+        });
+    }
+
+    // Check 3: Deprecated packages (look for "deprecated" field in lockfile)
+    if lockfile.exists() {
+        if let Ok(lock_content) = fs::read_to_string(&lockfile) {
+            let deprecated_count = lock_content.matches("\"deprecated\"").count();
+            if deprecated_count > 0 {
+                deductions += (deprecated_count as i32).min(25);
+                findings.push(DoctorFinding {
+                    id: "deprecated-packages".to_string(),
+                    title: format!("{} deprecated package(s) found", deprecated_count),
+                    severity: "warning".to_string(),
+                    impact: -(deprecated_count as i32).min(25),
+                    recommendation: "Update deprecated packages to maintained alternatives".to_string(),
+                });
+            }
+        }
+    }
+
+    // Check 4: .npmrc exists
+    if !project_root.join(".npmrc").exists() {
+        // Not a deduction, just a suggestion
+        findings.push(DoctorFinding {
+            id: "no-npmrc".to_string(),
+            title: "No .npmrc configuration file".to_string(),
+            severity: "info".to_string(),
+            impact: 0,
+            recommendation: "Consider adding .npmrc for reproducible builds".to_string(),
+        });
+    }
+
+    let score = (100 - deductions).max(0);
+    Ok(DoctorReport { score, threshold, findings })
+}
+
+// --- B.7: Cache Stats/GC ---
+
+#[derive(Debug)]
+pub struct CacheStatsReport {
+    pub cache_root: PathBuf,
+    pub total_bytes: u64,
+    pub package_count: u64,
+    pub tarball_count: u64,
+    pub tarball_bytes: u64,
+    pub unpacked_count: u64,
+    pub unpacked_bytes: u64,
+    pub file_cas_count: u64,
+    pub file_cas_bytes: u64,
+}
+
+#[derive(Debug)]
+pub struct CacheGcReport {
+    pub removed: u64,
+    pub freed_bytes: u64,
+    pub dry_run: bool,
+}
+
+pub fn cache_stats(cache_root: &Path) -> Result<CacheStatsReport, String> {
+    let layout = CasLayout::new(cache_root);
+    let file_store = cache_root.join("file-store");
+
+    let (tarball_count, tarball_bytes) = dir_stats_recursive(&layout.tarballs_dir);
+    let (unpacked_count, unpacked_bytes) = dir_stats_recursive(&layout.unpacked_dir);
+    let (file_cas_count, file_cas_bytes) = dir_stats_recursive(&file_store);
+
+    let total_bytes = tarball_bytes + unpacked_bytes + file_cas_bytes;
+    let package_count = tarball_count;
+
+    Ok(CacheStatsReport {
+        cache_root: cache_root.to_path_buf(),
+        total_bytes,
+        package_count,
+        tarball_count,
+        tarball_bytes,
+        unpacked_count,
+        unpacked_bytes,
+        file_cas_count,
+        file_cas_bytes,
+    })
+}
+
+fn dir_stats_recursive(dir: &Path) -> (u64, u64) {
+    let mut count = 0u64;
+    let mut bytes = 0u64;
+    let mut stack = vec![dir.to_path_buf()];
+
+    while let Some(d) = stack.pop() {
+        let entries = match fs::read_dir(&d) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let md = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if md.is_dir() {
+                stack.push(entry.path());
+            } else {
+                count += 1;
+                bytes += md.len();
+            }
+        }
+    }
+    (count, bytes)
+}
+
+pub fn cache_gc(cache_root: &Path, max_age_days: u64, dry_run: bool) -> Result<CacheGcReport, String> {
+    use std::time::{SystemTime, Duration};
+
+    let cutoff = SystemTime::now() - Duration::from_secs(max_age_days * 86400);
+    let mut removed = 0u64;
+    let mut freed = 0u64;
+
+    let layout = CasLayout::new(cache_root);
+
+    // Walk tarballs and unpacked dirs
+    for dir in &[&layout.tarballs_dir, &layout.unpacked_dir] {
+        gc_walk(dir, &cutoff, dry_run, &mut removed, &mut freed);
+    }
+
+    Ok(CacheGcReport { removed, freed_bytes: freed, dry_run })
+}
+
+fn gc_walk(dir: &Path, cutoff: &std::time::SystemTime, dry_run: bool, removed: &mut u64, freed: &mut u64) {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let entries = match fs::read_dir(&d) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let md = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if md.is_dir() {
+                stack.push(entry.path());
+                continue;
+            }
+            let mtime = md.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            if mtime < *cutoff {
+                *freed += md.len();
+                *removed += 1;
+                if !dry_run {
+                    let _ = fs::remove_file(entry.path());
+                }
+            }
+        }
+    }
+}
+
+// --- B.8: Security Audit ---
+
+#[derive(Debug, Clone)]
+pub struct AuditVulnerability {
+    pub id: String,
+    pub summary: String,
+    pub severity: String,
+    pub package: String,
+    pub version: String,
+    pub fixed: String,
+}
+
+#[derive(Debug)]
+pub struct AuditReport {
+    pub scanned_packages: u64,
+    pub vulnerabilities: Vec<AuditVulnerability>,
+    pub total: u64,
+    pub critical: u64,
+    pub high: u64,
+    pub medium: u64,
+    pub low: u64,
+    pub risk_level: String,
+}
+
+pub fn run_audit(lockfile: &Path, _project_root: &Path, min_severity: &str) -> Result<AuditReport, String> {
+    let resolve_result = resolve_from_lockfile(lockfile)?;
+
+    // Build OSV batch query
+    let mut query = JsonWriter::new();
+    query.begin_object();
+    query.key("queries");
+    query.begin_array();
+
+    // Deduplicate packages
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut query_count = 0u64;
+    for pkg in &resolve_result.packages {
+        let key = format!("{}@{}", pkg.name, pkg.version);
+        if seen.insert(key) {
+            query.begin_object();
+            query.key("package");
+            query.begin_object();
+            query.key("name");
+            query.value_string(&pkg.name);
+            query.key("ecosystem");
+            query.value_string("npm");
+            query.end_object();
+            query.key("version");
+            query.value_string(&pkg.version);
+            query.end_object();
+            query_count += 1;
+        }
+    }
+
+    query.end_array();
+    query.end_object();
+    let body = query.finish();
+
+    // POST to OSV.dev
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(30))
+        .build();
+
+    let resp = agent.post("https://api.osv.dev/v1/querybatch")
+        .set("Content-Type", "application/json")
+        .send_string(&body)
+        .map_err(|e| format!("OSV API request failed: {}", e))?;
+
+    let resp_body = resp.into_string()
+        .map_err(|e| format!("Failed to read OSV response: {}", e))?;
+
+    // Parse response
+    let mut vulns: Vec<AuditVulnerability> = Vec::new();
+
+    // Simple parsing: find all "vulns" arrays in the results
+    // Response format: {"results":[{"vulns":[{"id":"...","summary":"..."}]},{"vulns":[]},..]}
+    let severity_rank = |s: &str| -> u8 {
+        match s.to_lowercase().as_str() {
+            "critical" => 4,
+            "high" => 3,
+            "medium" | "moderate" => 2,
+            "low" => 1,
+            _ => 0,
+        }
+    };
+    let min_rank = severity_rank(min_severity);
+
+    // Walk through unique packages and match with results
+    let mut pkg_names: Vec<(String, String)> = Vec::new();
+    let mut seen2: HashSet<String> = HashSet::new();
+    for pkg in &resolve_result.packages {
+        let key = format!("{}@{}", pkg.name, pkg.version);
+        if seen2.insert(key) {
+            pkg_names.push((pkg.name.clone(), pkg.version.clone()));
+        }
+    }
+
+    // Parse "results" array - each element corresponds to a query
+    // Simple approach: find each "vulns" occurrence and extract vulnerability info
+    let mut search_pos = 0;
+    let mut pkg_idx = 0usize;
+    while let Some(vulns_pos) = resp_body[search_pos..].find("\"vulns\"") {
+        let abs_pos = search_pos + vulns_pos;
+        search_pos = abs_pos + 6;
+
+        let (pkg_name, pkg_version) = if pkg_idx < pkg_names.len() {
+            (pkg_names[pkg_idx].0.clone(), pkg_names[pkg_idx].1.clone())
+        } else {
+            ("unknown".to_string(), "0.0.0".to_string())
+        };
+        pkg_idx += 1;
+
+        // Find the array content
+        let after = &resp_body[abs_pos..];
+        if let Some(arr_start) = after.find('[') {
+            let arr_section = &after[arr_start..];
+            // Check if empty array
+            let trimmed = arr_section.trim_start_matches('[').trim_start();
+            if trimmed.starts_with(']') { continue; }
+
+            // Extract individual vulnerability objects
+            let mut depth = 0i32;
+            let mut obj_start = 0usize;
+            let mut in_str = false;
+            let mut esc = false;
+
+            for (i, ch) in arr_section.char_indices() {
+                if esc { esc = false; continue; }
+                if ch == '\\' && in_str { esc = true; continue; }
+                if ch == '"' { in_str = !in_str; continue; }
+                if in_str { continue; }
+                if ch == '{' {
+                    if depth == 0 { obj_start = i; }
+                    depth += 1;
+                } else if ch == '}' {
+                    depth -= 1;
+                    if depth == 0 {
+                        let vuln_json = &arr_section[obj_start + 1..i];
+                        let id = extract_json_field(vuln_json, "id").unwrap_or_default();
+                        let summary = extract_json_field(vuln_json, "summary")
+                            .unwrap_or_else(|| "No description".to_string());
+
+                        // Try to extract severity
+                        let severity = extract_json_field(vuln_json, "severity")
+                            .or_else(|| {
+                                if vuln_json.contains("CRITICAL") { Some("CRITICAL".to_string()) }
+                                else if vuln_json.contains("HIGH") { Some("HIGH".to_string()) }
+                                else if vuln_json.contains("MODERATE") || vuln_json.contains("MEDIUM") { Some("MEDIUM".to_string()) }
+                                else { Some("LOW".to_string()) }
+                            })
+                            .unwrap_or_else(|| "UNKNOWN".to_string());
+
+                        if severity_rank(&severity) >= min_rank {
+                            vulns.push(AuditVulnerability {
+                                id: id.clone(),
+                                summary,
+                                severity: severity.to_uppercase(),
+                                package: pkg_name.clone(),
+                                version: pkg_version.clone(),
+                                fixed: extract_json_field(vuln_json, "fixed").unwrap_or_default(),
+                            });
+                        }
+                    }
+                } else if ch == ']' && depth == 0 {
+                    break;
+                }
+            }
+        }
+    }
+
+    let total = vulns.len() as u64;
+    let critical = vulns.iter().filter(|v| v.severity == "CRITICAL").count() as u64;
+    let high = vulns.iter().filter(|v| v.severity == "HIGH").count() as u64;
+    let medium = vulns.iter().filter(|v| v.severity == "MEDIUM" || v.severity == "MODERATE").count() as u64;
+    let low = vulns.iter().filter(|v| v.severity == "LOW").count() as u64;
+
+    let risk_level = if critical > 0 { "critical" }
+        else if high > 0 { "high" }
+        else if medium > 0 { "medium" }
+        else if low > 0 { "low" }
+        else { "none" };
+
+    Ok(AuditReport {
+        scanned_packages: query_count,
+        vulnerabilities: vulns,
+        total, critical, high, medium, low,
+        risk_level: risk_level.to_string(),
+    })
+}
+
+// --- B.9: Benchmark ---
+
+#[derive(Debug, Clone)]
+pub struct BenchmarkTiming {
+    pub median_ms: u64,
+    pub min_ms: u64,
+    pub max_ms: u64,
+    pub mean_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct BenchmarkResult {
+    pub name: String,
+    pub cold: BenchmarkTiming,
+    pub warm: BenchmarkTiming,
+}
+
+#[derive(Debug)]
+pub struct BenchmarkReport {
+    pub platform: String,
+    pub arch: String,
+    pub cpus: u64,
+    pub results: Vec<BenchmarkResult>,
+}
+
+fn compute_timing(mut times: Vec<u64>) -> BenchmarkTiming {
+    if times.is_empty() {
+        return BenchmarkTiming { median_ms: 0, min_ms: 0, max_ms: 0, mean_ms: 0 };
+    }
+    times.sort_unstable();
+    let min_ms = times[0];
+    let max_ms = *times.last().unwrap();
+    let mean_ms = times.iter().sum::<u64>() / times.len() as u64;
+    let median_ms = times[times.len() / 2];
+    BenchmarkTiming { median_ms, min_ms, max_ms, mean_ms }
+}
+
+pub fn run_benchmark(project_root: &Path, rounds: usize, pms: &[String]) -> Result<BenchmarkReport, String> {
+    let platform = std::env::consts::OS.to_string();
+    let arch = std::env::consts::ARCH.to_string();
+    let cpus = std::thread::available_parallelism().map(|n| n.get() as u64).unwrap_or(1);
+
+    let node_modules = project_root.join("node_modules");
+    let mut results = Vec::new();
+
+    for pm in pms {
+        let (cmd, args): (&str, Vec<&str>) = match pm.as_str() {
+            "npm" => ("npm", vec!["install", "--no-audit", "--no-fund"]),
+            "bun" => ("bun", vec!["install"]),
+            "better" => {
+                let _exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("better-core"));
+                ("__self__", vec![])
+            }
+            other => (other, vec!["install"]),
+        };
+
+        // Check if PM is available (skip if not found)
+        if pm != "better" {
+            let check = std::process::Command::new(cmd)
+                .arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            if check.is_err() || !check.unwrap().success() {
+                continue;
+            }
+        }
+
+        let mut cold_times = Vec::new();
+        let mut warm_times = Vec::new();
+
+        for _round in 0..rounds {
+            // Cold install: remove node_modules first
+            let _ = fs::remove_dir_all(&node_modules);
+
+            let start = Instant::now();
+            let status = if pm == "better" {
+                let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("better-core"));
+                std::process::Command::new(&exe)
+                    .args(["install", "--project-root"])
+                    .arg(project_root)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+            } else {
+                std::process::Command::new(cmd)
+                    .args(&args)
+                    .current_dir(project_root)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+            };
+            if let Ok(s) = status {
+                if s.success() {
+                    cold_times.push(start.elapsed().as_millis() as u64);
+                }
+            }
+
+            // Warm install: node_modules exists
+            let start = Instant::now();
+            let status = if pm == "better" {
+                let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("better-core"));
+                std::process::Command::new(&exe)
+                    .args(["install", "--project-root"])
+                    .arg(project_root)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+            } else {
+                std::process::Command::new(cmd)
+                    .args(&args)
+                    .current_dir(project_root)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+            };
+            if let Ok(s) = status {
+                if s.success() {
+                    warm_times.push(start.elapsed().as_millis() as u64);
+                }
+            }
+        }
+
+        results.push(BenchmarkResult {
+            name: pm.clone(),
+            cold: compute_timing(cold_times),
+            warm: compute_timing(warm_times),
+        });
+    }
+
+    Ok(BenchmarkReport { platform, arch, cpus, results })
+}
+
+// === Phase C: Developer Tool Features ===
+
+// --- C.2: Git Hooks ---
+
+pub fn hooks_install(project_root: &Path) -> Result<u64, String> {
+    let git_dir = project_root.join(".git");
+    if !git_dir.exists() {
+        return Err("Not a git repository".to_string());
+    }
+    let hooks_dir = git_dir.join("hooks");
+    fs::create_dir_all(&hooks_dir).map_err(|e| e.to_string())?;
+
+    // Read hooks config from package.json better.hooks
+    let pkg_json = project_root.join("package.json");
+    let _content = fs::read_to_string(&pkg_json).unwrap_or_default();
+
+    let mut hooks_installed = 0u64;
+
+    // Default hooks if no config: pre-commit runs "test" script if it exists
+    let hook_types = ["pre-commit", "pre-push", "commit-msg"];
+
+    for hook_type in &hook_types {
+        let hook_path = hooks_dir.join(hook_type);
+        let script = format!(
+            "#!/bin/sh\n# Installed by better-core hooks\nexec better-core run {} \"$@\"\n",
+            if *hook_type == "commit-msg" { "lint" } else { "test" }
+        );
+
+        fs::write(&hook_path, script).map_err(|e| e.to_string())?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&hook_path).map_err(|e| e.to_string())?.permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&hook_path, perms).map_err(|e| e.to_string())?;
+        }
+
+        hooks_installed += 1;
+    }
+
+    Ok(hooks_installed)
+}
+
+// --- C.3: Exec (TypeScript/JS runner) ---
+
+pub fn exec_script(project_root: &Path, script_path: &str, extra_args: &[String]) -> Result<ScriptRunResult, String> {
+    let started = Instant::now();
+    let bin_dir = project_root.join("node_modules").join(".bin");
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", bin_dir.display(), path_var);
+
+    let is_ts = script_path.ends_with(".ts") || script_path.ends_with(".tsx");
+
+    // Try runners in order of preference
+    let (runner, runner_args): (&str, Vec<&str>) = if is_ts {
+        if bin_dir.join("tsx").exists() {
+            ("tsx", vec![script_path])
+        } else if bin_dir.join("ts-node").exists() {
+            ("ts-node", vec![script_path])
+        } else {
+            ("node", vec!["--experimental-strip-types", script_path])
+        }
+    } else {
+        ("node", vec![script_path])
+    };
+
+    let mut cmd_args: Vec<String> = runner_args.iter().map(|s| s.to_string()).collect();
+    cmd_args.extend_from_slice(extra_args);
+
+    let status = std::process::Command::new(runner)
+        .args(&cmd_args)
+        .current_dir(project_root)
+        .env("PATH", &new_path)
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .stdin(std::process::Stdio::inherit())
+        .status()
+        .map_err(|e| format!("Failed to exec: {}", e))?;
+
+    Ok(ScriptRunResult {
+        script_name: script_path.to_string(),
+        command: format!("{} {}", runner, cmd_args.join(" ")),
+        exit_code: status.code().unwrap_or(-1),
+        duration_ms: started.elapsed().as_millis() as u64,
+    })
+}
+
+// --- C.4: Env Info ---
+
+#[derive(Debug)]
+pub struct EnvInfo {
+    pub node_version: String,
+    pub npm_version: String,
+    pub better_version: String,
+    pub platform: String,
+    pub arch: String,
+    pub project_name: Option<String>,
+    pub project_version: Option<String>,
+    pub engines: Option<String>,
+}
+
+pub fn env_info(project_root: &Path) -> EnvInfo {
+    let node_version = std::process::Command::new("node")
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .unwrap_or_else(|| "not found".to_string())
+        .trim().to_string();
+
+    let npm_version = std::process::Command::new("npm")
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .unwrap_or_else(|| "not found".to_string())
+        .trim().to_string();
+
+    let pkg_json = project_root.join("package.json");
+    let content = fs::read_to_string(&pkg_json).unwrap_or_default();
+    let project_name = extract_json_field(&content, "name");
+    let project_version = extract_json_field(&content, "version");
+    let engines = extract_json_field(&content, "engines");
+
+    EnvInfo {
+        node_version,
+        npm_version,
+        better_version: VERSION.to_string(),
+        platform: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+        project_name,
+        project_version,
+        engines,
+    }
+}
+
+// --- C.5: Init ---
+
+pub fn init_project(project_root: &Path, name: Option<&str>) -> Result<(), String> {
+    let pkg_json = project_root.join("package.json");
+    if pkg_json.exists() {
+        return Err("package.json already exists".to_string());
+    }
+
+    let project_name = name.map(|s| s.to_string()).unwrap_or_else(|| {
+        project_root.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "my-project".to_string())
+    });
+
+    let mut w = JsonWriter::new();
+    w.begin_object();
+    w.key("name");
+    w.value_string(&project_name);
+    w.key("version");
+    w.value_string("1.0.0");
+    w.key("description");
+    w.value_string("");
+    w.key("main");
+    w.value_string("index.js");
+    w.key("scripts");
+    w.begin_object();
+    w.key("test");
+    w.value_string("echo \"Error: no test specified\" && exit 1");
+    w.end_object();
+    w.key("keywords");
+    w.begin_array();
+    w.end_array();
+    w.key("author");
+    w.value_string("");
+    w.key("license");
+    w.value_string("ISC");
+    w.end_object();
+    w.out.push('\n');
+
+    fs::write(&pkg_json, w.finish()).map_err(|e| e.to_string())?;
+    Ok(())
+}
