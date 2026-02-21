@@ -79,12 +79,15 @@ better scan                     # Low-level lockfile scan
 ```bash
 better run <script>             # Run package.json scripts (node_modules/.bin on PATH)
 better run lint test build      # Run multiple scripts in parallel
+better run dev --watch          # Run with file watching (auto-restart on changes)
 better test                     # Alias: better run test
 better lint                     # Alias: better run lint
-better dev                      # Alias: better run dev
+better dev                      # Alias: better run dev (watch mode by default)
 better build                    # Alias: better run build
 better start                    # Alias: better run start
 ```
+
+Scripts automatically load `.env` and `.env.local` files from the project root.
 
 ### Dependency Intelligence
 
@@ -108,6 +111,7 @@ better benchmark                # Comparative install timing across package mana
 better benchmark --rounds 5     # Number of benchmark rounds
 better benchmark --pm npm,bun   # Select package managers to compare
 better env                      # Show Node.js version, platform, project info
+better env check                # Validate engines constraints from package.json
 ```
 
 ### Cache
@@ -122,11 +126,32 @@ better cache gc --dry-run       # Preview what would be removed
 ### Developer Tools
 
 ```bash
-better hooks install            # Install git hooks (pre-commit, pre-push)
-better exec <script.ts>         # Run TypeScript/JavaScript (auto-detects tsx/ts-node/node)
+better hooks install            # Install git hooks (reads config from package.json#better.hooks)
+better exec <script.ts>         # Run TS/JS (tsx > esbuild-runner > swc-node > ts-node > node)
 better init                     # Initialize a new project (generates package.json)
 better init --name my-app       # Initialize with a specific name
+better init --template react    # Scaffold a React + Vite + TypeScript project
+better init --template next     # Scaffold a Next.js + TypeScript project
+better init --template express  # Scaffold an Express + TypeScript project
 ```
+
+#### Git Hooks
+
+Configure hooks in `package.json`:
+
+```json
+{
+  "better": {
+    "hooks": {
+      "pre-commit": "better-core run lint",
+      "pre-push": "better-core run test",
+      "commit-msg": "conventional-commit"
+    }
+  }
+}
+```
+
+Without config, defaults to: pre-commit (lint), pre-push (test), commit-msg (conventional commit validation).
 
 ### Aliases
 
@@ -152,7 +177,7 @@ crates/
   better-core/         Pure Rust binary
     src/lib.rs          Core library (resolve, fetch, materialize, CAS, bin links,
                         license scan, audit, outdated, doctor, benchmark, ...)
-    src/main.rs         CLI binary (18 commands + aliases)
+    src/main.rs         CLI binary (19 commands + aliases, watch mode, templates)
   better-napi/         Node.js native addon (NAPI bridge)
 apps/
   landing/             Next.js landing page
