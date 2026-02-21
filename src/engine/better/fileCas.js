@@ -166,52 +166,47 @@ export async function materializeFromFileCas(storeRoot, pkgAlgorithm, pkgHex, de
 
   const stats = { files: 0, linked: 0, copied: 0, symlinks: 0 };
 
-  // Collect all directories needed (sorted shortest-first for correct creation order)
+  // Batch mkdir: collect unique dirs then create all in parallel
   const dirsNeeded = new Set([destDir]);
   for (const relPath of Object.keys(manifest.files)) {
     dirsNeeded.add(path.join(destDir, path.dirname(relPath)));
   }
-  const sortedDirs = [...dirsNeeded].sort((a, b) => a.length - b.length);
-  for (const dir of sortedDirs) {
-    await fs.mkdir(dir, { recursive: true });
-  }
+  await Promise.all([...dirsNeeded].map(dir => fs.mkdir(dir, { recursive: true })));
 
-  // Materialize files
-  for (const [relPath, entry] of Object.entries(manifest.files)) {
+  // Parallel materialize all files within this package
+  const useCopy = linkStrategy === "copy";
+  await Promise.all(Object.entries(manifest.files).map(async ([relPath, entry]) => {
     const dest = path.join(destDir, relPath);
 
     if (entry.type === "symlink") {
       try { await fs.rm(dest, { force: true }); } catch {}
       await fs.symlink(entry.target, dest);
       stats.symlinks++;
-      continue;
+      return;
     }
 
     if (entry.type === "file") {
       const storePath = fileStorePath(storeRoot, entry.hash);
       stats.files++;
 
-      if (linkStrategy === "copy") {
+      if (useCopy) {
         await fs.copyFile(storePath, dest);
         stats.copied++;
-        continue;
+      } else {
+        try {
+          await fs.link(storePath, dest);
+          stats.linked++;
+        } catch {
+          await fs.copyFile(storePath, dest);
+          stats.copied++;
+        }
       }
 
-      // Try hardlink first (auto or hardlink strategy)
-      try {
-        await fs.link(storePath, dest);
-        stats.linked++;
-      } catch {
-        await fs.copyFile(storePath, dest);
-        stats.copied++;
-      }
-
-      // Restore file mode if stored
       if (entry.mode) {
         try { await fs.chmod(dest, entry.mode); } catch {}
       }
     }
-  }
+  }));
 
   return { ok: true, stats };
 }

@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use napi_derive::napi;
+use rayon::prelude::*;
 
 use better_core::{
     analyze, materialize_tree, scan_tree, resolve_from_lockfile, fetch_packages,
@@ -423,5 +424,91 @@ pub fn fetch_and_extract(
             packages_cached: 0.0,
             bytes_downloaded: 0.0,
         },
+    }
+}
+
+// --- Batch Materialize ---
+
+#[napi(object)]
+pub struct NapiBatchEntry {
+    pub src: String,
+    pub dest: String,
+}
+
+#[napi(object)]
+pub struct NapiBatchMaterializeResult {
+    pub ok: bool,
+    pub reason: Option<String>,
+    #[napi(js_name = "totalFiles")]
+    pub total_files: f64,
+    #[napi(js_name = "totalLinked")]
+    pub total_linked: f64,
+    #[napi(js_name = "totalCopied")]
+    pub total_copied: f64,
+    #[napi(js_name = "totalDirs")]
+    pub total_dirs: f64,
+    pub failed: f64,
+}
+
+#[napi]
+pub fn materialize_batch(
+    entries: Vec<NapiBatchEntry>,
+    opts: Option<NapiMaterializeOpts>,
+) -> NapiBatchMaterializeResult {
+    let strategy = opts
+        .as_ref()
+        .and_then(|o| o.link_strategy.as_deref())
+        .and_then(LinkStrategy::from_arg)
+        .unwrap_or(LinkStrategy::Auto);
+
+    let profile = opts
+        .as_ref()
+        .and_then(|o| o.profile.as_deref())
+        .and_then(MaterializeProfile::from_arg)
+        .unwrap_or(MaterializeProfile::Auto);
+
+    let jobs_per_pkg = 4; // modest per-package parallelism, rayon handles cross-package
+
+    let results: Vec<_> = entries
+        .par_iter()
+        .map(|entry| {
+            let src_path = Path::new(&entry.src);
+            let dest_path = Path::new(&entry.dest);
+            materialize_tree(src_path, dest_path, strategy, jobs_per_pkg, profile)
+        })
+        .collect();
+
+    let mut total_files = 0u64;
+    let mut total_linked = 0u64;
+    let mut total_copied = 0u64;
+    let mut total_dirs = 0u64;
+    let mut failed = 0u64;
+
+    for result in &results {
+        match result {
+            Ok(report) => {
+                total_files += report.stats.files;
+                total_linked += report.stats.files_linked;
+                total_copied += report.stats.files_copied;
+                total_dirs += report.stats.directories;
+            }
+            Err(_) => {
+                failed += 1;
+            }
+        }
+    }
+
+    NapiBatchMaterializeResult {
+        ok: failed == 0,
+        reason: if failed > 0 {
+            Some(format!("{} packages failed to materialize", failed))
+        } else {
+            None
+        },
+        total_files: total_files as f64,
+        total_linked: total_linked as f64,
+        total_copied: total_copied as f64,
+        total_dirs: total_dirs as f64,
+        failed: failed as f64,
     }
 }

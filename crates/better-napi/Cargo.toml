@@ -10,6 +10,7 @@ crate-type = ["cdylib"]
 better-core = { path = "../better-core" }
 napi = { version = "2", features = ["napi6"] }
 napi-derive = "2"
+rayon = "1"
 
 [build-dependencies]
 napi-build = "2"

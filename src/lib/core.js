@@ -164,6 +164,17 @@ export function runBetterCoreMaterializeNapi(srcDir, destDir, opts = {}) {
   return result;
 }
 
+export function runBetterCoreMaterializeBatchNapi(entries, opts = {}) {
+  const addon = tryLoadNapiAddon();
+  if (!addon || typeof addon.materializeBatch !== "function") return null;
+  const napiOpts = {};
+  if (opts.linkStrategy) napiOpts.linkStrategy = String(opts.linkStrategy);
+  if (opts.profile) napiOpts.profile = String(opts.profile);
+  const result = addon.materializeBatch(entries, napiOpts);
+  if (!result || typeof result !== "object") throw new Error("napi materializeBatch returned invalid result");
+  return result;
+}
+
 export function runBetterCoreFetchAndExtractNapi(lockfilePath, cacheDir, opts = {}) {
   const addon = tryLoadNapiAddon();
   if (!addon || typeof addon.fetchAndExtract !== "function") return null;

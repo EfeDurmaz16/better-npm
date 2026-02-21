@@ -12,7 +12,7 @@ import { createGunzip } from "node:zlib";
 import { splitLockfilePath, ensureEmptyDir, materializeTree, atomicReplaceDir, createLimiter } from "./materialize.js";
 import { writeRootBinLinks } from "./bins.js";
 import { runCommand } from "../../lib/spawn.js";
-import { tryLoadNapiAddon, runBetterCoreFetchAndExtractNapi } from "../../lib/core.js";
+import { tryLoadNapiAddon, runBetterCoreFetchAndExtractNapi, runBetterCoreMaterializeNapi, runBetterCoreMaterializeBatchNapi } from "../../lib/core.js";
 import { ingestPackageToFileCas, materializeFromFileCas, hasFileCasManifest } from "./fileCas.js";
 
 async function exists(p) {
@@ -476,11 +476,13 @@ export async function installFromNpmLockfile(projectRoot, layout, opts = {}) {
   const packageCacheEntries = [];
   const fileCasStats = { ingested: 0, ingestFailed: 0, totalFiles: 0, newFiles: 0, existingFiles: 0, totalBytes: 0 };
   const fileCasMaterializeStats = { linked: 0, copied: 0, symlinks: 0, fallback: 0 };
+  const timing = {};
 
   const agents = createSharedAgents();
   try {
 
   // === Phase A: Filter & categorize all packages (fast, single pass) ===
+  const tA = performance.now();
   const toInstall = []; // items needing download/extract/materialize
   for (const it of items) {
     const relPath = it.relPath;
@@ -600,7 +602,10 @@ export async function installFromNpmLockfile(projectRoot, layout, opts = {}) {
     toInstall.push({ relPath, meta, resolved, integrity, pkgName, pkgVersion, key, segments, destPkgDir });
   }
 
+  timing.phaseA = performance.now() - tA;
+
   // === Rust fast path: pre-populate CAS via NAPI if available ===
+  const tNapi = performance.now();
   if (toInstall.length > 0) {
     try {
       const napiResult = runBetterCoreFetchAndExtractNapi(lockfilePath, layout.root, {
@@ -615,7 +620,10 @@ export async function installFromNpmLockfile(projectRoot, layout, opts = {}) {
     }
   }
 
+  timing.napiRust = performance.now() - tNapi;
+
   // === Phase B+C: Concurrent download+verify+extract (16 concurrent) ===
+  const tBC = performance.now();
   // Cache hits: verify marker check + extract from disk
   // Cache misses: streaming download -> tee(hash, CAS write, gunzip->extract)
   const fetchExtractLimiter = createLimiter(16);
@@ -702,13 +710,23 @@ export async function installFromNpmLockfile(projectRoot, layout, opts = {}) {
     )
   );
 
-  // === Phase D-alt: File CAS ingest (if file CAS store available) ===
+  timing.phaseBC = performance.now() - tBC;
+
+  // === Phase D-alt: File CAS ingest (skip packages with existing manifests) ===
+  const tDalt = performance.now();
   const fileCasRoot = path.join(layout.root, "file-store");
   const ingestLimiter = createLimiter(fsConcurrency);
+  let fileCasIngestSkipped = 0;
   await Promise.all(
     extractResults.map((item) =>
       ingestLimiter(async () => {
         try {
+          // Skip ingest if manifest already exists (warm install optimization)
+          const alreadyIngested = await hasFileCasManifest(fileCasRoot, item.key.algorithm, item.key.hex);
+          if (alreadyIngested) {
+            fileCasIngestSkipped++;
+            return;
+          }
           const result = await ingestPackageToFileCas(
             fileCasRoot,
             item.key.algorithm,
@@ -727,67 +745,83 @@ export async function installFromNpmLockfile(projectRoot, layout, opts = {}) {
       })
     )
   );
+  fileCasStats.ingestSkipped = fileCasIngestSkipped;
 
-  // === Phase D-prep: Batch mkdir for all destination directories ===
-  {
+  timing.phaseDalt = performance.now() - tDalt;
+
+  // === Phase D: Materialize packages into node_modules ===
+  const tD = performance.now();
+  // Strategy: try Rust NAPI first (handles mkdir + hardlink natively), then JS fallback
+  let napiMaterializeUsed = false;
+  try {
+    // Prep: remove stale + ensure parent dirs
+    if (installMode === "incremental") {
+      await Promise.all(
+        extractResults.map((item) => fs.rm(item.destPkgDir, { recursive: true, force: true }))
+      );
+    }
+    const parentDirs = new Set();
+    for (const item of extractResults) parentDirs.add(path.dirname(item.destPkgDir));
+    await Promise.all([...parentDirs].map(d => fs.mkdir(d, { recursive: true })));
+
+    // Batch Rust NAPI: single call, rayon parallelism across ALL packages
+    const batchEntries = extractResults.map(item => ({
+      src: item.extractRes.packageDir,
+      dest: item.destPkgDir
+    }));
+    const batchResult = runBetterCoreMaterializeBatchNapi(batchEntries, { linkStrategy });
+    if (batchResult && batchResult.ok) {
+      for (const item of extractResults) {
+        packagesByPath.set(item.relPath, item.destPkgDir);
+        if (installMode === "incremental") incrementalOps.relinked += 1;
+      }
+      napiMaterializeUsed = true;
+    }
+  } catch {
+    // NAPI batch unavailable — fall back to JS materialize
+  }
+  timing.phaseDprep = 0;
+
+  if (!napiMaterializeUsed) {
+    // JS fallback: batch mkdir + rm stale + materialize
     const dirsNeeded = new Set();
     for (const item of extractResults) {
-      // Collect parent dir of each destination and the destination itself
       dirsNeeded.add(path.dirname(item.destPkgDir));
       dirsNeeded.add(item.destPkgDir);
     }
-    // Sort shortest-first so parents are created before children
-    const sorted = [...dirsNeeded].sort((a, b) => a.length - b.length);
-    // Incremental mode: remove stale destinations first (concurrently)
     if (installMode === "incremental") {
-      const rmLimiter = createLimiter(fsConcurrency);
-      await Promise.all(
-        extractResults.map((item) =>
-          rmLimiter(() => fs.rm(item.destPkgDir, { recursive: true, force: true }))
-        )
-      );
+      await Promise.all(extractResults.map(item => fs.rm(item.destPkgDir, { recursive: true, force: true })));
     }
-    // Create all directories in batch
-    const mkdirLimiter = createLimiter(fsConcurrency);
+    await Promise.all([...dirsNeeded].map(d => fs.mkdir(d, { recursive: true })));
+
     await Promise.all(
-      sorted.map((dir) => mkdirLimiter(() => fs.mkdir(dir, { recursive: true })))
+      extractResults.map(async (item) => {
+          const casResult = await materializeFromFileCas(
+            fileCasRoot,
+            item.key.algorithm,
+            item.key.hex,
+            item.destPkgDir,
+            { linkStrategy }
+          );
+
+          if (casResult.ok) {
+            fileCasMaterializeStats.linked += casResult.stats.linked;
+            fileCasMaterializeStats.copied += casResult.stats.copied;
+            fileCasMaterializeStats.symlinks += casResult.stats.symlinks;
+          } else {
+            fileCasMaterializeStats.fallback++;
+            const srcPkgDir = item.extractRes.packageDir;
+            await materializeTree(srcPkgDir, item.destPkgDir, { linkStrategy, fsConcurrency });
+          }
+
+          packagesByPath.set(item.relPath, item.destPkgDir);
+          if (installMode === "incremental") incrementalOps.relinked += 1;
+      })
     );
   }
 
-  // === Phase D: Concurrent materialize (16 concurrent) ===
-  // Try file CAS first, fall back to regular materializeTree if not available
-  const materializeLimiter = createLimiter(fsConcurrency);
-  await Promise.all(
-    extractResults.map((item) =>
-      materializeLimiter(async () => {
-        // Try file CAS materialize first
-        const casResult = await materializeFromFileCas(
-          fileCasRoot,
-          item.key.algorithm,
-          item.key.hex,
-          item.destPkgDir,
-          { linkStrategy }
-        );
-
-        if (casResult.ok) {
-          // File CAS materialize succeeded
-          fileCasMaterializeStats.linked += casResult.stats.linked;
-          fileCasMaterializeStats.copied += casResult.stats.copied;
-          fileCasMaterializeStats.symlinks += casResult.stats.symlinks;
-        } else {
-          // File CAS manifest not found, fall back to regular materialize
-          fileCasMaterializeStats.fallback++;
-          const srcPkgDir = item.extractRes.packageDir;
-          await materializeTree(srcPkgDir, item.destPkgDir, { linkStrategy, fsConcurrency });
-        }
-
-        packagesByPath.set(item.relPath, item.destPkgDir);
-        if (installMode === "incremental") {
-          incrementalOps.relinked += 1;
-        }
-      })
-    )
-  );
+  timing.phaseD = performance.now() - tD;
+  const tPost = performance.now();
 
   if (installMode === "full_replace") {
     // Atomically replace node_modules
@@ -814,27 +848,63 @@ export async function installFromNpmLockfile(projectRoot, layout, opts = {}) {
   });
   incrementalOps.binRelinked = Number(bins?.linksWritten ?? 0);
 
+  timing.postInstall = performance.now() - tPost;
+
   } finally {
     destroySharedAgents(agents);
   }
 
-  // Scripts/native addons: Phase 3 uses npm rebuild fallback.
+  // Scripts/native addons: only run npm rebuild when native addons are detected.
+  const tScripts = performance.now();
   let scriptsResult = null;
   if (scripts === "rebuild") {
-    const rebuild = await runCommand(
-      "npm",
-      ["rebuild", "--no-audit", "--no-fund"],
-      { cwd: projectRoot, passthroughStdio: true, captureLimitBytes: 1024 * 256 }
-    );
-    scriptsResult = {
-      status: rebuild.exitCode === 0 ? "ok" : "failed",
-      wallTimeMs: rebuild.wallTimeMs,
-      exitCode: rebuild.exitCode,
-      stderrTail: rebuild.stderrTail
-    };
+    // Scan installed packages for native addon indicators to avoid ~600ms npm rebuild overhead.
+    let needsRebuild = false;
+    const LIFECYCLE_SCRIPTS = ["install", "preinstall", "postinstall"];
+    for (const [relPath, absPath] of packagesByPath) {
+      try {
+        const pkgJsonPath = path.join(absPath, "package.json");
+        const raw = await fs.readFile(pkgJsonPath, "utf8");
+        const pkg = JSON.parse(raw);
+        // Check for lifecycle scripts that indicate native compilation
+        if (pkg.scripts) {
+          for (const s of LIFECYCLE_SCRIPTS) {
+            if (typeof pkg.scripts[s] === "string" && pkg.scripts[s].length > 0) {
+              needsRebuild = true;
+              break;
+            }
+          }
+        }
+        if (needsRebuild) break;
+        // Check for binding.gyp (node-gyp native addon)
+        if (pkg.gypfile === true) { needsRebuild = true; break; }
+        const gypPath = path.join(absPath, "binding.gyp");
+        if (fssync.existsSync(gypPath)) { needsRebuild = true; break; }
+      } catch {
+        // Skip packages we can't read
+      }
+    }
+
+    if (needsRebuild) {
+      const rebuild = await runCommand(
+        "npm",
+        ["rebuild", "--no-audit", "--no-fund"],
+        { cwd: projectRoot, passthroughStdio: true, captureLimitBytes: 1024 * 256 }
+      );
+      scriptsResult = {
+        status: rebuild.exitCode === 0 ? "ok" : "failed",
+        wallTimeMs: rebuild.wallTimeMs,
+        exitCode: rebuild.exitCode,
+        stderrTail: rebuild.stderrTail
+      };
+    } else {
+      scriptsResult = { status: "skipped", reason: "no_native_addons" };
+    }
   } else {
     scriptsResult = { status: "off" };
   }
+
+  timing.scripts = performance.now() - tScripts;
 
   return {
     ok: true,
@@ -852,6 +922,7 @@ export async function installFromNpmLockfile(projectRoot, layout, opts = {}) {
     fileCasStats: {
       ...fileCasStats,
       materialize: fileCasMaterializeStats
-    }
+    },
+    timing
   };
 }
