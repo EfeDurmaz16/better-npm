@@ -186,6 +186,36 @@ export function runBetterCoreFetchAndExtractNapi(lockfilePath, cacheDir, opts = 
   return result;
 }
 
+export async function runBetterCoreInstall(corePath, projectRoot, opts = {}) {
+  const args = ["install", "--project-root", projectRoot];
+  if (opts.lockfile) args.push("--lockfile", String(opts.lockfile));
+  if (opts.cacheRoot) args.push("--cache-root", String(opts.cacheRoot));
+  if (opts.storeRoot) args.push("--store-root", String(opts.storeRoot));
+  if (opts.linkStrategy) args.push("--link-strategy", String(opts.linkStrategy));
+  if (opts.jobs != null) args.push("--jobs", String(opts.jobs));
+  if (opts.scripts === false) args.push("--no-scripts");
+  const res = await runCommand(corePath, args, {
+    cwd: projectRoot,
+    passthroughStdio: false,
+    captureLimitBytes: 50 * 1024 * 1024
+  });
+  let parsed = null;
+  try {
+    parsed = JSON.parse(res.stdout);
+  } catch {
+    // ignore parse failure, surface process error below
+  }
+  if (res.exitCode !== 0) {
+    const err = new Error(`better-core install failed (exit ${res.exitCode})`);
+    err.core = { ...res, parsed };
+    throw err;
+  }
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("better-core install returned invalid JSON");
+  }
+  return parsed;
+}
+
 export async function runBetterCoreMaterialize(corePath, srcDir, destDir, opts = {}) {
   const args = ["materialize", "--src", srcDir, "--dest", destDir];
   if (opts.linkStrategy) args.push("--link-strategy", String(opts.linkStrategy));

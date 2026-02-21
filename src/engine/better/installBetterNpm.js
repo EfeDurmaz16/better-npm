@@ -12,7 +12,7 @@ import { createGunzip } from "node:zlib";
 import { splitLockfilePath, ensureEmptyDir, materializeTree, atomicReplaceDir, createLimiter } from "./materialize.js";
 import { writeRootBinLinks } from "./bins.js";
 import { runCommand } from "../../lib/spawn.js";
-import { tryLoadNapiAddon, runBetterCoreFetchAndExtractNapi, runBetterCoreMaterializeNapi, runBetterCoreMaterializeBatchNapi } from "../../lib/core.js";
+import { tryLoadNapiAddon, runBetterCoreFetchAndExtractNapi, runBetterCoreMaterializeNapi, runBetterCoreMaterializeBatchNapi, findBetterCore, runBetterCoreInstall } from "../../lib/core.js";
 import { ingestPackageToFileCas, materializeFromFileCas, hasFileCasManifest } from "./fileCas.js";
 
 async function exists(p) {
@@ -411,6 +411,53 @@ export async function installFromNpmLockfile(projectRoot, layout, opts = {}) {
     incremental = true,
     fsConcurrency = 16
   } = opts;
+
+  // === Rust binary fast path: bypass Node.js pipeline entirely ===
+  if (!process.env.BETTER_NO_RUST_BINARY) {
+    try {
+      const coreBinary = await findBetterCore();
+      if (coreBinary) {
+        const result = await runBetterCoreInstall(coreBinary, projectRoot, {
+          lockfile: path.join(projectRoot, "package-lock.json"),
+          cacheRoot: layout.root,
+          storeRoot: path.join(layout.root, "file-store"),
+          linkStrategy,
+          jobs: fsConcurrency,
+          scripts: scripts !== "off"
+        });
+        if (result && result.ok) {
+          return {
+            ok: true,
+            engine: "better",
+            mode: "rust-binary",
+            lockfile: { type: "npm" },
+            verify,
+            linkStrategy,
+            fsConcurrency,
+            extracted: {
+              reusedTarballs: result.stats?.packagesCached ?? 0,
+              downloadedTarballs: result.stats?.packagesFetched ?? 0,
+              extractedUnpacked: 0,
+              reusedUnpacked: 0
+            },
+            skipped: { platform: 0 },
+            incrementalOps: { mode: "rust-binary" },
+            packages: [],
+            scripts: result.scripts ?? { status: "off" },
+            binLinks: { mode: binLinks, created: result.binLinks?.created ?? 0 },
+            fileCasStats: {
+              casLinked: result.stats?.casLinked ?? 0,
+              casCopied: result.stats?.casCopied ?? 0,
+              cloned: result.stats?.cloned ?? 0
+            },
+            timing: result.timing ?? {}
+          };
+        }
+      }
+    } catch {
+      // Rust binary not available or failed — fall through to JS pipeline
+    }
+  }
 
   const lockfilePath = path.join(projectRoot, "package-lock.json");
   if (!(await exists(lockfilePath))) {

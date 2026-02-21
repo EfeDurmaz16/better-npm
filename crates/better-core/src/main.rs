@@ -2,7 +2,13 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use better_core::*;
+use better_core::{
+    analyze, cas_key_from_integrity, create_bin_links, detect_lifecycle_scripts, fetch_packages,
+    ingest_to_file_cas, materialize_from_file_cas, materialize_tree, resolve_from_lockfile,
+    run_lifecycle_scripts, scan_tree, try_clonefile_dir, unpacked_path, write_analyze_json,
+    write_materialize_json, write_scan_json, CasLayout, JsonWriter, LifecycleRunResult,
+    LinkStrategy, MaterializeProfile, MaterializeStats, PhaseDurations, ScanAgg, VERSION,
+};
 
 #[derive(Debug)]
 enum Command {
@@ -19,8 +25,10 @@ enum Command {
         lockfile: PathBuf,
         project_root: PathBuf,
         cache_root: PathBuf,
+        store_root: Option<PathBuf>,
         link_strategy: LinkStrategy,
         jobs: usize,
+        scripts: bool,
     },
     Version,
     Help { error: Option<String> },
@@ -74,6 +82,8 @@ fn parse_args() -> Command {
     let mut lockfile: Option<PathBuf> = None;
     let mut project_root: Option<PathBuf> = None;
     let mut cache_root: Option<PathBuf> = None;
+    let mut store_root: Option<PathBuf> = None;
+    let mut scripts = true;
     let mut i = 1usize;
     while i < args.len() {
         match args[i].as_str() {
@@ -194,6 +204,23 @@ fn parse_args() -> Command {
                 cache_root = Some(PathBuf::from(&args[i + 1]));
                 i += 2;
             }
+            "--store-root" => {
+                if i + 1 >= args.len() {
+                    return Command::Help {
+                        error: Some("--store-root requires a value".to_string()),
+                    };
+                }
+                store_root = Some(PathBuf::from(&args[i + 1]));
+                i += 2;
+            }
+            "--no-scripts" => {
+                scripts = false;
+                i += 1;
+            }
+            "--scripts" => {
+                scripts = true;
+                i += 1;
+            }
             other => {
                 return Command::Help {
                     error: Some(format!("unknown flag: {other}")),
@@ -228,15 +255,17 @@ fn parse_args() -> Command {
             },
         },
         "install" => {
-            let lockfile = lockfile.unwrap_or_else(|| PathBuf::from("package-lock.json"));
             let project_root = project_root.unwrap_or_else(|| PathBuf::from("."));
+            let lockfile = lockfile.unwrap_or_else(|| project_root.join("package-lock.json"));
             let cache_root = cache_root.unwrap_or_else(default_cache_root);
             Command::Install {
                 lockfile,
                 project_root,
                 cache_root,
+                store_root,
                 link_strategy,
                 jobs,
+                scripts,
             }
         }
         _ => Command::Help {
@@ -256,7 +285,7 @@ Usage:
   better-core analyze --root <path> [--graph]
   better-core scan --root <path>
   better-core materialize --src <path> --dest <path> [--link-strategy auto|hardlink|copy] [--jobs N] [--profile auto|io-heavy|small-files]
-  better-core install [--lockfile <path>] [--project-root <path>] [--cache-root <path>] [--link-strategy auto|hardlink|copy] [--jobs N]
+  better-core install [--lockfile <path>] [--project-root <path>] [--cache-root <path>] [--store-root <path>] [--link-strategy auto|hardlink|copy] [--jobs N] [--no-scripts]
   better-core version
 "
     );
@@ -380,12 +409,20 @@ fn main() {
             lockfile,
             project_root,
             cache_root,
+            store_root,
             link_strategy,
             jobs,
+            scripts,
         } => {
             let started = Instant::now();
+            let phase_resolve_ms;
+            let phase_fetch_ms;
+            let phase_materialize_ms;
+            let phase_binlinks_ms;
+            let phase_scripts_ms;
 
             // Step 1: Resolve packages from lockfile
+            let t_resolve = Instant::now();
             let resolve_result = match resolve_from_lockfile(&lockfile) {
                 Ok(result) => result,
                 Err(reason) => {
@@ -403,8 +440,10 @@ fn main() {
                     std::process::exit(1);
                 }
             };
+            phase_resolve_ms = t_resolve.elapsed().as_millis() as u64;
 
             // Step 2: Fetch packages to CAS
+            let t_fetch = Instant::now();
             let fetch_result = match fetch_packages(&resolve_result.packages, &cache_root) {
                 Ok(result) => result,
                 Err(reason) => {
@@ -422,13 +461,22 @@ fn main() {
                     std::process::exit(1);
                 }
             };
+            phase_fetch_ms = t_fetch.elapsed().as_millis() as u64;
 
             // Step 3: Materialize packages to node_modules
+            let t_mat = Instant::now();
             let layout = CasLayout::new(&cache_root);
+            let file_cas_root = store_root.unwrap_or_else(|| cache_root.join("file-store"));
             let node_modules = project_root.join("node_modules");
+            let _ = std::fs::create_dir_all(&node_modules);
+
             let mut total_files = 0u64;
             let mut total_dirs = 0u64;
             let mut total_symlinks = 0u64;
+            let mut cloned = 0u64;
+            let mut cas_linked = 0u64;
+            let mut cas_copied = 0u64;
+            let mut fallback_materialized = 0u64;
 
             for pkg in &resolve_result.packages {
                 // Get unpacked path from CAS
@@ -452,12 +500,58 @@ fn main() {
                     node_modules.join(&pkg.rel_path)
                 };
 
-                // Materialize this package
-                match materialize_tree(&src_dir, &dest_path, link_strategy, jobs, MaterializeProfile::Auto) {
+                // Ensure parent directory exists
+                if let Some(parent) = dest_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+
+                // Strategy 1: Try clonefile (macOS APFS, near-instant)
+                if try_clonefile_dir(&src_dir, &dest_path) {
+                    cloned += 1;
+                    continue;
+                }
+
+                // Strategy 2: Try file CAS (ingest + hardlink from global store)
+                let cas_ok = {
+                    // Ingest into file CAS if not already there
+                    let _ = ingest_to_file_cas(&file_cas_root, &algo, &hex, &src_dir);
+
+                    // Materialize from file CAS
+                    match materialize_from_file_cas(
+                        &file_cas_root,
+                        &algo,
+                        &hex,
+                        &dest_path,
+                        link_strategy,
+                    ) {
+                        Ok(result) if result.ok && result.files > 0 => {
+                            total_files += result.files;
+                            cas_linked += result.linked;
+                            cas_copied += result.copied;
+                            total_symlinks += result.symlinks;
+                            true
+                        }
+                        _ => false,
+                    }
+                };
+
+                if cas_ok {
+                    continue;
+                }
+
+                // Strategy 3: Fallback to materialize_tree (scan+mkdir+hardlink/copy)
+                match materialize_tree(
+                    &src_dir,
+                    &dest_path,
+                    link_strategy,
+                    jobs,
+                    MaterializeProfile::Auto,
+                ) {
                     Ok(report) => {
                         total_files += report.stats.files;
                         total_dirs += report.stats.directories;
                         total_symlinks += report.stats.symlinks;
+                        fallback_materialized += 1;
                     }
                     Err(reason) => {
                         let mut w = JsonWriter::new();
@@ -467,7 +561,10 @@ fn main() {
                         w.key("kind");
                         w.value_string("better.install.report");
                         w.key("reason");
-                        w.value_string(&format!("Failed to materialize {}: {}", pkg.name, reason));
+                        w.value_string(&format!(
+                            "Failed to materialize {}: {}",
+                            pkg.name, reason
+                        ));
                         w.end_object();
                         w.out.push('\n');
                         print!("{}", w.finish());
@@ -475,6 +572,27 @@ fn main() {
                     }
                 }
             }
+            phase_materialize_ms = t_mat.elapsed().as_millis() as u64;
+
+            // Step 4: Create bin links
+            let t_bins = Instant::now();
+            let bin_result =
+                create_bin_links(&node_modules, &resolve_result.packages).unwrap_or_default();
+            phase_binlinks_ms = t_bins.elapsed().as_millis() as u64;
+
+            // Step 5: Lifecycle scripts
+            let t_scripts = Instant::now();
+            let scripts_result = if scripts {
+                let detection =
+                    detect_lifecycle_scripts(&node_modules, &resolve_result.packages);
+                run_lifecycle_scripts(&project_root, &detection)
+            } else {
+                LifecycleRunResult {
+                    skipped_reason: Some("disabled".to_string()),
+                    ..Default::default()
+                }
+            };
+            phase_scripts_ms = t_scripts.elapsed().as_millis() as u64;
 
             let duration_ms = started.elapsed().as_millis() as u64;
 
@@ -486,7 +604,7 @@ fn main() {
             w.key("kind");
             w.value_string("better.install.report");
             w.key("schemaVersion");
-            w.value_u64(1);
+            w.value_u64(2);
             w.key("lockfile");
             w.value_string(&lockfile.to_string_lossy());
             w.key("projectRoot");
@@ -495,6 +613,7 @@ fn main() {
             w.value_string(&cache_root.to_string_lossy());
             w.key("durationMs");
             w.value_u64(duration_ms);
+
             w.key("stats");
             w.begin_object();
             w.key("packagesResolved");
@@ -511,7 +630,58 @@ fn main() {
             w.value_u64(total_dirs);
             w.key("symlinks");
             w.value_u64(total_symlinks);
+            w.key("cloned");
+            w.value_u64(cloned);
+            w.key("casLinked");
+            w.value_u64(cas_linked);
+            w.key("casCopied");
+            w.value_u64(cas_copied);
+            w.key("fallbackMaterialized");
+            w.value_u64(fallback_materialized);
             w.end_object();
+
+            w.key("binLinks");
+            w.begin_object();
+            w.key("created");
+            w.value_u64(bin_result.links_created);
+            w.key("failed");
+            w.value_u64(bin_result.links_failed);
+            w.end_object();
+
+            w.key("scripts");
+            w.begin_object();
+            w.key("run");
+            w.value_u64(scripts_result.scripts_run);
+            w.key("succeeded");
+            w.value_u64(scripts_result.scripts_succeeded);
+            w.key("failed");
+            w.value_u64(scripts_result.scripts_failed);
+            if let Some(reason) = &scripts_result.skipped_reason {
+                w.key("skippedReason");
+                w.value_string(reason);
+            }
+            if let Some(code) = scripts_result.rebuild_exit_code {
+                w.key("rebuildExitCode");
+                w.value_i64(code as i64);
+            }
+            w.end_object();
+
+            w.key("timing");
+            w.begin_object();
+            w.key("resolveMs");
+            w.value_u64(phase_resolve_ms);
+            w.key("fetchMs");
+            w.value_u64(phase_fetch_ms);
+            w.key("materializeMs");
+            w.value_u64(phase_materialize_ms);
+            w.key("binLinksMs");
+            w.value_u64(phase_binlinks_ms);
+            w.key("scriptsMs");
+            w.value_u64(phase_scripts_ms);
+            w.key("totalMs");
+            w.value_u64(duration_ms);
+            w.end_object();
+
             w.end_object();
             w.out.push('\n');
             print!("{}", w.finish());
