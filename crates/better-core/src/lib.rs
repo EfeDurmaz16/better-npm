@@ -2918,6 +2918,34 @@ fn extract_json_object_pairs(json: &str, object_name: &str) -> Result<Vec<(Strin
     Ok(pairs)
 }
 
+/// Extract the raw JSON substring for a nested object field by name.
+/// E.g. for `"better": {"hooks": {"pre-commit": "lint"}}` with field_name="better"
+/// returns `{"hooks": {"pre-commit": "lint"}}`.
+fn extract_json_object_raw(json: &str, field_name: &str) -> Option<String> {
+    let needle = format!("\"{}\"", field_name);
+    let start = json.find(&needle)?;
+    let after = &json[start + needle.len()..];
+    let obj_start = after.find('{')?;
+    let section = &after[obj_start..];
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let mut esc = false;
+    let mut end_pos = 0usize;
+    for (i, ch) in section.char_indices() {
+        if esc { esc = false; continue; }
+        if ch == '\\' && in_str { esc = true; continue; }
+        if ch == '"' { in_str = !in_str; continue; }
+        if in_str { continue; }
+        match ch {
+            '{' => depth += 1,
+            '}' => { depth -= 1; if depth == 0 { end_pos = i + 1; break; } }
+            _ => {}
+        }
+    }
+    if end_pos == 0 { return None; }
+    Some(section[..end_pos].to_string())
+}
+
 pub fn run_script(project_root: &Path, script_name: &str, extra_args: &[String]) -> Result<ScriptRunResult, String> {
     let scripts = read_package_json_scripts(project_root)?;
     let command = scripts.iter()
@@ -2936,14 +2964,18 @@ pub fn run_script(project_root: &Path, script_name: &str, extra_args: &[String])
         full_cmd.push_str(&extra_args.join(" "));
     }
 
-    let status = std::process::Command::new("sh")
-        .args(["-c", &full_cmd])
+    let dotenv_vars = load_dotenv(project_root);
+    let mut cmd = std::process::Command::new("sh");
+    cmd.args(["-c", &full_cmd])
         .current_dir(project_root)
         .env("PATH", &new_path)
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
-        .stdin(std::process::Stdio::inherit())
-        .status()
+        .stdin(std::process::Stdio::inherit());
+    for (k, v) in &dotenv_vars {
+        cmd.env(k, v);
+    }
+    let status = cmd.status()
         .map_err(|e| format!("Failed to run: {}", e))?;
 
     Ok(ScriptRunResult {
@@ -3314,6 +3346,51 @@ fn parse_semver(v: &str) -> Option<SemVer> {
         minor: parts[1].parse().ok()?,
         patch: parts[2].split('-').next()?.parse().ok()?,
     })
+}
+
+/// Check if a version satisfies a semver constraint string.
+/// Supports: >=X.Y.Z, >X.Y.Z, <=X.Y.Z, <X.Y.Z, ^X.Y.Z (same major), ~X.Y.Z (same major.minor), exact.
+fn check_semver_range(version: &SemVer, constraint: &str) -> bool {
+    let constraint = constraint.trim();
+    if constraint.is_empty() { return true; }
+    // Handle || (OR) ranges
+    if constraint.contains("||") {
+        return constraint.split("||").any(|part| check_semver_range(version, part.trim()));
+    }
+    // Handle space-separated (AND) ranges
+    if constraint.contains(' ') && !constraint.starts_with('>') && !constraint.starts_with('<') && !constraint.starts_with('^') && !constraint.starts_with('~') {
+        let parts: Vec<&str> = constraint.split_whitespace().collect();
+        if parts.len() >= 2 { return parts.iter().all(|p| check_semver_range(version, p)); }
+    }
+    if let Some(rest) = constraint.strip_prefix(">=") {
+        if let Some(req) = parse_semver(rest.trim()) {
+            return (version.major, version.minor, version.patch) >= (req.major, req.minor, req.patch);
+        }
+    } else if let Some(rest) = constraint.strip_prefix('>') {
+        if let Some(req) = parse_semver(rest.trim()) {
+            return (version.major, version.minor, version.patch) > (req.major, req.minor, req.patch);
+        }
+    } else if let Some(rest) = constraint.strip_prefix("<=") {
+        if let Some(req) = parse_semver(rest.trim()) {
+            return (version.major, version.minor, version.patch) <= (req.major, req.minor, req.patch);
+        }
+    } else if let Some(rest) = constraint.strip_prefix('<') {
+        if let Some(req) = parse_semver(rest.trim()) {
+            return (version.major, version.minor, version.patch) < (req.major, req.minor, req.patch);
+        }
+    } else if let Some(rest) = constraint.strip_prefix('^') {
+        if let Some(req) = parse_semver(rest.trim()) {
+            return version.major == req.major
+                && (version.major, version.minor, version.patch) >= (req.major, req.minor, req.patch);
+        }
+    } else if let Some(rest) = constraint.strip_prefix('~') {
+        if let Some(req) = parse_semver(rest.trim()) {
+            return version.major == req.major && version.minor == req.minor && version.patch >= req.patch;
+        }
+    } else if let Some(req) = parse_semver(constraint) {
+        return version.major == req.major && version.minor == req.minor && version.patch == req.patch;
+    }
+    true // unparseable constraint → pass
 }
 
 fn classify_update(current: &SemVer, latest: &SemVer) -> &'static str {
@@ -3985,7 +4062,57 @@ pub fn run_benchmark(project_root: &Path, rounds: usize, pms: &[String]) -> Resu
 
 // --- C.2: Git Hooks ---
 
-pub fn hooks_install(project_root: &Path) -> Result<u64, String> {
+/// Extract hooks config from package.json "better.hooks" section.
+fn extract_hooks_config(pkg_json_content: &str) -> Vec<(String, String)> {
+    if let Some(better_raw) = extract_json_object_raw(pkg_json_content, "better") {
+        extract_json_object_pairs(&better_raw, "hooks").unwrap_or_default()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Validate a commit message against conventional commit format: type(scope): description
+pub fn validate_conventional_commit(message: &str) -> Result<(), String> {
+    let first_line = message.lines().next().unwrap_or("").trim();
+    if first_line.is_empty() {
+        return Err("Empty commit message".to_string());
+    }
+    let valid_types = [
+        "feat", "fix", "docs", "style", "refactor", "perf",
+        "test", "build", "ci", "chore", "revert",
+    ];
+    // Check format: type(scope): desc  or  type: desc
+    let colon_pos = match first_line.find(':') {
+        Some(p) => p,
+        None => return Err(format!("Missing colon in commit message: '{}'", first_line)),
+    };
+    let prefix = &first_line[..colon_pos];
+    let type_name = if let Some(paren) = prefix.find('(') {
+        if !prefix.ends_with(')') {
+            return Err(format!("Malformed scope in commit message: '{}'", first_line));
+        }
+        &prefix[..paren]
+    } else {
+        prefix
+    };
+    if !valid_types.contains(&type_name) {
+        return Err(format!("Invalid commit type '{}'. Valid: {}", type_name, valid_types.join(", ")));
+    }
+    let desc = first_line[colon_pos + 1..].trim();
+    if desc.is_empty() {
+        return Err("Missing description after colon".to_string());
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+pub struct HooksInstallResult {
+    pub hooks_installed: u64,
+    pub from_config: bool,
+    pub hooks: Vec<(String, String)>,
+}
+
+pub fn hooks_install(project_root: &Path) -> Result<HooksInstallResult, String> {
     let git_dir = project_root.join(".git");
     if !git_dir.exists() {
         return Err("Not a git repository".to_string());
@@ -3993,23 +4120,49 @@ pub fn hooks_install(project_root: &Path) -> Result<u64, String> {
     let hooks_dir = git_dir.join("hooks");
     fs::create_dir_all(&hooks_dir).map_err(|e| e.to_string())?;
 
-    // Read hooks config from package.json better.hooks
     let pkg_json = project_root.join("package.json");
-    let _content = fs::read_to_string(&pkg_json).unwrap_or_default();
+    let content = fs::read_to_string(&pkg_json).unwrap_or_default();
+    let config_hooks = extract_hooks_config(&content);
+
+    let from_config = !config_hooks.is_empty();
+    let hook_entries: Vec<(String, String)> = if from_config {
+        config_hooks
+    } else {
+        // Sensible defaults
+        let scripts = read_package_json_scripts(project_root).unwrap_or_default();
+        let mut defaults = Vec::new();
+        if scripts.iter().any(|(n, _)| n == "lint") {
+            defaults.push(("pre-commit".to_string(), "better-core run lint".to_string()));
+        }
+        if scripts.iter().any(|(n, _)| n == "test") {
+            defaults.push(("pre-push".to_string(), "better-core run test".to_string()));
+        }
+        defaults.push(("commit-msg".to_string(), "conventional-commit".to_string()));
+        defaults
+    };
 
     let mut hooks_installed = 0u64;
+    let mut installed: Vec<(String, String)> = Vec::new();
 
-    // Default hooks if no config: pre-commit runs "test" script if it exists
-    let hook_types = ["pre-commit", "pre-push", "commit-msg"];
-
-    for hook_type in &hook_types {
+    for (hook_type, action) in &hook_entries {
         let hook_path = hooks_dir.join(hook_type);
-        let script = format!(
-            "#!/bin/sh\n# Installed by better-core hooks\nexec better-core run {} \"$@\"\n",
-            if *hook_type == "commit-msg" { "lint" } else { "test" }
-        );
+        let script = if action == "conventional-commit" {
+            format!(
+                "#!/bin/sh\n# Installed by better-core hooks\n\
+                MSG=$(cat \"$1\" 2>/dev/null || echo \"$1\")\n\
+                if ! echo \"$MSG\" | grep -qE '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\\(.*\\))?: .+'; then\n  \
+                echo \"error: commit message must follow Conventional Commits format\" >&2\n  \
+                echo \"  format: type(scope): description\" >&2\n  \
+                exit 1\nfi\n"
+            )
+        } else {
+            format!(
+                "#!/bin/sh\n# Installed by better-core hooks\nexec {} \"$@\"\n",
+                action
+            )
+        };
 
-        fs::write(&hook_path, script).map_err(|e| e.to_string())?;
+        fs::write(&hook_path, &script).map_err(|e| e.to_string())?;
 
         #[cfg(unix)]
         {
@@ -4020,9 +4173,10 @@ pub fn hooks_install(project_root: &Path) -> Result<u64, String> {
         }
 
         hooks_installed += 1;
+        installed.push((hook_type.clone(), action.clone()));
     }
 
-    Ok(hooks_installed)
+    Ok(HooksInstallResult { hooks_installed, from_config, hooks: installed })
 }
 
 // --- C.3: Exec (TypeScript/JS runner) ---
@@ -4035,23 +4189,27 @@ pub fn exec_script(project_root: &Path, script_path: &str, extra_args: &[String]
 
     let is_ts = script_path.ends_with(".ts") || script_path.ends_with(".tsx");
 
-    // Try runners in order of preference
-    let (runner, runner_args): (&str, Vec<&str>) = if is_ts {
+    // Try runners in order of preference: tsx > esbuild-runner > swc-node > ts-node > node --experimental-strip-types
+    let (runner, runner_args): (String, Vec<String>) = if is_ts {
         if bin_dir.join("tsx").exists() {
-            ("tsx", vec![script_path])
+            ("tsx".into(), vec![script_path.to_string()])
+        } else if bin_dir.join("esbuild-runner").exists() {
+            ("esbuild-runner".into(), vec![script_path.to_string()])
+        } else if bin_dir.join("swc-node").exists() {
+            ("swc-node".into(), vec![script_path.to_string()])
         } else if bin_dir.join("ts-node").exists() {
-            ("ts-node", vec![script_path])
+            ("ts-node".into(), vec![script_path.to_string()])
         } else {
-            ("node", vec!["--experimental-strip-types", script_path])
+            ("node".into(), vec!["--experimental-strip-types".to_string(), script_path.to_string()])
         }
     } else {
-        ("node", vec![script_path])
+        ("node".into(), vec![script_path.to_string()])
     };
 
-    let mut cmd_args: Vec<String> = runner_args.iter().map(|s| s.to_string()).collect();
+    let mut cmd_args: Vec<String> = runner_args;
     cmd_args.extend_from_slice(extra_args);
 
-    let status = std::process::Command::new(runner)
+    let status = std::process::Command::new(&runner)
         .args(&cmd_args)
         .current_dir(project_root)
         .env("PATH", &new_path)
@@ -4118,9 +4276,257 @@ pub fn env_info(project_root: &Path) -> EnvInfo {
     }
 }
 
+#[derive(Debug)]
+pub struct EnvCheckEntry {
+    pub tool: String,
+    pub current: String,
+    pub required: String,
+    pub satisfied: bool,
+}
+
+#[derive(Debug)]
+pub struct EnvCheckResult {
+    pub checks: Vec<EnvCheckEntry>,
+    pub all_ok: bool,
+}
+
+pub fn env_check(project_root: &Path) -> Result<EnvCheckResult, String> {
+    let info = env_info(project_root);
+    let pkg_json = project_root.join("package.json");
+    let content = fs::read_to_string(&pkg_json).unwrap_or_default();
+    let engines = extract_json_object_pairs(&content, "engines").unwrap_or_default();
+
+    if engines.is_empty() {
+        return Ok(EnvCheckResult { checks: Vec::new(), all_ok: true });
+    }
+
+    let mut checks = Vec::new();
+    for (tool, constraint) in &engines {
+        let current_ver = match tool.as_str() {
+            "node" => &info.node_version,
+            "npm" => &info.npm_version,
+            _ => continue,
+        };
+        let parsed = parse_semver(current_ver);
+        let satisfied = match &parsed {
+            Some(v) => check_semver_range(v, constraint),
+            None => false,
+        };
+        checks.push(EnvCheckEntry {
+            tool: tool.clone(),
+            current: current_ver.clone(),
+            required: constraint.clone(),
+            satisfied,
+        });
+    }
+
+    let all_ok = checks.iter().all(|c| c.satisfied);
+    Ok(EnvCheckResult { checks, all_ok })
+}
+
+/// Load environment variables from .env and .env.local files.
+/// Later files override earlier ones. Skips comments and blank lines.
+fn load_dotenv(project_root: &Path) -> Vec<(String, String)> {
+    let mut vars: Vec<(String, String)> = Vec::new();
+    for name in &[".env", ".env.local"] {
+        let path = project_root.join(name);
+        if let Ok(content) = fs::read_to_string(&path) {
+            for line in content.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') { continue; }
+                if let Some(eq_pos) = line.find('=') {
+                    let key = line[..eq_pos].trim().to_string();
+                    let mut val = line[eq_pos + 1..].trim().to_string();
+                    // Strip surrounding quotes
+                    if (val.starts_with('"') && val.ends_with('"'))
+                        || (val.starts_with('\'') && val.ends_with('\''))
+                    {
+                        val = val[1..val.len() - 1].to_string();
+                    }
+                    if !key.is_empty() {
+                        // Remove existing entry for same key so later file wins
+                        vars.retain(|(k, _)| k != &key);
+                        vars.push((key, val));
+                    }
+                }
+            }
+        }
+    }
+    vars
+}
+
 // --- C.5: Init ---
 
-pub fn init_project(project_root: &Path, name: Option<&str>) -> Result<(), String> {
+const TEMPLATE_TSCONFIG: &str = r#"{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "declaration": true,
+    "jsx": "react-jsx"
+  },
+  "include": ["src"]
+}
+"#;
+
+const TEMPLATE_GITIGNORE: &str = "node_modules/\ndist/\n.env\n.env.local\n*.log\ncoverage/\n.DS_Store\n";
+
+const TEMPLATE_REACT_APP: &str = r#"import { useState } from 'react';
+
+export default function App() {
+  const [count, setCount] = useState(0);
+
+  return (
+    <div style={{ padding: '2rem', fontFamily: 'system-ui' }}>
+      <h1>Hello from Better</h1>
+      <button onClick={() => setCount(c => c + 1)}>
+        Count: {count}
+      </button>
+    </div>
+  );
+}
+"#;
+
+const TEMPLATE_NEXT_PAGE: &str = r#"export default function Home() {
+  return (
+    <main style={{ padding: '2rem', fontFamily: 'system-ui' }}>
+      <h1>Hello from Better + Next.js</h1>
+      <p>Edit <code>src/app/page.tsx</code> to get started.</p>
+    </main>
+  );
+}
+"#;
+
+const TEMPLATE_EXPRESS_APP: &str = r#"import express from 'express';
+
+const app = express();
+const port = process.env.PORT || 3000;
+
+app.use(express.json());
+
+app.get('/', (_req, res) => {
+  res.json({ message: 'Hello from Better + Express' });
+});
+
+app.listen(port, () => {
+  console.log(`Server running on http://localhost:${port}`);
+});
+"#;
+
+#[derive(Debug)]
+pub struct InitResult {
+    pub files_created: Vec<String>,
+    pub template: Option<String>,
+}
+
+fn write_file(root: &Path, rel: &str, content: &str, files: &mut Vec<String>) -> Result<(), String> {
+    let path = root.join(rel);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::write(&path, content).map_err(|e| format!("Failed to write {}: {}", rel, e))?;
+    files.push(rel.to_string());
+    Ok(())
+}
+
+fn write_react_template(root: &Path, name: &str) -> Result<Vec<String>, String> {
+    let mut files = Vec::new();
+    let mut w = JsonWriter::new();
+    w.begin_object();
+    w.key("name"); w.value_string(name);
+    w.key("version"); w.value_string("0.1.0");
+    w.key("private"); w.value_bool(true);
+    w.key("type"); w.value_string("module");
+    w.key("scripts"); w.begin_object();
+    w.key("dev"); w.value_string("vite");
+    w.key("build"); w.value_string("tsc && vite build");
+    w.key("preview"); w.value_string("vite preview");
+    w.end_object();
+    w.key("dependencies"); w.begin_object();
+    w.key("react"); w.value_string("^18.3.0");
+    w.key("react-dom"); w.value_string("^18.3.0");
+    w.end_object();
+    w.key("devDependencies"); w.begin_object();
+    w.key("@types/react"); w.value_string("^18.3.0");
+    w.key("@types/react-dom"); w.value_string("^18.3.0");
+    w.key("@vitejs/plugin-react"); w.value_string("^4.0.0");
+    w.key("typescript"); w.value_string("^5.0.0");
+    w.key("vite"); w.value_string("^5.0.0");
+    w.end_object();
+    w.end_object(); w.out.push('\n');
+    write_file(root, "package.json", &w.finish(), &mut files)?;
+    write_file(root, "tsconfig.json", TEMPLATE_TSCONFIG, &mut files)?;
+    write_file(root, ".gitignore", TEMPLATE_GITIGNORE, &mut files)?;
+    write_file(root, "src/App.tsx", TEMPLATE_REACT_APP, &mut files)?;
+    Ok(files)
+}
+
+fn write_next_template(root: &Path, name: &str) -> Result<Vec<String>, String> {
+    let mut files = Vec::new();
+    let mut w = JsonWriter::new();
+    w.begin_object();
+    w.key("name"); w.value_string(name);
+    w.key("version"); w.value_string("0.1.0");
+    w.key("private"); w.value_bool(true);
+    w.key("scripts"); w.begin_object();
+    w.key("dev"); w.value_string("next dev");
+    w.key("build"); w.value_string("next build");
+    w.key("start"); w.value_string("next start");
+    w.end_object();
+    w.key("dependencies"); w.begin_object();
+    w.key("next"); w.value_string("^14.0.0");
+    w.key("react"); w.value_string("^18.3.0");
+    w.key("react-dom"); w.value_string("^18.3.0");
+    w.end_object();
+    w.key("devDependencies"); w.begin_object();
+    w.key("@types/react"); w.value_string("^18.3.0");
+    w.key("typescript"); w.value_string("^5.0.0");
+    w.end_object();
+    w.end_object(); w.out.push('\n');
+    write_file(root, "package.json", &w.finish(), &mut files)?;
+    write_file(root, "tsconfig.json", TEMPLATE_TSCONFIG, &mut files)?;
+    write_file(root, ".gitignore", TEMPLATE_GITIGNORE, &mut files)?;
+    write_file(root, "src/app/page.tsx", TEMPLATE_NEXT_PAGE, &mut files)?;
+    Ok(files)
+}
+
+fn write_express_template(root: &Path, name: &str) -> Result<Vec<String>, String> {
+    let mut files = Vec::new();
+    let mut w = JsonWriter::new();
+    w.begin_object();
+    w.key("name"); w.value_string(name);
+    w.key("version"); w.value_string("0.1.0");
+    w.key("private"); w.value_bool(true);
+    w.key("type"); w.value_string("module");
+    w.key("scripts"); w.begin_object();
+    w.key("dev"); w.value_string("tsx watch src/app.ts");
+    w.key("build"); w.value_string("tsc");
+    w.key("start"); w.value_string("node dist/app.js");
+    w.end_object();
+    w.key("dependencies"); w.begin_object();
+    w.key("express"); w.value_string("^4.18.0");
+    w.end_object();
+    w.key("devDependencies"); w.begin_object();
+    w.key("@types/express"); w.value_string("^4.17.0");
+    w.key("tsx"); w.value_string("^4.0.0");
+    w.key("typescript"); w.value_string("^5.0.0");
+    w.end_object();
+    w.end_object(); w.out.push('\n');
+    write_file(root, "package.json", &w.finish(), &mut files)?;
+    write_file(root, "tsconfig.json", TEMPLATE_TSCONFIG, &mut files)?;
+    write_file(root, ".gitignore", TEMPLATE_GITIGNORE, &mut files)?;
+    write_file(root, "src/app.ts", TEMPLATE_EXPRESS_APP, &mut files)?;
+    Ok(files)
+}
+
+pub fn init_project(project_root: &Path, name: Option<&str>, template: Option<&str>) -> Result<InitResult, String> {
+    fs::create_dir_all(project_root).map_err(|e| e.to_string())?;
+
     let pkg_json = project_root.join("package.json");
     if pkg_json.exists() {
         return Err("package.json already exists".to_string());
@@ -4132,31 +4538,146 @@ pub fn init_project(project_root: &Path, name: Option<&str>) -> Result<(), Strin
             .unwrap_or_else(|| "my-project".to_string())
     });
 
+    if let Some(tmpl) = template {
+        let files = match tmpl {
+            "react" => write_react_template(project_root, &project_name)?,
+            "next" => write_next_template(project_root, &project_name)?,
+            "express" => write_express_template(project_root, &project_name)?,
+            _ => return Err(format!("Unknown template '{}'. Available: react, next, express", tmpl)),
+        };
+        return Ok(InitResult { files_created: files, template: Some(tmpl.to_string()) });
+    }
+
+    // Default init (no template)
+    let mut files = Vec::new();
     let mut w = JsonWriter::new();
     w.begin_object();
-    w.key("name");
-    w.value_string(&project_name);
-    w.key("version");
-    w.value_string("1.0.0");
-    w.key("description");
-    w.value_string("");
-    w.key("main");
-    w.value_string("index.js");
-    w.key("scripts");
-    w.begin_object();
-    w.key("test");
-    w.value_string("echo \"Error: no test specified\" && exit 1");
+    w.key("name"); w.value_string(&project_name);
+    w.key("version"); w.value_string("1.0.0");
+    w.key("description"); w.value_string("");
+    w.key("main"); w.value_string("index.js");
+    w.key("scripts"); w.begin_object();
+    w.key("test"); w.value_string("echo \"Error: no test specified\" && exit 1");
     w.end_object();
-    w.key("keywords");
-    w.begin_array();
-    w.end_array();
-    w.key("author");
-    w.value_string("");
-    w.key("license");
-    w.value_string("ISC");
-    w.end_object();
-    w.out.push('\n');
+    w.key("keywords"); w.begin_array(); w.end_array();
+    w.key("author"); w.value_string("");
+    w.key("license"); w.value_string("ISC");
+    w.end_object(); w.out.push('\n');
 
     fs::write(&pkg_json, w.finish()).map_err(|e| e.to_string())?;
+    files.push("package.json".to_string());
+
+    Ok(InitResult { files_created: files, template: None })
+}
+
+// --- C.1: Watch Mode ---
+
+/// Like run_script() but returns a Child handle instead of waiting.
+fn spawn_script(project_root: &Path, script_name: &str, extra_args: &[String]) -> Result<std::process::Child, String> {
+    let scripts = read_package_json_scripts(project_root)?;
+    let command = scripts.iter()
+        .find(|(n, _)| n == script_name)
+        .map(|(_, c)| c.clone())
+        .ok_or_else(|| format!("Missing script: \"{}\"", script_name))?;
+
+    let bin_dir = project_root.join("node_modules").join(".bin");
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", bin_dir.display(), path_var);
+
+    let mut full_cmd = command;
+    if !extra_args.is_empty() {
+        full_cmd.push(' ');
+        full_cmd.push_str(&extra_args.join(" "));
+    }
+
+    let dotenv_vars = load_dotenv(project_root);
+    let mut cmd = std::process::Command::new("sh");
+    cmd.args(["-c", &full_cmd])
+        .current_dir(project_root)
+        .env("PATH", &new_path)
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .stdin(std::process::Stdio::inherit());
+    for (k, v) in &dotenv_vars {
+        cmd.env(k, v);
+    }
+    cmd.spawn().map_err(|e| format!("Failed to spawn: {}", e))
+}
+
+/// Run a script in watch mode: execute once, then re-run on file changes.
+pub fn run_script_watch(
+    project_root: &Path,
+    script_name: &str,
+    extra_args: &[String],
+    debounce_ms: u64,
+) -> Result<(), String> {
+    use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    // Initial run
+    eprintln!("[better] starting '{}' in watch mode...", script_name);
+    let mut child = spawn_script(project_root, script_name, extra_args)?;
+
+    // Set up file watcher
+    let (tx, rx) = mpsc::channel();
+    let mut watcher = RecommendedWatcher::new(tx, Config::default())
+        .map_err(|e| format!("Failed to create watcher: {}", e))?;
+
+    // Watch common source directories
+    for dir in &["src", "lib", "app"] {
+        let p = project_root.join(dir);
+        if p.exists() {
+            let _ = watcher.watch(&p, RecursiveMode::Recursive);
+        }
+    }
+
+    // Watch root-level source files
+    for pattern in &["*.js", "*.ts", "*.json", "*.mjs", "*.mts"] {
+        if let Ok(entries) = fs::read_dir(project_root) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.ends_with(&pattern[1..]) && !name.starts_with('.') {
+                    let _ = watcher.watch(&entry.path(), RecursiveMode::NonRecursive);
+                }
+            }
+        }
+    }
+
+    let debounce = Duration::from_millis(debounce_ms);
+    loop {
+        match rx.recv() {
+            Ok(_event) => {
+                // Debounce: drain remaining events within the window
+                let deadline = Instant::now() + debounce;
+                while Instant::now() < deadline {
+                    match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                        Ok(_) => continue,
+                        Err(_) => break,
+                    }
+                }
+
+                eprintln!("[better] restarting '{}'...", script_name);
+
+                // Kill old child
+                let _ = child.kill();
+                let _ = child.wait();
+
+                // Re-spawn
+                match spawn_script(project_root, script_name, extra_args) {
+                    Ok(c) => child = c,
+                    Err(e) => {
+                        eprintln!("[better] error: {}", e);
+                        continue;
+                    }
+                }
+            }
+            Err(_) => break,
+        }
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
     Ok(())
 }

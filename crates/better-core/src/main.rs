@@ -13,7 +13,7 @@ use better_core::{
     scan_licenses, check_dedupe, trace_dependency, check_outdated,
     run_doctor, cache_stats, cache_gc, run_audit, run_benchmark,
     // Phase C
-    hooks_install, exec_script, env_info, init_project,
+    hooks_install, exec_script, env_info, env_check, init_project, run_script_watch,
 };
 
 #[derive(Debug)]
@@ -41,6 +41,7 @@ enum Command {
         project_root: PathBuf,
         script_names: Vec<String>,
         extra_args: Vec<String>,
+        watch: bool,
     },
     License {
         root: PathBuf,
@@ -83,10 +84,11 @@ enum Command {
         script: String,
         extra_args: Vec<String>,
     },
-    Env { project_root: PathBuf },
+    Env { project_root: PathBuf, check: bool },
     Init {
         project_root: PathBuf,
         name: Option<String>,
+        template: Option<String>,
     },
     Version,
     Help { error: Option<String> },
@@ -155,6 +157,8 @@ fn parse_args() -> Command {
     let mut extra_args: Vec<String> = Vec::new();
     let mut hit_dashdash = false;
     let mut name_opt: Option<String> = None;
+    let mut template_opt: Option<String> = None;
+    let mut watch = false;
 
     let mut i = 1usize;
     while i < args.len() {
@@ -274,6 +278,12 @@ fn parse_args() -> Command {
                 name_opt = Some(args[i + 1].clone());
                 i += 2;
             }
+            "--template" | "-t" => {
+                if i + 1 >= args.len() { return Command::Help { error: Some("--template requires a value".into()) }; }
+                template_opt = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--watch" | "-w" => { watch = true; i += 1; }
             other => {
                 if other.starts_with('-') {
                     return Command::Help { error: Some(format!("unknown flag: {other}")) };
@@ -308,27 +318,27 @@ fn parse_args() -> Command {
             if positional.is_empty() {
                 return Command::Help { error: Some("run requires a script name".into()) };
             }
-            Command::Run { project_root: pr, script_names: positional, extra_args }
+            Command::Run { project_root: pr, script_names: positional, extra_args, watch }
         },
         "test" | "t" => {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
-            Command::Run { project_root: pr, script_names: vec!["test".into()], extra_args: positional.into_iter().chain(extra_args).collect() }
+            Command::Run { project_root: pr, script_names: vec!["test".into()], extra_args: positional.into_iter().chain(extra_args).collect(), watch }
         },
         "lint" => {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
-            Command::Run { project_root: pr, script_names: vec!["lint".into()], extra_args: positional.into_iter().chain(extra_args).collect() }
+            Command::Run { project_root: pr, script_names: vec!["lint".into()], extra_args: positional.into_iter().chain(extra_args).collect(), watch }
         },
         "dev" => {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
-            Command::Run { project_root: pr, script_names: vec!["dev".into()], extra_args: positional.into_iter().chain(extra_args).collect() }
+            Command::Run { project_root: pr, script_names: vec!["dev".into()], extra_args: positional.into_iter().chain(extra_args).collect(), watch: true }
         },
         "build" => {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
-            Command::Run { project_root: pr, script_names: vec!["build".into()], extra_args: positional.into_iter().chain(extra_args).collect() }
+            Command::Run { project_root: pr, script_names: vec!["build".into()], extra_args: positional.into_iter().chain(extra_args).collect(), watch }
         },
         "start" => {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
-            Command::Run { project_root: pr, script_names: vec!["start".into()], extra_args: positional.into_iter().chain(extra_args).collect() }
+            Command::Run { project_root: pr, script_names: vec!["start".into()], extra_args: positional.into_iter().chain(extra_args).collect(), watch }
         },
         "license" => {
             let r = root.unwrap_or_else(|| {
@@ -389,11 +399,12 @@ fn parse_args() -> Command {
         },
         "env" => {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
-            Command::Env { project_root: pr }
+            let check = positional.first().map(|s| s.as_str()) == Some("check");
+            Command::Env { project_root: pr, check }
         },
         "init" => {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
-            Command::Init { project_root: pr, name: name_opt.or_else(|| positional.first().cloned()) }
+            Command::Init { project_root: pr, name: name_opt.or_else(|| positional.first().cloned()), template: template_opt }
         },
         _ => Command::Help { error: Some(format!("unknown command: {sub}")) },
     }
@@ -408,8 +419,9 @@ fn print_help(error: Option<String>) {
 
 Usage:
   better-core install [--lockfile <path>] [--project-root <path>] [--cache-root <path>] [--dedup]
-  better-core run <script> [-- extra args...]
-  better-core test|lint|dev|build|start [args...]
+  better-core run <script> [--watch] [-- extra args...]
+  better-core test|lint|build|start [--watch] [args...]
+  better-core dev [args...]  (watch mode by default)
   better-core license [--root <path>] [--allow MIT,ISC] [--deny GPL-3.0]
   better-core dedupe [--root <path>]
   better-core why <package> [--project-root <path>] [--lockfile <path>]
@@ -421,8 +433,8 @@ Usage:
   better-core benchmark [--project-root <path>] [--rounds 3] [--pm npm,bun]
   better-core hooks install [--project-root <path>]
   better-core exec <script.ts> [-- args...]
-  better-core env [--project-root <path>]
-  better-core init [--name <name>]
+  better-core env [check] [--project-root <path>]
+  better-core init [--name <name>] [--template react|next|express]
   better-core analyze --root <path> [--graph]
   better-core scan --root <path>
   better-core version
@@ -701,8 +713,22 @@ fn main() {
 
         // === Phase B Commands ===
 
-        Command::Run { project_root, script_names, extra_args } => {
-            if script_names.len() == 1 {
+        Command::Run { project_root, script_names, extra_args, watch } => {
+            if watch && script_names.len() == 1 {
+                match run_script_watch(&project_root, &script_names[0], &extra_args, 300) {
+                    Ok(()) => {}
+                    Err(reason) => {
+                        let mut w = JsonWriter::new();
+                        w.begin_object();
+                        w.key("ok"); w.value_bool(false);
+                        w.key("kind"); w.value_string("better.run.report");
+                        w.key("reason"); w.value_string(&reason);
+                        w.end_object(); w.out.push('\n');
+                        eprint!("{}", w.finish());
+                        std::process::exit(1);
+                    }
+                }
+            } else if script_names.len() == 1 {
                 match run_script(&project_root, &script_names[0], &extra_args) {
                     Ok(result) => {
                         let mut w = JsonWriter::new();
@@ -1123,12 +1149,21 @@ fn main() {
 
         Command::HooksInstall { project_root } => {
             match hooks_install(&project_root) {
-                Ok(count) => {
+                Ok(result) => {
                     let mut w = JsonWriter::new();
                     w.begin_object();
                     w.key("ok"); w.value_bool(true);
                     w.key("kind"); w.value_string("better.hooks.install");
-                    w.key("hooksInstalled"); w.value_u64(count);
+                    w.key("hooksInstalled"); w.value_u64(result.hooks_installed);
+                    w.key("fromConfig"); w.value_bool(result.from_config);
+                    w.key("hooks"); w.begin_array();
+                    for (hook_type, action) in &result.hooks {
+                        w.begin_object();
+                        w.key("type"); w.value_string(hook_type);
+                        w.key("action"); w.value_string(action);
+                        w.end_object();
+                    }
+                    w.end_array();
                     w.end_object(); w.out.push('\n');
                     print!("{}", w.finish());
                 }
@@ -1173,31 +1208,69 @@ fn main() {
             }
         }
 
-        Command::Env { project_root } => {
-            let info = env_info(&project_root);
-            let mut w = JsonWriter::new();
-            w.begin_object();
-            w.key("ok"); w.value_bool(true);
-            w.key("kind"); w.value_string("better.env");
-            w.key("nodeVersion"); w.value_string(&info.node_version);
-            w.key("npmVersion"); w.value_string(&info.npm_version);
-            w.key("betterVersion"); w.value_string(&info.better_version);
-            w.key("platform"); w.value_string(&info.platform);
-            w.key("arch"); w.value_string(&info.arch);
-            match &info.project_name { Some(n) => { w.key("projectName"); w.value_string(n); } None => {} }
-            match &info.project_version { Some(v) => { w.key("projectVersion"); w.value_string(v); } None => {} }
-            w.end_object(); w.out.push('\n');
-            print!("{}", w.finish());
+        Command::Env { project_root, check } => {
+            if check {
+                match env_check(&project_root) {
+                    Ok(result) => {
+                        let mut w = JsonWriter::new();
+                        w.begin_object();
+                        w.key("ok"); w.value_bool(result.all_ok);
+                        w.key("kind"); w.value_string("better.env.check");
+                        w.key("checks"); w.begin_array();
+                        for entry in &result.checks {
+                            w.begin_object();
+                            w.key("tool"); w.value_string(&entry.tool);
+                            w.key("current"); w.value_string(&entry.current);
+                            w.key("required"); w.value_string(&entry.required);
+                            w.key("satisfied"); w.value_bool(entry.satisfied);
+                            w.end_object();
+                        }
+                        w.end_array();
+                        w.end_object(); w.out.push('\n');
+                        print!("{}", w.finish());
+                        if !result.all_ok { std::process::exit(1); }
+                    }
+                    Err(reason) => {
+                        let mut w = JsonWriter::new();
+                        w.begin_object();
+                        w.key("ok"); w.value_bool(false);
+                        w.key("kind"); w.value_string("better.env.check");
+                        w.key("reason"); w.value_string(&reason);
+                        w.end_object(); w.out.push('\n');
+                        print!("{}", w.finish());
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                let info = env_info(&project_root);
+                let mut w = JsonWriter::new();
+                w.begin_object();
+                w.key("ok"); w.value_bool(true);
+                w.key("kind"); w.value_string("better.env");
+                w.key("nodeVersion"); w.value_string(&info.node_version);
+                w.key("npmVersion"); w.value_string(&info.npm_version);
+                w.key("betterVersion"); w.value_string(&info.better_version);
+                w.key("platform"); w.value_string(&info.platform);
+                w.key("arch"); w.value_string(&info.arch);
+                match &info.project_name { Some(n) => { w.key("projectName"); w.value_string(n); } None => {} }
+                match &info.project_version { Some(v) => { w.key("projectVersion"); w.value_string(v); } None => {} }
+                w.end_object(); w.out.push('\n');
+                print!("{}", w.finish());
+            }
         }
 
-        Command::Init { project_root, name } => {
-            match init_project(&project_root, name.as_deref()) {
-                Ok(()) => {
+        Command::Init { project_root, name, template } => {
+            match init_project(&project_root, name.as_deref(), template.as_deref()) {
+                Ok(result) => {
                     let mut w = JsonWriter::new();
                     w.begin_object();
                     w.key("ok"); w.value_bool(true);
                     w.key("kind"); w.value_string("better.init");
                     w.key("projectRoot"); w.value_string(&project_root.to_string_lossy());
+                    if let Some(tmpl) = &result.template { w.key("template"); w.value_string(tmpl); }
+                    w.key("filesCreated"); w.begin_array();
+                    for f in &result.files_created { w.value_string(f); }
+                    w.end_array();
                     w.end_object(); w.out.push('\n');
                     print!("{}", w.finish());
                 }
