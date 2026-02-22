@@ -1,28 +1,50 @@
-# better
+<p align="center">
+  <img src="assets/banner.svg" alt="better — faster, smarter Node.js package manager" width="100%"/>
+</p>
 
-A faster, smarter package manager for Node.js — built on a pure Rust core.
+<p align="center">
+  <a href="#performance"><img src="https://img.shields.io/badge/23x_faster-than_npm-00d4aa?style=flat-square&logo=npm" alt="23x faster"/></a>
+  <a href="#performance"><img src="https://img.shields.io/badge/2.6x_faster-than_bun-00b4d8?style=flat-square&logo=bun" alt="2.6x faster"/></a>
+  <img src="https://img.shields.io/badge/pure-Rust-dea584?style=flat-square&logo=rust" alt="Pure Rust"/>
+  <img src="https://img.shields.io/badge/commands-25-8b5cf6?style=flat-square" alt="25 commands"/>
+  <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT License"/>
+  <img src="https://img.shields.io/badge/zero_dependencies-at_runtime-555?style=flat-square" alt="Zero deps"/>
+</p>
+
+<p align="center">
+  <b>A faster, smarter package manager for Node.js — built on a pure Rust core.</b>
+</p>
+
+---
 
 ## Performance
 
 Benchmarked on a real project with 15 dependencies (145 resolved packages):
 
-| Tool | Warm Install | Cold Install |
-|------|------------:|-------------:|
-| **better** | **75ms** | ~400ms |
-| bun | 198ms | ~500ms |
-| npm | 1,749ms | ~8,000ms |
+<table>
+<tr><th>Tool</th><th align="right">Warm Install</th><th align="right">Cold Install</th><th align="right">vs better</th></tr>
+<tr><td><b>better</b></td><td align="right"><b>75ms</b></td><td align="right">~400ms</td><td align="right">-</td></tr>
+<tr><td>bun</td><td align="right">198ms</td><td align="right">~500ms</td><td align="right">2.6x slower</td></tr>
+<tr><td>npm</td><td align="right">1,749ms</td><td align="right">~8,000ms</td><td align="right">23x slower</td></tr>
+</table>
 
-**2.6x faster than bun. 23x faster than npm.**
+<details>
+<summary><b>How it works</b></summary>
+<br>
 
-### How it works
+| Layer | Technique | Impact |
+|-------|-----------|--------|
+| **Binary** | Pure Rust — zero Node.js startup | saves ~265ms vs JS tools |
+| **I/O** | macOS `clonefile()` — APFS copy-on-write | near-instant materialization |
+| **Concurrency** | rayon-powered parallel everything | resolution, fetch, extract, link |
+| **Storage** | SHA-512 package cache + SHA-256 file CAS | dedup across projects |
+| **Fallback** | 3-tier: clonefile > CAS hardlinks > copy | works on all filesystems |
 
-- **Pure Rust binary** — zero Node.js startup overhead (saves ~265ms vs JS-based tools)
-- **macOS clonefile()** — APFS copy-on-write for near-instant directory materialization
-- **Parallel everything** — rayon-powered resolution, fetch, extract, and materialize
-- **Content-addressable store** — SHA-512 package cache + SHA-256 file-level dedup
-- **3-tier materialize** — clonefile -> CAS hardlinks -> copy fallback
+</details>
 
-### Cross-project dedup (`--dedup`)
+<details>
+<summary><b>Cross-project dedup (<code>--dedup</code>)</b></summary>
+<br>
 
 Share `node_modules` files across projects via hardlinks from a global store:
 
@@ -32,35 +54,30 @@ better install --dedup
 
 | Projects | Without dedup | With --dedup | Savings |
 |----------|-------------:|-------------:|--------:|
-| 2 | 28MB | ~16MB | 43% |
-| 5 | 70MB | ~18MB | 74% |
-| 10 | 140MB | ~20MB | 86% |
+| 2 | 28MB | ~16MB | **43%** |
+| 5 | 70MB | ~18MB | **74%** |
+| 10 | 140MB | ~20MB | **86%** |
 
-Files share the same inode across projects — editing one won't affect others (copy-on-write at the filesystem level).
+Files share the same inode — editing one won't affect others (copy-on-write at the filesystem level).
 
-**Trade-off:** `--dedup` takes ~515ms (vs ~75ms default) because it hardlinks individual files instead of cloning entire directories. Default mode opportunistically ingests to CAS so `--dedup` is ready when you need it.
+</details>
+
+---
 
 ## Install
 
-Build the Rust core:
-
 ```bash
+# Build the Rust core
 cd crates && cargo build --release -p better-core
-```
 
-### Rust binary (fastest)
-
-```bash
+# Use directly
 ./crates/target/release/better-core install --project-root /path/to/project
-```
 
-### Node.js CLI (full feature set)
-
-```bash
+# Or via Node.js CLI (auto-detects Rust binary)
 node bin/better.js install
 ```
 
-The JS CLI automatically detects and uses the Rust binary when available, falling back to the JS pipeline otherwise. Disable with `BETTER_NO_RUST_BINARY=1`.
+---
 
 ## Commands
 
@@ -87,7 +104,7 @@ better build                    # Alias: better run build
 better start                    # Alias: better run start
 ```
 
-Scripts automatically load `.env` and `.env.local` files from the project root.
+> Scripts automatically load `.env` and `.env.local` files from the project root.
 
 ### Dependency Intelligence
 
@@ -99,10 +116,12 @@ better license                  # Scan all package licenses
 better license --allow MIT,ISC  # Allow only specific licenses
 better license --deny GPL-3.0   # Deny specific licenses
 better audit                    # Security vulnerability scan via OSV.dev
-better audit --min-severity high # Filter by severity (critical/high/medium/low)
+better audit --min-severity high # Filter by severity
 ```
 
-### Health & Diagnostics
+<details>
+<summary><b>Health & Diagnostics</b></summary>
+<br>
 
 ```bash
 better doctor                   # Health score (0-100) with actionable findings
@@ -114,7 +133,11 @@ better env                      # Show Node.js version, platform, project info
 better env check                # Validate engines constraints from package.json
 ```
 
-### Cache
+</details>
+
+<details>
+<summary><b>Cache Management</b></summary>
+<br>
 
 ```bash
 better cache stats              # Cache size, package count, storage breakdown
@@ -123,82 +146,104 @@ better cache gc --max-age 30    # Remove entries older than N days
 better cache gc --dry-run       # Preview what would be removed
 ```
 
-### Script Sandboxing
+</details>
+
+---
+
+### Enterprise Features
+
+#### Script Sandboxing
+
+Control which packages can run lifecycle scripts (`preinstall`, `install`, `postinstall`, `prepare`):
 
 ```bash
-better scripts scan             # Scan node_modules for lifecycle scripts (install, postinstall, etc.)
-better scripts list             # Alias for scan
-better scripts allow <package>  # Add package to allowed list
-better scripts block <package>  # Add package to blocked list
+better scripts scan             # Scan node_modules for lifecycle scripts
+better scripts allow <package>  # Whitelist a package
+better scripts block <package>  # Blacklist a package
 ```
 
-Policy is stored in `.better-scripts.json` (or `package.json#betterScripts`). Default policy allows all; configure trusted scopes, allowed/blocked packages, and permitted script types.
+Policy stored in `.better-scripts.json` — configure trusted scopes, allowed/blocked packages, and permitted script types.
 
-### Policy Engine
+#### Policy Engine
+
+Automated dependency health scoring with configurable rules:
 
 ```bash
-better policy check             # Run policy rules and score (0-100)
-better policy init              # Generate default .betterrc.json with standard rules
+better policy check             # Run rules → score 0-100
+better policy init              # Generate .betterrc.json with defaults
 ```
 
-Built-in rules: `no-deprecated`, `max-duplicates(3)`, `max-depth(15)`. Score: 100 - 15/error - 5/warning. Fails if score < threshold (default: 70).
+| Rule | Default | Severity |
+|------|---------|----------|
+| `no-deprecated` | enabled | warning (-5) |
+| `max-duplicates` | 3 instances | warning (-5) |
+| `max-depth` | 15 levels | warning (-5) |
 
-### Lock Fingerprint
+Fails CI if score < threshold (default: 70). Supports waivers per-package.
+
+#### Lock Fingerprint
+
+Deterministic lockfile verification for CI:
 
 ```bash
-better lock generate            # SHA-256 hash lockfile + platform fingerprint → better.lock.json
-better lock verify              # Verify lockfile hasn't changed (CI-friendly)
+better lock generate            # Hash lockfile + platform → better.lock.json
+better lock verify              # Verify nothing changed (exit 1 on drift)
 ```
 
-Cache key combines lockfile hash + platform/arch/node version. Use in CI to detect lockfile drift.
+Cache key = `SHA-256(lockfile_hash + platform + arch + node_major)`.
 
-### Workspace Support
+#### Workspace Support
+
+Monorepo-native with topological ordering:
 
 ```bash
-better workspace list           # List all workspace packages with inter-dependencies
-better workspace graph          # Topological sort with parallelizable levels
-better workspace changed --since HEAD~1  # Detect changed packages from git diff
-better workspace run "npm test" # Run command in each package (respects dependency order)
+better workspace list           # List packages with inter-dependencies
+better workspace graph          # Topological sort + parallelizable levels
+better workspace changed --since HEAD~1  # Git-aware change detection
+better workspace run "npm test" # Execute in dependency order
 ```
 
-Reads `package.json#workspaces` globs. Dependency graph uses Kahn's algorithm for topological sort with cycle detection.
+Reads `package.json#workspaces` globs. Uses Kahn's algorithm with cycle detection.
 
-### SBOM Export
+#### SBOM Export
+
+Software Bill of Materials for supply chain compliance:
 
 ```bash
-better sbom                            # Export CycloneDX 1.5 JSON (default)
-better sbom --format spdx              # Export SPDX 2.3 JSON
-better sbom --lockfile pnpm-lock.yaml  # Use specific lockfile
+better sbom                     # CycloneDX 1.5 JSON (default)
+better sbom --format spdx       # SPDX 2.3 JSON
 ```
 
-Generates Software Bill of Materials with PURL identifiers (`pkg:npm/name@version`), license data, and integrity hashes. Enterprise-ready for supply chain compliance.
+Includes PURL identifiers (`pkg:npm/name@version`), license data, and integrity hashes.
 
-### .npmrc & Private Registry Support
+#### Private Registry Support
 
-Private registries and scoped authentication are automatically detected:
+Zero-config `.npmrc` integration:
 
-- Project `.npmrc` → `~/.npmrc` (search order)
-- `@scope:registry=URL` for scoped packages
-- `//host/:_authToken=TOKEN` for auth injection
-- `NPM_CONFIG_REGISTRY` env var override
+```
+# .npmrc
+@myorg:registry=https://npm.myorg.com/
+//npm.myorg.com/:_authToken=${NPM_TOKEN}
+```
 
-No extra flags needed — `better install` reads `.npmrc` automatically.
+Automatically detected during `better install` — scoped registries, auth tokens, and `NPM_CONFIG_REGISTRY` env var.
 
-### Developer Tools
+---
+
+<details>
+<summary><b>Developer Tools</b></summary>
+<br>
 
 ```bash
-better hooks install            # Install git hooks (reads config from package.json#better.hooks)
+better hooks install            # Install git hooks (from package.json#better.hooks)
 better exec <script.ts>         # Run TS/JS (tsx > esbuild-runner > swc-node > ts-node > node)
-better init                     # Initialize a new project (generates package.json)
-better init --name my-app       # Initialize with a specific name
-better init --template react    # Scaffold a React + Vite + TypeScript project
-better init --template next     # Scaffold a Next.js + TypeScript project
-better init --template express  # Scaffold an Express + TypeScript project
+better init                     # Initialize a new project
+better init --template react    # Scaffold React + Vite + TypeScript
+better init --template next     # Scaffold Next.js + TypeScript
+better init --template express  # Scaffold Express + TypeScript
 ```
 
-#### Git Hooks
-
-Configure hooks in `package.json`:
+**Git Hooks** — configure in `package.json`:
 
 ```json
 {
@@ -212,7 +257,7 @@ Configure hooks in `package.json`:
 }
 ```
 
-Without config, defaults to: pre-commit (lint), pre-push (test), commit-msg (conventional commit validation).
+</details>
 
 ### Aliases
 
@@ -221,30 +266,62 @@ Without config, defaults to: pre-commit (lint), pre-push (test), commit-msg (con
 | `better i` | `better install` |
 | `better t` | `better run test` |
 | `better x` | `better exec` |
+| `better ws` | `better workspace` |
 | `better dedup` | `better dedupe` |
 | `better bench` | `better benchmark` |
-| `better ws` | `better workspace` |
 
-All commands output structured JSON for easy piping and automation.
+> All commands output structured JSON for piping and automation.
+
+---
 
 ## Architecture
 
+```mermaid
+graph TB
+    subgraph "CLI Layer"
+        A["bin/better.js<br><sub>Node.js entry</sub>"] --> B["src/cli.js<br><sub>Command router</sub>"]
+        B --> C["src/lib/core.js<br><sub>Rust bridge</sub>"]
+    end
+
+    subgraph "Rust Core (25 commands)"
+        D["main.rs<br><sub>CLI parser + dispatch</sub>"]
+        E["lib.rs<br><sub>Core engine</sub>"]
+        D --> E
+    end
+
+    subgraph "Engine"
+        E --> F["Resolve<br><sub>lockfile parser</sub>"]
+        E --> G["Fetch<br><sub>parallel downloads</sub>"]
+        E --> H["Materialize<br><sub>clonefile/CAS/copy</sub>"]
+        E --> I["Analysis<br><sub>license, audit, dedupe</sub>"]
+        E --> J["Enterprise<br><sub>policy, SBOM, workspace</sub>"]
+    end
+
+    C --> D
+    B --> K["JS Engine<br><sub>fallback</sub>"]
+
+    style D fill:#0f0f23,stroke:#00d4aa,color:#fff
+    style E fill:#0f0f23,stroke:#00d4aa,color:#fff
+    style F fill:#1a1a3e,stroke:#00b4d8,color:#fff
+    style G fill:#1a1a3e,stroke:#00b4d8,color:#fff
+    style H fill:#1a1a3e,stroke:#00b4d8,color:#fff
+    style I fill:#1a1a3e,stroke:#00b4d8,color:#fff
+    style J fill:#1a1a3e,stroke:#00b4d8,color:#fff
 ```
-bin/better.js          CLI entry point (Node.js)
-src/
-  cli.js               Command router
-  engine/better/       JS install engine (fallback)
-  lib/core.js          Rust binary bridge
+
+```
 crates/
-  better-core/         Pure Rust binary
-    src/lib.rs          Core library (resolve, fetch, materialize, CAS, bin links,
-                        license scan, audit, outdated, doctor, benchmark,
-                        scripts policy, workspace, SBOM, lock fingerprint, ...)
-    src/main.rs         CLI binary (25 commands + aliases, watch mode, templates)
-  better-napi/         Node.js native addon (NAPI bridge)
+  better-core/              Pure Rust binary
+    src/lib.rs               Core library (resolve, fetch, materialize, CAS, bin links,
+                             license scan, audit, outdated, doctor, benchmark,
+                             scripts policy, workspace, SBOM, lock fingerprint, ...)
+    src/main.rs              CLI binary (25 commands + aliases, watch mode, templates)
+  better-napi/              Node.js native addon (NAPI bridge)
 apps/
-  landing/             Next.js landing page
+  landing/                  Next.js landing page
 ```
+
+---
 
 ## Development
 
@@ -260,6 +337,8 @@ npm run lint
 npm run format:check
 ```
 
-## License
+---
 
-MIT
+<p align="center">
+  <sub>MIT License</sub>
+</p>
