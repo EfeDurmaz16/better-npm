@@ -123,6 +123,67 @@ better cache gc --max-age 30    # Remove entries older than N days
 better cache gc --dry-run       # Preview what would be removed
 ```
 
+### Script Sandboxing
+
+```bash
+better scripts scan             # Scan node_modules for lifecycle scripts (install, postinstall, etc.)
+better scripts list             # Alias for scan
+better scripts allow <package>  # Add package to allowed list
+better scripts block <package>  # Add package to blocked list
+```
+
+Policy is stored in `.better-scripts.json` (or `package.json#betterScripts`). Default policy allows all; configure trusted scopes, allowed/blocked packages, and permitted script types.
+
+### Policy Engine
+
+```bash
+better policy check             # Run policy rules and score (0-100)
+better policy init              # Generate default .betterrc.json with standard rules
+```
+
+Built-in rules: `no-deprecated`, `max-duplicates(3)`, `max-depth(15)`. Score: 100 - 15/error - 5/warning. Fails if score < threshold (default: 70).
+
+### Lock Fingerprint
+
+```bash
+better lock generate            # SHA-256 hash lockfile + platform fingerprint → better.lock.json
+better lock verify              # Verify lockfile hasn't changed (CI-friendly)
+```
+
+Cache key combines lockfile hash + platform/arch/node version. Use in CI to detect lockfile drift.
+
+### Workspace Support
+
+```bash
+better workspace list           # List all workspace packages with inter-dependencies
+better workspace graph          # Topological sort with parallelizable levels
+better workspace changed --since HEAD~1  # Detect changed packages from git diff
+better workspace run "npm test" # Run command in each package (respects dependency order)
+```
+
+Reads `package.json#workspaces` globs. Dependency graph uses Kahn's algorithm for topological sort with cycle detection.
+
+### SBOM Export
+
+```bash
+better sbom                            # Export CycloneDX 1.5 JSON (default)
+better sbom --format spdx              # Export SPDX 2.3 JSON
+better sbom --lockfile pnpm-lock.yaml  # Use specific lockfile
+```
+
+Generates Software Bill of Materials with PURL identifiers (`pkg:npm/name@version`), license data, and integrity hashes. Enterprise-ready for supply chain compliance.
+
+### .npmrc & Private Registry Support
+
+Private registries and scoped authentication are automatically detected:
+
+- Project `.npmrc` → `~/.npmrc` (search order)
+- `@scope:registry=URL` for scoped packages
+- `//host/:_authToken=TOKEN` for auth injection
+- `NPM_CONFIG_REGISTRY` env var override
+
+No extra flags needed — `better install` reads `.npmrc` automatically.
+
 ### Developer Tools
 
 ```bash
@@ -162,6 +223,7 @@ Without config, defaults to: pre-commit (lint), pre-push (test), commit-msg (con
 | `better x` | `better exec` |
 | `better dedup` | `better dedupe` |
 | `better bench` | `better benchmark` |
+| `better ws` | `better workspace` |
 
 All commands output structured JSON for easy piping and automation.
 
@@ -176,8 +238,9 @@ src/
 crates/
   better-core/         Pure Rust binary
     src/lib.rs          Core library (resolve, fetch, materialize, CAS, bin links,
-                        license scan, audit, outdated, doctor, benchmark, ...)
-    src/main.rs         CLI binary (19 commands + aliases, watch mode, templates)
+                        license scan, audit, outdated, doctor, benchmark,
+                        scripts policy, workspace, SBOM, lock fingerprint, ...)
+    src/main.rs         CLI binary (25 commands + aliases, watch mode, templates)
   better-napi/         Node.js native addon (NAPI bridge)
 apps/
   landing/             Next.js landing page

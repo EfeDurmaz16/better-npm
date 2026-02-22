@@ -14,6 +14,12 @@ use better_core::{
     run_doctor, cache_stats, cache_gc, run_audit, run_benchmark,
     // Phase C
     hooks_install, exec_script, env_info, env_check, init_project, run_script_watch,
+    // Phase D
+    parse_npmrc, scan_scripts, scripts_allow, scripts_block,
+    policy_check, policy_init,
+    generate_lock_metadata, verify_lock_metadata,
+    detect_workspaces, workspace_graph, workspace_changed, workspace_run,
+    generate_sbom, write_cyclonedx_json, write_spdx_json,
 };
 
 #[derive(Debug)]
@@ -90,6 +96,31 @@ enum Command {
         name: Option<String>,
         template: Option<String>,
     },
+    // Phase D
+    Scripts {
+        project_root: PathBuf,
+        subcommand: String,
+        package: Option<String>,
+    },
+    Policy {
+        project_root: PathBuf,
+        subcommand: String,
+    },
+    Lock {
+        project_root: PathBuf,
+        subcommand: String,
+    },
+    Workspace {
+        project_root: PathBuf,
+        subcommand: String,
+        since: Option<String>,
+        command_arg: Option<String>,
+    },
+    Sbom {
+        project_root: PathBuf,
+        lockfile: PathBuf,
+        format: String,
+    },
     Version,
     Help { error: Option<String> },
 }
@@ -159,6 +190,8 @@ fn parse_args() -> Command {
     let mut name_opt: Option<String> = None;
     let mut template_opt: Option<String> = None;
     let mut watch = false;
+    let mut format_opt = "cyclonedx".to_string();
+    let mut since_opt: Option<String> = None;
 
     let mut i = 1usize;
     while i < args.len() {
@@ -284,6 +317,16 @@ fn parse_args() -> Command {
                 i += 2;
             }
             "--watch" | "-w" => { watch = true; i += 1; }
+            "--format" => {
+                if i + 1 >= args.len() { return Command::Help { error: Some("--format requires a value".into()) }; }
+                format_opt = args[i + 1].clone();
+                i += 2;
+            }
+            "--since" => {
+                if i + 1 >= args.len() { return Command::Help { error: Some("--since requires a value".into()) }; }
+                since_opt = Some(args[i + 1].clone());
+                i += 2;
+            }
             other => {
                 if other.starts_with('-') {
                     return Command::Help { error: Some(format!("unknown flag: {other}")) };
@@ -406,6 +449,33 @@ fn parse_args() -> Command {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
             Command::Init { project_root: pr, name: name_opt.or_else(|| positional.first().cloned()), template: template_opt }
         },
+        "scripts" => {
+            let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
+            let subcmd = positional.first().cloned().unwrap_or_else(|| "list".into());
+            let pkg = positional.get(1).cloned();
+            Command::Scripts { project_root: pr, subcommand: subcmd, package: pkg }
+        },
+        "policy" => {
+            let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
+            let subcmd = positional.first().cloned().unwrap_or_else(|| "check".into());
+            Command::Policy { project_root: pr, subcommand: subcmd }
+        },
+        "lock" => {
+            let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
+            let subcmd = positional.first().cloned().unwrap_or_else(|| "generate".into());
+            Command::Lock { project_root: pr, subcommand: subcmd }
+        },
+        "workspace" | "ws" => {
+            let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
+            let subcmd = positional.first().cloned().unwrap_or_else(|| "list".into());
+            let cmd_arg = if subcmd == "run" { positional.get(1).cloned() } else { None };
+            Command::Workspace { project_root: pr, subcommand: subcmd, since: since_opt, command_arg: cmd_arg }
+        },
+        "sbom" => {
+            let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
+            let lf = lockfile.unwrap_or_else(|| pr.join("package-lock.json"));
+            Command::Sbom { project_root: pr, lockfile: lf, format: format_opt }
+        },
         _ => Command::Help { error: Some(format!("unknown command: {sub}")) },
     }
 }
@@ -435,6 +505,11 @@ Usage:
   better-core exec <script.ts> [-- args...]
   better-core env [check] [--project-root <path>]
   better-core init [--name <name>] [--template react|next|express]
+  better-core scripts [list|scan|allow|block] [package] [--project-root <path>]
+  better-core policy [check|init] [--project-root <path>]
+  better-core lock [generate|verify] [--project-root <path>]
+  better-core workspace [list|graph|changed|run] [--project-root <path>] [--since <ref>]
+  better-core sbom [--project-root <path>] [--lockfile <path>] [--format cyclonedx|spdx]
   better-core analyze --root <path> [--graph]
   better-core scan --root <path>
   better-core version
@@ -506,6 +581,7 @@ fn main() {
         },
         Command::Install { lockfile, project_root, cache_root, store_root, link_strategy, jobs: _, scripts, dedup } => {
             let started = Instant::now();
+            let npmrc = parse_npmrc(&project_root);
 
             // Step 1: Resolve
             let t_resolve = Instant::now();
@@ -526,7 +602,7 @@ fn main() {
 
             // Step 2: Fetch
             let t_fetch = Instant::now();
-            let fetch_result = match fetch_packages(&resolve_result.packages, &cache_root) {
+            let fetch_result = match fetch_packages(&resolve_result.packages, &cache_root, Some(&npmrc)) {
                 Ok(r) => r,
                 Err(reason) => {
                     let mut w = JsonWriter::new();
@@ -1279,6 +1355,438 @@ fn main() {
                     w.begin_object();
                     w.key("ok"); w.value_bool(false);
                     w.key("kind"); w.value_string("better.init");
+                    w.key("reason"); w.value_string(&reason);
+                    w.end_object(); w.out.push('\n');
+                    print!("{}", w.finish());
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        // === Phase D Commands ===
+
+        Command::Scripts { project_root, subcommand, package } => {
+            match subcommand.as_str() {
+                "scan" | "list" => {
+                    match scan_scripts(&project_root) {
+                        Ok(result) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(true);
+                            w.key("kind"); w.value_string("better.scripts.scan");
+                            w.key("packages"); w.begin_array();
+                            for entry in &result.packages {
+                                w.begin_object();
+                                w.key("name"); w.value_string(&entry.name);
+                                w.key("version"); w.value_string(&entry.version);
+                                w.key("scripts"); w.begin_array();
+                                for (st, cmd) in &entry.scripts {
+                                    w.begin_object();
+                                    w.key("type"); w.value_string(st);
+                                    w.key("command"); w.value_string(cmd);
+                                    w.end_object();
+                                }
+                                w.end_array();
+                                w.key("policy"); w.value_string(&entry.policy);
+                                w.key("reason"); w.value_string(&entry.reason);
+                                w.end_object();
+                            }
+                            w.end_array();
+                            w.key("summary"); w.begin_object();
+                            w.key("totalWithScripts"); w.value_u64(result.total_with_scripts);
+                            w.key("allowed"); w.value_u64(result.allowed);
+                            w.key("blocked"); w.value_u64(result.blocked);
+                            w.end_object();
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                        }
+                        Err(reason) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(false);
+                            w.key("kind"); w.value_string("better.scripts.scan");
+                            w.key("reason"); w.value_string(&reason);
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                "allow" => {
+                    let pkg = package.unwrap_or_default();
+                    if pkg.is_empty() {
+                        eprintln!("error: scripts allow requires a package name");
+                        std::process::exit(2);
+                    }
+                    match scripts_allow(&project_root, &pkg) {
+                        Ok(policy) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(true);
+                            w.key("kind"); w.value_string("better.scripts.allow");
+                            w.key("package"); w.value_string(&pkg);
+                            w.key("allowedPackages"); w.begin_array();
+                            for p in &policy.allowed_packages { w.value_string(p); }
+                            w.end_array();
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                        }
+                        Err(reason) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(false);
+                            w.key("kind"); w.value_string("better.scripts.allow");
+                            w.key("reason"); w.value_string(&reason);
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                "block" => {
+                    let pkg = package.unwrap_or_default();
+                    if pkg.is_empty() {
+                        eprintln!("error: scripts block requires a package name");
+                        std::process::exit(2);
+                    }
+                    match scripts_block(&project_root, &pkg) {
+                        Ok(policy) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(true);
+                            w.key("kind"); w.value_string("better.scripts.block");
+                            w.key("package"); w.value_string(&pkg);
+                            w.key("blockedPackages"); w.begin_array();
+                            for p in &policy.blocked_packages { w.value_string(p); }
+                            w.end_array();
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                        }
+                        Err(reason) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(false);
+                            w.key("kind"); w.value_string("better.scripts.block");
+                            w.key("reason"); w.value_string(&reason);
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                other => {
+                    eprintln!("error: unknown scripts subcommand: {other}");
+                    std::process::exit(2);
+                }
+            }
+        }
+
+        Command::Policy { project_root, subcommand } => {
+            match subcommand.as_str() {
+                "check" => {
+                    match policy_check(&project_root) {
+                        Ok(result) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(result.pass);
+                            w.key("kind"); w.value_string("better.policy.check");
+                            w.key("score"); w.value_i64(result.score as i64);
+                            w.key("threshold"); w.value_i64(result.threshold as i64);
+                            w.key("pass"); w.value_bool(result.pass);
+                            w.key("violations"); w.begin_array();
+                            for v in &result.violations {
+                                w.begin_object();
+                                w.key("rule"); w.value_string(&v.rule);
+                                w.key("severity"); w.value_string(&v.severity);
+                                w.key("package"); w.value_string(&v.package);
+                                w.key("reason"); w.value_string(&v.reason);
+                                w.end_object();
+                            }
+                            w.end_array();
+                            w.key("summary"); w.begin_object();
+                            w.key("errors"); w.value_u64(result.errors);
+                            w.key("warnings"); w.value_u64(result.warnings);
+                            w.key("waived"); w.value_u64(result.waived);
+                            w.end_object();
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                            if !result.pass { std::process::exit(1); }
+                        }
+                        Err(reason) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(false);
+                            w.key("kind"); w.value_string("better.policy.check");
+                            w.key("reason"); w.value_string(&reason);
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                "init" => {
+                    match policy_init(&project_root) {
+                        Ok(path) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(true);
+                            w.key("kind"); w.value_string("better.policy.init");
+                            w.key("path"); w.value_string(&path);
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                        }
+                        Err(reason) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(false);
+                            w.key("kind"); w.value_string("better.policy.init");
+                            w.key("reason"); w.value_string(&reason);
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                other => {
+                    eprintln!("error: unknown policy subcommand: {other}");
+                    std::process::exit(2);
+                }
+            }
+        }
+
+        Command::Lock { project_root, subcommand } => {
+            match subcommand.as_str() {
+                "generate" => {
+                    match generate_lock_metadata(&project_root) {
+                        Ok(metadata) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(true);
+                            w.key("kind"); w.value_string("better.lock.generate");
+                            w.key("key"); w.value_string(&metadata.key);
+                            w.key("lockfile"); w.value_string(&metadata.lockfile_file);
+                            w.key("lockfileHash"); w.value_string(&metadata.lockfile_hash);
+                            w.key("fingerprint"); w.begin_object();
+                            w.key("platform"); w.value_string(&metadata.fingerprint.platform);
+                            w.key("arch"); w.value_string(&metadata.fingerprint.arch);
+                            w.key("nodeMajor"); w.value_u64(metadata.fingerprint.node_major);
+                            w.key("pm"); w.value_string(&metadata.fingerprint.pm);
+                            w.end_object();
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                        }
+                        Err(reason) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(false);
+                            w.key("kind"); w.value_string("better.lock.generate");
+                            w.key("reason"); w.value_string(&reason);
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                "verify" => {
+                    match verify_lock_metadata(&project_root) {
+                        Ok(result) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(result.ok);
+                            w.key("kind"); w.value_string("better.lock.verify");
+                            w.key("keyMatches"); w.value_bool(result.key_matches);
+                            w.key("lockfileMatches"); w.value_bool(result.lockfile_matches);
+                            w.key("current"); w.begin_object();
+                            w.key("key"); w.value_string(&result.current.key);
+                            w.key("lockfile"); w.value_string(&result.current.lockfile_file);
+                            w.key("lockfileHash"); w.value_string(&result.current.lockfile_hash);
+                            w.end_object();
+                            if let Some(expected) = &result.expected {
+                                w.key("expected"); w.begin_object();
+                                w.key("key"); w.value_string(&expected.key);
+                                w.key("lockfile"); w.value_string(&expected.lockfile_file);
+                                w.key("lockfileHash"); w.value_string(&expected.lockfile_hash);
+                                w.end_object();
+                            }
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                            if !result.ok { std::process::exit(1); }
+                        }
+                        Err(reason) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(false);
+                            w.key("kind"); w.value_string("better.lock.verify");
+                            w.key("reason"); w.value_string(&reason);
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                other => {
+                    eprintln!("error: unknown lock subcommand: {other}");
+                    std::process::exit(2);
+                }
+            }
+        }
+
+        Command::Workspace { project_root, subcommand, since, command_arg } => {
+            let ws_info = match detect_workspaces(&project_root) {
+                Ok(info) => info,
+                Err(reason) => {
+                    let mut w = JsonWriter::new();
+                    w.begin_object();
+                    w.key("ok"); w.value_bool(false);
+                    w.key("kind"); w.value_string("better.workspace");
+                    w.key("reason"); w.value_string(&reason);
+                    w.end_object(); w.out.push('\n');
+                    print!("{}", w.finish());
+                    std::process::exit(1);
+                }
+            };
+            match subcommand.as_str() {
+                "list" => {
+                    let mut w = JsonWriter::new();
+                    w.begin_object();
+                    w.key("ok"); w.value_bool(true);
+                    w.key("kind"); w.value_string("better.workspace.list");
+                    w.key("type"); w.value_string(&ws_info.workspace_type);
+                    w.key("packages"); w.begin_array();
+                    for pkg in &ws_info.packages {
+                        w.begin_object();
+                        w.key("name"); w.value_string(&pkg.name);
+                        w.key("version"); w.value_string(&pkg.version);
+                        w.key("dir"); w.value_string(&pkg.relative_dir);
+                        w.key("workspaceDeps"); w.begin_array();
+                        for d in &pkg.workspace_deps { w.value_string(d); }
+                        w.end_array();
+                        w.end_object();
+                    }
+                    w.end_array();
+                    w.key("total"); w.value_u64(ws_info.packages.len() as u64);
+                    w.end_object(); w.out.push('\n');
+                    print!("{}", w.finish());
+                }
+                "graph" => {
+                    let graph = workspace_graph(&ws_info);
+                    let mut w = JsonWriter::new();
+                    w.begin_object();
+                    w.key("ok"); w.value_bool(true);
+                    w.key("kind"); w.value_string("better.workspace.graph");
+                    w.key("sorted"); w.begin_array();
+                    for s in &graph.sorted { w.value_string(s); }
+                    w.end_array();
+                    w.key("levels"); w.begin_array();
+                    for level in &graph.levels {
+                        w.begin_array();
+                        for s in level { w.value_string(s); }
+                        w.end_array();
+                    }
+                    w.end_array();
+                    w.key("cycles"); w.begin_array();
+                    for cycle in &graph.cycles {
+                        w.begin_array();
+                        for s in cycle { w.value_string(s); }
+                        w.end_array();
+                    }
+                    w.end_array();
+                    w.end_object(); w.out.push('\n');
+                    print!("{}", w.finish());
+                }
+                "changed" => {
+                    let since_ref = since.unwrap_or_else(|| "HEAD~1".into());
+                    match workspace_changed(&project_root, &ws_info, &since_ref) {
+                        Ok(result) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(true);
+                            w.key("kind"); w.value_string("better.workspace.changed");
+                            w.key("sinceRef"); w.value_string(&result.since_ref);
+                            w.key("changedFiles"); w.value_u64(result.changed_files);
+                            w.key("changedPackages"); w.begin_array();
+                            for p in &result.changed_packages { w.value_string(p); }
+                            w.end_array();
+                            w.key("affectedPackages"); w.begin_array();
+                            for p in &result.affected_packages { w.value_string(p); }
+                            w.end_array();
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                        }
+                        Err(reason) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(false);
+                            w.key("kind"); w.value_string("better.workspace.changed");
+                            w.key("reason"); w.value_string(&reason);
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                "run" => {
+                    let cmd = command_arg.unwrap_or_default();
+                    if cmd.is_empty() {
+                        eprintln!("error: workspace run requires a command");
+                        std::process::exit(2);
+                    }
+                    match workspace_run(&project_root, &ws_info, &cmd) {
+                        Ok(result) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(result.failure == 0);
+                            w.key("kind"); w.value_string("better.workspace.run");
+                            w.key("command"); w.value_string(&result.command);
+                            w.key("total"); w.value_u64(result.total);
+                            w.key("success"); w.value_u64(result.success);
+                            w.key("failure"); w.value_u64(result.failure);
+                            w.key("results"); w.begin_array();
+                            for (name, code, dur) in &result.results {
+                                w.begin_object();
+                                w.key("package"); w.value_string(name);
+                                w.key("exitCode"); w.value_i64(*code as i64);
+                                w.key("durationMs"); w.value_u64(*dur);
+                                w.end_object();
+                            }
+                            w.end_array();
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                            if result.failure > 0 { std::process::exit(1); }
+                        }
+                        Err(reason) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(false);
+                            w.key("kind"); w.value_string("better.workspace.run");
+                            w.key("reason"); w.value_string(&reason);
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                other => {
+                    eprintln!("error: unknown workspace subcommand: {other}");
+                    std::process::exit(2);
+                }
+            }
+        }
+
+        Command::Sbom { project_root, lockfile, format } => {
+            match generate_sbom(&project_root, &lockfile, &format) {
+                Ok(report) => {
+                    let output = match format.as_str() {
+                        "spdx" => write_spdx_json(&report),
+                        _ => write_cyclonedx_json(&report),
+                    };
+                    print!("{}", output);
+                }
+                Err(reason) => {
+                    let mut w = JsonWriter::new();
+                    w.begin_object();
+                    w.key("ok"); w.value_bool(false);
+                    w.key("kind"); w.value_string("better.sbom");
                     w.key("reason"); w.value_string(&reason);
                     w.end_object(); w.out.push('\n');
                     print!("{}", w.finish());

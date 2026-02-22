@@ -1679,6 +1679,7 @@ pub fn unpacked_path(layout: &CasLayout, algo: &str, hex: &str) -> PathBuf {
 pub fn fetch_packages(
     packages: &[ResolvedPackage],
     cache_dir: &Path,
+    npmrc: Option<&NpmrcConfig>,
 ) -> Result<FetchResult, String> {
     use rayon::prelude::*;
     use sha2::{Digest, Sha512};
@@ -1723,7 +1724,30 @@ pub fn fetch_packages(
             let tmp_file = layout.tmp_dir.join(format!("{}.tgz.tmp", hex));
             let agent = ureq::AgentBuilder::new().build();
 
-            let response = agent.get(&pkg.resolved_url)
+            let mut download_url = pkg.resolved_url.clone();
+            let mut auth_token: Option<&str> = None;
+            if let Some(cfg) = npmrc {
+                let (_reg, tok) = registry_for_package(cfg, &pkg.name);
+                auth_token = tok;
+                if !cfg.default_registry.starts_with("https://registry.npmjs.org")
+                    && download_url.starts_with("https://registry.npmjs.org/")
+                {
+                    download_url = download_url.replacen(
+                        "https://registry.npmjs.org/",
+                        cfg.default_registry.trim_end_matches('/').to_string().as_str(),
+                        1,
+                    );
+                    if !download_url.contains("://") {
+                        download_url = format!("{}/{}", cfg.default_registry.trim_end_matches('/'), &download_url);
+                    }
+                }
+            }
+
+            let mut request = agent.get(&download_url);
+            if let Some(token) = auth_token {
+                request = request.set("Authorization", &format!("Bearer {}", token));
+            }
+            let response = request
                 .call()
                 .map_err(|e| format!("Failed to download {}: {}", pkg.name, e))?;
 
@@ -4680,4 +4704,943 @@ pub fn run_script_watch(
     let _ = child.kill();
     let _ = child.wait();
     Ok(())
+}
+
+// --- Helper: extract JSON array of strings ---
+
+fn extract_json_array_strings(json: &str, field_name: &str) -> Vec<String> {
+    let needle = format!("\"{}\"", field_name);
+    let start = match json.find(&needle) {
+        Some(pos) => pos,
+        None => return Vec::new(),
+    };
+    let after = &json[start + needle.len()..];
+    let colon = match after.find(':') {
+        Some(pos) => pos,
+        None => return Vec::new(),
+    };
+    let rest = after[colon + 1..].trim_start();
+    if !rest.starts_with('[') {
+        return Vec::new();
+    }
+    let mut result = Vec::new();
+    let mut depth = 0;
+    let mut in_str = false;
+    let mut esc = false;
+    let mut current = String::new();
+    let mut reading = false;
+    for ch in rest.chars() {
+        if esc { if reading { current.push(ch); } esc = false; continue; }
+        if ch == '\\' && in_str { esc = true; continue; }
+        if ch == '"' {
+            in_str = !in_str;
+            if depth == 1 {
+                if in_str { reading = true; current.clear(); }
+                else { reading = false; result.push(current.clone()); current.clear(); }
+            }
+            continue;
+        }
+        if in_str { if reading { current.push(ch); } continue; }
+        match ch {
+            '[' => depth += 1,
+            ']' => { depth -= 1; if depth == 0 { break; } }
+            _ => {}
+        }
+    }
+    result
+}
+
+fn extract_json_number(json: &str, field_name: &str) -> Option<u64> {
+    let needle = format!("\"{}\"", field_name);
+    let start = json.find(&needle)?;
+    let after = &json[start + needle.len()..];
+    let colon = after.find(':')?;
+    let rest = after[colon + 1..].trim_start();
+    let num_str: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if num_str.is_empty() { return None; }
+    num_str.parse().ok()
+}
+
+// === D.1: .npmrc parser + auth token injection ===
+
+pub struct NpmrcConfig {
+    pub default_registry: String,
+    pub scoped_registries: Vec<(String, String)>,
+    pub auth_tokens: Vec<(String, String)>,
+}
+
+impl Default for NpmrcConfig {
+    fn default() -> Self {
+        Self {
+            default_registry: "https://registry.npmjs.org/".to_string(),
+            scoped_registries: Vec::new(),
+            auth_tokens: Vec::new(),
+        }
+    }
+}
+
+pub fn parse_npmrc(project_root: &Path) -> NpmrcConfig {
+    let mut config = NpmrcConfig::default();
+    if let Ok(reg) = std::env::var("NPM_CONFIG_REGISTRY") {
+        config.default_registry = reg;
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let candidates = [
+        project_root.join(".npmrc"),
+        PathBuf::from(&home).join(".npmrc"),
+    ];
+    for path in &candidates {
+        if let Ok(content) = fs::read_to_string(path) {
+            parse_npmrc_content(&content, &mut config);
+        }
+    }
+    for (key, value) in std::env::vars() {
+        let lower = key.to_lowercase();
+        if lower.starts_with("npm_config_") {
+            let suffix = &key["npm_config_".len()..];
+            if suffix.starts_with("//") && suffix.to_lowercase().ends_with(":_authtoken") {
+                let host = &suffix[2..suffix.len() - ":_authtoken".len()];
+                config.auth_tokens.push((host.to_string(), value));
+            }
+        }
+    }
+    config
+}
+
+fn parse_npmrc_content(content: &str, config: &mut NpmrcConfig) {
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        if let Some(eq_pos) = line.find('=') {
+            let key = line[..eq_pos].trim();
+            let value = line[eq_pos + 1..].trim().to_string();
+            if key == "registry" {
+                config.default_registry = value;
+            } else if key.starts_with("//") && key.ends_with(":_authToken") {
+                let host = &key[2..key.len() - ":_authToken".len()];
+                config.auth_tokens.push((host.to_string(), value));
+            } else if key.starts_with('@') && key.ends_with(":registry") {
+                let scope = &key[..key.len() - ":registry".len()];
+                config.scoped_registries.push((scope.to_string(), value));
+            }
+        }
+    }
+}
+
+pub fn registry_for_package<'a>(config: &'a NpmrcConfig, package_name: &str) -> (&'a str, Option<&'a str>) {
+    if package_name.starts_with('@') {
+        if let Some(slash) = package_name.find('/') {
+            let scope = &package_name[..slash];
+            for (s, url) in &config.scoped_registries {
+                if s == scope {
+                    let token = find_auth_token(config, url);
+                    return (url, token);
+                }
+            }
+        }
+    }
+    let token = find_auth_token(config, &config.default_registry);
+    (&config.default_registry, token)
+}
+
+fn find_auth_token<'a>(config: &'a NpmrcConfig, registry_url: &str) -> Option<&'a str> {
+    let host = registry_url
+        .strip_prefix("https://")
+        .or_else(|| registry_url.strip_prefix("http://"))
+        .unwrap_or(registry_url)
+        .trim_end_matches('/');
+    for (token_host, token) in &config.auth_tokens {
+        let th = token_host.trim_end_matches('/');
+        if host == th || host.ends_with(th) {
+            return Some(token);
+        }
+    }
+    None
+}
+
+// === D.2: Script sandboxing policy ===
+
+pub struct ScriptPolicy {
+    pub default_policy: String,
+    pub allowed_packages: Vec<String>,
+    pub blocked_packages: Vec<String>,
+    pub allowed_script_types: Vec<String>,
+    pub trusted_scopes: Vec<String>,
+}
+
+pub struct ScriptScanEntry {
+    pub name: String,
+    pub version: String,
+    pub scripts: Vec<(String, String)>,
+    pub policy: String,
+    pub reason: String,
+}
+
+pub struct ScriptScanResult {
+    pub packages: Vec<ScriptScanEntry>,
+    pub total_with_scripts: u64,
+    pub allowed: u64,
+    pub blocked: u64,
+}
+
+pub fn load_script_policy(project_root: &Path) -> ScriptPolicy {
+    let policy_file = project_root.join(".better-scripts.json");
+    if let Ok(content) = fs::read_to_string(&policy_file) {
+        return parse_script_policy_json(&content);
+    }
+    let pkg_json = project_root.join("package.json");
+    if let Ok(content) = fs::read_to_string(&pkg_json) {
+        if let Some(raw) = extract_json_object_raw(&content, "betterScripts") {
+            return parse_script_policy_json(&raw);
+        }
+    }
+    ScriptPolicy {
+        default_policy: "allow".to_string(),
+        allowed_packages: Vec::new(),
+        blocked_packages: Vec::new(),
+        allowed_script_types: vec!["postinstall".into(), "install".into()],
+        trusted_scopes: Vec::new(),
+    }
+}
+
+fn parse_script_policy_json(json: &str) -> ScriptPolicy {
+    let default_policy = extract_json_field(json, "defaultPolicy").unwrap_or_else(|| "allow".into());
+    let allowed_packages = extract_json_array_strings(json, "allowedPackages");
+    let blocked_packages = extract_json_array_strings(json, "blockedPackages");
+    let allowed_script_types = {
+        let t = extract_json_array_strings(json, "allowedScriptTypes");
+        if t.is_empty() { vec!["postinstall".into(), "install".into()] } else { t }
+    };
+    let trusted_scopes = extract_json_array_strings(json, "trustedScopes");
+    ScriptPolicy { default_policy, allowed_packages, blocked_packages, allowed_script_types, trusted_scopes }
+}
+
+pub fn check_script_permission(policy: &ScriptPolicy, package_name: &str, script_type: &str) -> (String, String) {
+    if policy.blocked_packages.iter().any(|b| b == package_name) {
+        return ("blocked".into(), "package is in blocked list".into());
+    }
+    if policy.allowed_packages.iter().any(|a| a == package_name) {
+        return ("allowed".into(), "package is in allowed list".into());
+    }
+    if package_name.starts_with('@') {
+        if let Some(slash) = package_name.find('/') {
+            let scope = &package_name[..slash];
+            if policy.trusted_scopes.iter().any(|s| s == scope) {
+                return ("allowed".into(), format!("scope {} is trusted", scope));
+            }
+        }
+    }
+    if policy.allowed_script_types.iter().any(|t| t == script_type) {
+        return ("allowed".into(), format!("script type '{}' is allowed", script_type));
+    }
+    (policy.default_policy.clone(), format!("default policy: {}", policy.default_policy))
+}
+
+pub fn scan_scripts(project_root: &Path) -> Result<ScriptScanResult, String> {
+    let nm = project_root.join("node_modules");
+    let pkg_dirs = list_packages_in_node_modules(&nm)?;
+    let policy = load_script_policy(project_root);
+    let lifecycle_types = ["preinstall", "install", "postinstall", "prepare"];
+    let mut packages = Vec::new();
+    let mut total_with_scripts = 0u64;
+    let mut allowed = 0u64;
+    let mut blocked = 0u64;
+    for pkg_dir in &pkg_dirs {
+        let pkg_json = pkg_dir.join("package.json");
+        let content = match fs::read_to_string(&pkg_json) { Ok(c) => c, Err(_) => continue };
+        let name = extract_json_field(&content, "name").unwrap_or_else(|| "unknown".into());
+        let version = extract_json_field(&content, "version").unwrap_or_else(|| "0.0.0".into());
+        let all_scripts = extract_json_object_pairs(&content, "scripts").unwrap_or_default();
+        let lifecycle: Vec<(String, String)> = all_scripts.into_iter()
+            .filter(|(k, _)| lifecycle_types.contains(&k.as_str())).collect();
+        if lifecycle.is_empty() { continue; }
+        total_with_scripts += 1;
+        let (pol, reason) = check_script_permission(&policy, &name, &lifecycle[0].0);
+        if pol == "blocked" { blocked += 1; } else { allowed += 1; }
+        packages.push(ScriptScanEntry { name, version, scripts: lifecycle, policy: pol, reason });
+    }
+    Ok(ScriptScanResult { packages, total_with_scripts, allowed, blocked })
+}
+
+pub fn scripts_allow(project_root: &Path, package: &str) -> Result<ScriptPolicy, String> {
+    let mut policy = load_script_policy(project_root);
+    policy.blocked_packages.retain(|p| p != package);
+    if !policy.allowed_packages.iter().any(|p| p == package) {
+        policy.allowed_packages.push(package.to_string());
+    }
+    write_script_policy(project_root, &policy)?;
+    Ok(policy)
+}
+
+pub fn scripts_block(project_root: &Path, package: &str) -> Result<ScriptPolicy, String> {
+    let mut policy = load_script_policy(project_root);
+    policy.allowed_packages.retain(|p| p != package);
+    if !policy.blocked_packages.iter().any(|p| p == package) {
+        policy.blocked_packages.push(package.to_string());
+    }
+    write_script_policy(project_root, &policy)?;
+    Ok(policy)
+}
+
+fn write_script_policy(project_root: &Path, policy: &ScriptPolicy) -> Result<(), String> {
+    let mut w = JsonWriter::new();
+    w.begin_object();
+    w.key("defaultPolicy"); w.value_string(&policy.default_policy);
+    w.key("allowedPackages"); w.begin_array();
+    for p in &policy.allowed_packages { w.value_string(p); }
+    w.end_array();
+    w.key("blockedPackages"); w.begin_array();
+    for p in &policy.blocked_packages { w.value_string(p); }
+    w.end_array();
+    w.key("allowedScriptTypes"); w.begin_array();
+    for t in &policy.allowed_script_types { w.value_string(t); }
+    w.end_array();
+    w.key("trustedScopes"); w.begin_array();
+    for s in &policy.trusted_scopes { w.value_string(s); }
+    w.end_array();
+    w.end_object();
+    w.out.push('\n');
+    fs::write(project_root.join(".better-scripts.json"), w.finish())
+        .map_err(|e| format!("Failed to write policy: {}", e))
+}
+
+// === D.3: Policy engine ===
+
+pub struct PolicyRule {
+    pub id: String,
+    pub severity: String,
+    pub description: String,
+    pub max_duplicates: Option<u64>,
+    pub max_depth: Option<u64>,
+    pub banned_packages: Vec<String>,
+}
+
+pub struct PolicyWaiver {
+    pub rule: String,
+    pub package: String,
+}
+
+pub struct PolicyConfig {
+    pub threshold: i32,
+    pub rules: Vec<PolicyRule>,
+    pub waivers: Vec<PolicyWaiver>,
+}
+
+pub struct PolicyViolation {
+    pub rule: String,
+    pub severity: String,
+    pub package: String,
+    pub reason: String,
+}
+
+pub struct PolicyCheckResult {
+    pub score: i32,
+    pub threshold: i32,
+    pub pass: bool,
+    pub violations: Vec<PolicyViolation>,
+    pub errors: u64,
+    pub warnings: u64,
+    pub waived: u64,
+}
+
+fn default_policy_config() -> PolicyConfig {
+    PolicyConfig {
+        threshold: 70,
+        rules: vec![
+            PolicyRule {
+                id: "no-deprecated".into(), severity: "warning".into(),
+                description: "No deprecated packages".into(),
+                max_duplicates: None, max_depth: None, banned_packages: Vec::new(),
+            },
+            PolicyRule {
+                id: "max-duplicates".into(), severity: "warning".into(),
+                description: "Maximum duplicate package instances".into(),
+                max_duplicates: Some(3), max_depth: None, banned_packages: Vec::new(),
+            },
+            PolicyRule {
+                id: "max-depth".into(), severity: "warning".into(),
+                description: "Maximum dependency nesting depth".into(),
+                max_duplicates: None, max_depth: Some(15), banned_packages: Vec::new(),
+            },
+        ],
+        waivers: Vec::new(),
+    }
+}
+
+pub fn load_policy_config(project_root: &Path) -> PolicyConfig {
+    let config_file = project_root.join(".betterrc.json");
+    if let Ok(content) = fs::read_to_string(&config_file) {
+        if let Some(raw) = extract_json_object_raw(&content, "policy") {
+            let threshold = extract_json_number(&raw, "threshold").unwrap_or(70) as i32;
+            let mut cfg = default_policy_config();
+            cfg.threshold = threshold;
+            return cfg;
+        }
+        let threshold = extract_json_number(&content, "threshold").unwrap_or(70) as i32;
+        let mut cfg = default_policy_config();
+        cfg.threshold = threshold;
+        return cfg;
+    }
+    let pkg_json = project_root.join("package.json");
+    if let Ok(content) = fs::read_to_string(&pkg_json) {
+        if let Some(better_raw) = extract_json_object_raw(&content, "better") {
+            if let Some(policy_raw) = extract_json_object_raw(&better_raw, "policy") {
+                let threshold = extract_json_number(&policy_raw, "threshold").unwrap_or(70) as i32;
+                let mut cfg = default_policy_config();
+                cfg.threshold = threshold;
+                return cfg;
+            }
+        }
+    }
+    default_policy_config()
+}
+
+pub fn policy_check(project_root: &Path) -> Result<PolicyCheckResult, String> {
+    let config = load_policy_config(project_root);
+    let nm = project_root.join("node_modules");
+    let pkg_dirs = list_packages_in_node_modules(&nm)?;
+    let mut violations = Vec::new();
+    let mut errors = 0u64;
+    let mut warnings = 0u64;
+    let mut waived = 0u64;
+
+    // Check deprecated packages
+    for pkg_dir in &pkg_dirs {
+        let pkg_json = pkg_dir.join("package.json");
+        let content = match fs::read_to_string(&pkg_json) { Ok(c) => c, Err(_) => continue };
+        let name = extract_json_field(&content, "name").unwrap_or_else(|| "unknown".into());
+        if extract_json_field(&content, "deprecated").is_some() {
+            let rule_id = "no-deprecated";
+            if config.waivers.iter().any(|w| w.rule == rule_id && w.package == name) {
+                waived += 1; continue;
+            }
+            let severity = config.rules.iter().find(|r| r.id == rule_id)
+                .map(|r| r.severity.clone()).unwrap_or_else(|| "warning".into());
+            if severity == "error" { errors += 1; } else { warnings += 1; }
+            violations.push(PolicyViolation {
+                rule: rule_id.into(), severity, package: name, reason: "package is deprecated".into(),
+            });
+        }
+    }
+
+    // Check duplicates
+    if let Ok(dedupe_report) = check_dedupe(project_root) {
+        let max_dup = config.rules.iter().find(|r| r.id == "max-duplicates")
+            .and_then(|r| r.max_duplicates).unwrap_or(3);
+        for entry in &dedupe_report.duplicates {
+            if entry.instances > max_dup {
+                let rule_id = "max-duplicates";
+                if config.waivers.iter().any(|w| w.rule == rule_id && w.package == entry.name) {
+                    waived += 1; continue;
+                }
+                let severity = config.rules.iter().find(|r| r.id == rule_id)
+                    .map(|r| r.severity.clone()).unwrap_or_else(|| "warning".into());
+                if severity == "error" { errors += 1; } else { warnings += 1; }
+                violations.push(PolicyViolation {
+                    rule: rule_id.into(), severity, package: entry.name.clone(),
+                    reason: format!("{} instances (max: {})", entry.instances, max_dup),
+                });
+            }
+        }
+    }
+
+    // Check max depth
+    let max_depth_limit = config.rules.iter().find(|r| r.id == "max-depth")
+        .and_then(|r| r.max_depth).unwrap_or(15);
+    let mut actual_max_depth = 0u64;
+    for pkg_dir in &pkg_dirs {
+        let d = depth_from_path(pkg_dir);
+        if d > actual_max_depth { actual_max_depth = d; }
+    }
+    if actual_max_depth > max_depth_limit {
+        let rule_id = "max-depth";
+        let severity = config.rules.iter().find(|r| r.id == rule_id)
+            .map(|r| r.severity.clone()).unwrap_or_else(|| "warning".into());
+        if severity == "error" { errors += 1; } else { warnings += 1; }
+        violations.push(PolicyViolation {
+            rule: rule_id.into(), severity, package: "(tree)".into(),
+            reason: format!("depth {} exceeds limit {}", actual_max_depth, max_depth_limit),
+        });
+    }
+
+    let score = (100 - (errors as i32 * 15) - (warnings as i32 * 5)).max(0);
+    let pass = score >= config.threshold;
+    Ok(PolicyCheckResult { score, threshold: config.threshold, pass, violations, errors, warnings, waived })
+}
+
+pub fn policy_init(project_root: &Path) -> Result<String, String> {
+    let path = project_root.join(".betterrc.json");
+    let mut w = JsonWriter::new();
+    w.begin_object();
+    w.key("policy"); w.begin_object();
+    w.key("threshold"); w.value_i64(70);
+    w.key("rules"); w.begin_array();
+    w.begin_object();
+    w.key("id"); w.value_string("no-deprecated");
+    w.key("severity"); w.value_string("warning");
+    w.key("description"); w.value_string("No deprecated packages");
+    w.end_object();
+    w.begin_object();
+    w.key("id"); w.value_string("max-duplicates");
+    w.key("severity"); w.value_string("warning");
+    w.key("maxDuplicates"); w.value_u64(3);
+    w.key("description"); w.value_string("Maximum duplicate package instances");
+    w.end_object();
+    w.begin_object();
+    w.key("id"); w.value_string("max-depth");
+    w.key("severity"); w.value_string("warning");
+    w.key("maxDepth"); w.value_u64(15);
+    w.key("description"); w.value_string("Maximum dependency nesting depth");
+    w.end_object();
+    w.end_array();
+    w.key("waivers"); w.begin_array(); w.end_array();
+    w.end_object();
+    w.end_object();
+    w.out.push('\n');
+    fs::write(&path, w.finish()).map_err(|e| format!("Failed to write config: {}", e))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+// === D.4: Lock metadata / fingerprint ===
+
+pub struct LockFingerprint {
+    pub platform: String,
+    pub arch: String,
+    pub node_major: u64,
+    pub pm: String,
+}
+
+pub struct LockMetadata {
+    pub key: String,
+    pub lockfile_file: String,
+    pub lockfile_hash: String,
+    pub fingerprint: LockFingerprint,
+}
+
+pub struct LockVerifyResult {
+    pub ok: bool,
+    pub key_matches: bool,
+    pub lockfile_matches: bool,
+    pub expected: Option<LockMetadata>,
+    pub current: LockMetadata,
+}
+
+fn build_lock_metadata(project_root: &Path) -> Result<LockMetadata, String> {
+    use sha2::{Digest, Sha256};
+    let lockfile_candidates = [
+        ("package-lock.json", "npm"), ("pnpm-lock.yaml", "pnpm"),
+        ("yarn.lock", "yarn"), ("bun.lock", "bun"),
+    ];
+    let mut lockfile_path = None;
+    let mut pm = "npm";
+    for (name, pm_name) in &lockfile_candidates {
+        let p = project_root.join(name);
+        if p.exists() { lockfile_path = Some(p); pm = pm_name; break; }
+    }
+    let lockfile_path = lockfile_path
+        .ok_or_else(|| "No lockfile found".to_string())?;
+    let lockfile_content = fs::read(&lockfile_path)
+        .map_err(|e| format!("Failed to read lockfile: {}", e))?;
+    let mut hasher = Sha256::new();
+    hasher.update(&lockfile_content);
+    let lockfile_hash = format!("{:x}", hasher.finalize());
+    let node_version = std::process::Command::new("node").arg("--version").output().ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok()).unwrap_or_else(|| "v0.0.0".into());
+    let node_major = node_version.trim().trim_start_matches('v')
+        .split('.').next().and_then(|s| s.parse().ok()).unwrap_or(0u64);
+    let fingerprint = LockFingerprint {
+        platform: std::env::consts::OS.into(), arch: std::env::consts::ARCH.into(),
+        node_major, pm: pm.into(),
+    };
+    let fp_json = format!(
+        "{{\"platform\":\"{}\",\"arch\":\"{}\",\"nodeMajor\":{},\"pm\":\"{}\"}}",
+        fingerprint.platform, fingerprint.arch, fingerprint.node_major, fingerprint.pm
+    );
+    let mut key_hasher = Sha256::new();
+    key_hasher.update(lockfile_hash.as_bytes());
+    key_hasher.update(fp_json.as_bytes());
+    let key = format!("{:x}", key_hasher.finalize());
+    let lockfile_file = lockfile_path.file_name()
+        .map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    Ok(LockMetadata { key, lockfile_file, lockfile_hash, fingerprint })
+}
+
+pub fn generate_lock_metadata(project_root: &Path) -> Result<LockMetadata, String> {
+    let metadata = build_lock_metadata(project_root)?;
+    let mut w = JsonWriter::new();
+    w.begin_object();
+    w.key("key"); w.value_string(&metadata.key);
+    w.key("lockfile"); w.value_string(&metadata.lockfile_file);
+    w.key("lockfileHash"); w.value_string(&metadata.lockfile_hash);
+    w.key("fingerprint"); w.begin_object();
+    w.key("platform"); w.value_string(&metadata.fingerprint.platform);
+    w.key("arch"); w.value_string(&metadata.fingerprint.arch);
+    w.key("nodeMajor"); w.value_u64(metadata.fingerprint.node_major);
+    w.key("pm"); w.value_string(&metadata.fingerprint.pm);
+    w.end_object();
+    w.end_object();
+    w.out.push('\n');
+    fs::write(project_root.join("better.lock.json"), w.finish())
+        .map_err(|e| format!("Failed to write better.lock.json: {}", e))?;
+    Ok(metadata)
+}
+
+pub fn verify_lock_metadata(project_root: &Path) -> Result<LockVerifyResult, String> {
+    let lock_file = project_root.join("better.lock.json");
+    let expected = if lock_file.exists() {
+        let content = fs::read_to_string(&lock_file)
+            .map_err(|e| format!("Failed to read better.lock.json: {}", e))?;
+        let key = extract_json_field(&content, "key").unwrap_or_default();
+        let lockfile_file = extract_json_field(&content, "lockfile").unwrap_or_default();
+        let lockfile_hash = extract_json_field(&content, "lockfileHash").unwrap_or_default();
+        let fp_raw = extract_json_object_raw(&content, "fingerprint").unwrap_or_default();
+        let platform = extract_json_field(&fp_raw, "platform").unwrap_or_default();
+        let arch = extract_json_field(&fp_raw, "arch").unwrap_or_default();
+        let node_major = extract_json_number(&fp_raw, "nodeMajor").unwrap_or(0);
+        let pm = extract_json_field(&fp_raw, "pm").unwrap_or_default();
+        Some(LockMetadata {
+            key, lockfile_file, lockfile_hash,
+            fingerprint: LockFingerprint { platform, arch, node_major, pm },
+        })
+    } else { None };
+    let current = build_lock_metadata(project_root)?;
+    let key_matches = expected.as_ref().map(|e| e.key == current.key).unwrap_or(false);
+    let lockfile_matches = expected.as_ref().map(|e| e.lockfile_hash == current.lockfile_hash).unwrap_or(false);
+    let ok = key_matches && lockfile_matches;
+    Ok(LockVerifyResult { ok, key_matches, lockfile_matches, expected, current })
+}
+
+// === D.5: Workspace support ===
+
+pub struct WorkspacePackage {
+    pub name: String,
+    pub version: String,
+    pub dir: PathBuf,
+    pub relative_dir: String,
+    pub workspace_deps: Vec<String>,
+    pub scripts: Vec<(String, String)>,
+}
+
+pub struct WorkspaceInfo {
+    pub workspace_type: String,
+    pub packages: Vec<WorkspacePackage>,
+}
+
+pub struct WorkspaceGraphResult {
+    pub sorted: Vec<String>,
+    pub levels: Vec<Vec<String>>,
+    pub cycles: Vec<Vec<String>>,
+}
+
+pub struct WorkspaceChangedResult {
+    pub since_ref: String,
+    pub changed_files: u64,
+    pub changed_packages: Vec<String>,
+    pub affected_packages: Vec<String>,
+}
+
+pub struct WorkspaceRunResult {
+    pub command: String,
+    pub total: u64,
+    pub success: u64,
+    pub failure: u64,
+    pub results: Vec<(String, i32, u64)>,
+}
+
+pub fn detect_workspaces(project_root: &Path) -> Result<WorkspaceInfo, String> {
+    let pkg_json = project_root.join("package.json");
+    let content = fs::read_to_string(&pkg_json)
+        .map_err(|e| format!("Failed to read package.json: {}", e))?;
+    let patterns = extract_json_array_strings(&content, "workspaces");
+    if patterns.is_empty() {
+        return Err("No workspaces field found in package.json".into());
+    }
+    let mut workspace_dirs: Vec<PathBuf> = Vec::new();
+    for pattern in &patterns {
+        if pattern.contains('*') {
+            let parts: Vec<&str> = pattern.split('*').collect();
+            if parts.len() == 2 {
+                let prefix = parts[0].trim_end_matches('/');
+                let suffix = parts[1];
+                let search_dir = if prefix.is_empty() { project_root.to_path_buf() } else { project_root.join(prefix) };
+                if let Ok(entries) = fs::read_dir(&search_dir) {
+                    for entry in entries.flatten() {
+                        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                            let candidate = entry.path();
+                            if suffix.is_empty() || candidate.to_string_lossy().ends_with(suffix) {
+                                if candidate.join("package.json").exists() {
+                                    workspace_dirs.push(candidate);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            let dir = project_root.join(pattern);
+            if dir.join("package.json").exists() {
+                workspace_dirs.push(dir);
+            }
+        }
+    }
+    workspace_dirs.sort();
+    let mut all_names: HashSet<String> = HashSet::new();
+    let mut package_data: Vec<(PathBuf, String, String, String, Vec<(String, String)>)> = Vec::new();
+    for dir in &workspace_dirs {
+        let pj = dir.join("package.json");
+        let c = match fs::read_to_string(&pj) { Ok(c) => c, Err(_) => continue };
+        let name = extract_json_field(&c, "name").unwrap_or_else(|| "unknown".into());
+        let version = extract_json_field(&c, "version").unwrap_or_else(|| "0.0.0".into());
+        let rel_dir = dir.strip_prefix(project_root)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| dir.to_string_lossy().to_string());
+        let scripts = extract_json_object_pairs(&c, "scripts").unwrap_or_default();
+        all_names.insert(name.clone());
+        package_data.push((dir.clone(), name, version, rel_dir, scripts));
+    }
+    let mut packages = Vec::new();
+    for (dir, name, version, rel_dir, scripts) in package_data {
+        let pj = dir.join("package.json");
+        let c = fs::read_to_string(&pj).unwrap_or_default();
+        let mut workspace_deps = Vec::new();
+        for section in &["dependencies", "devDependencies", "peerDependencies"] {
+            let deps = extract_json_object_pairs(&c, section).unwrap_or_default();
+            for (dep_name, _) in &deps {
+                if all_names.contains(dep_name) { workspace_deps.push(dep_name.clone()); }
+            }
+        }
+        workspace_deps.sort();
+        workspace_deps.dedup();
+        packages.push(WorkspacePackage { name, version, dir, relative_dir: rel_dir, workspace_deps, scripts });
+    }
+    Ok(WorkspaceInfo { workspace_type: "npm".into(), packages })
+}
+
+pub fn workspace_graph(info: &WorkspaceInfo) -> WorkspaceGraphResult {
+    let names: Vec<&str> = info.packages.iter().map(|p| p.name.as_str()).collect();
+    let name_set: HashSet<&str> = names.iter().copied().collect();
+    let mut in_degree: HashMap<&str, usize> = HashMap::new();
+    let mut dependents_of: HashMap<&str, Vec<&str>> = HashMap::new();
+    for name in &names { in_degree.insert(name, 0); }
+    for pkg in &info.packages {
+        for dep in &pkg.workspace_deps {
+            if name_set.contains(dep.as_str()) {
+                *in_degree.entry(pkg.name.as_str()).or_insert(0) += 1;
+                dependents_of.entry(dep.as_str()).or_default().push(pkg.name.as_str());
+            }
+        }
+    }
+    // Kahn's algorithm with level tracking
+    let mut queue: VecDeque<&str> = VecDeque::new();
+    for (name, deg) in &in_degree {
+        if *deg == 0 { queue.push_back(name); }
+    }
+    let mut sorted = Vec::new();
+    let mut levels: Vec<Vec<String>> = Vec::new();
+    while !queue.is_empty() {
+        let mut level = Vec::new();
+        let level_size = queue.len();
+        for _ in 0..level_size {
+            let name = queue.pop_front().unwrap();
+            sorted.push(name.to_string());
+            level.push(name.to_string());
+            if let Some(deps) = dependents_of.get(name) {
+                for dep in deps {
+                    if let Some(deg) = in_degree.get_mut(dep) {
+                        *deg -= 1;
+                        if *deg == 0 { queue.push_back(dep); }
+                    }
+                }
+            }
+        }
+        levels.push(level);
+    }
+    let sorted_set: HashSet<&str> = sorted.iter().map(|s| s.as_str()).collect();
+    let cycles: Vec<Vec<String>> = names.iter()
+        .filter(|n| !sorted_set.contains(**n))
+        .map(|n| vec![n.to_string()])
+        .collect();
+    WorkspaceGraphResult { sorted, levels, cycles }
+}
+
+pub fn workspace_changed(
+    project_root: &Path, info: &WorkspaceInfo, since_ref: &str,
+) -> Result<WorkspaceChangedResult, String> {
+    let output = std::process::Command::new("git")
+        .args(["diff", "--name-only", since_ref])
+        .current_dir(project_root).output()
+        .map_err(|e| format!("Failed to run git diff: {}", e))?;
+    if !output.status.success() {
+        return Err(format!("git diff failed: {}", String::from_utf8_lossy(&output.stderr)));
+    }
+    let files_str = String::from_utf8_lossy(&output.stdout);
+    let changed_files: Vec<&str> = files_str.lines().filter(|l| !l.is_empty()).collect();
+    let changed_file_count = changed_files.len() as u64;
+    let mut changed_packages: Vec<String> = Vec::new();
+    for pkg in &info.packages {
+        let prefix = &pkg.relative_dir;
+        if changed_files.iter().any(|f| f.starts_with(prefix)) {
+            changed_packages.push(pkg.name.clone());
+        }
+    }
+    let changed_set: HashSet<String> = changed_packages.iter().cloned().collect();
+    let mut affected: HashSet<String> = changed_set.clone();
+    let mut bfs_queue: VecDeque<String> = changed_packages.clone().into_iter().collect();
+    while let Some(name) = bfs_queue.pop_front() {
+        for pkg in &info.packages {
+            if pkg.workspace_deps.iter().any(|d| d == &name) && !affected.contains(&pkg.name) {
+                affected.insert(pkg.name.clone());
+                bfs_queue.push_back(pkg.name.clone());
+            }
+        }
+    }
+    let mut affected_packages: Vec<String> = affected.into_iter().collect();
+    affected_packages.sort();
+    Ok(WorkspaceChangedResult {
+        since_ref: since_ref.into(), changed_files: changed_file_count,
+        changed_packages, affected_packages,
+    })
+}
+
+pub fn workspace_run(
+    _project_root: &Path, info: &WorkspaceInfo, command: &str,
+) -> Result<WorkspaceRunResult, String> {
+    let graph = workspace_graph(info);
+    let name_to_pkg: HashMap<&str, &WorkspacePackage> = info.packages.iter()
+        .map(|p| (p.name.as_str(), p)).collect();
+    let mut results = Vec::new();
+    let mut success = 0u64;
+    let mut failure = 0u64;
+    for name in &graph.sorted {
+        if let Some(pkg) = name_to_pkg.get(name.as_str()) {
+            let started = Instant::now();
+            let status = std::process::Command::new("sh").arg("-c").arg(command)
+                .current_dir(&pkg.dir).status();
+            let duration_ms = started.elapsed().as_millis() as u64;
+            match status {
+                Ok(s) => {
+                    let code = s.code().unwrap_or(1);
+                    if code == 0 { success += 1; } else { failure += 1; }
+                    results.push((name.clone(), code, duration_ms));
+                }
+                Err(e) => {
+                    failure += 1;
+                    results.push((name.clone(), 1, duration_ms));
+                    eprintln!("[better] workspace run error in {}: {}", name, e);
+                }
+            }
+        }
+    }
+    Ok(WorkspaceRunResult {
+        command: command.into(), total: results.len() as u64, success, failure, results,
+    })
+}
+
+// === D.6: SBOM export (CycloneDX + SPDX) ===
+
+pub struct SbomComponent {
+    pub name: String,
+    pub version: String,
+    pub license: String,
+    pub purl: String,
+    pub integrity: String,
+}
+
+pub struct SbomReport {
+    pub format: String,
+    pub components: Vec<SbomComponent>,
+    pub project_name: String,
+    pub project_version: String,
+}
+
+pub fn generate_sbom(project_root: &Path, lockfile: &Path, format: &str) -> Result<SbomReport, String> {
+    let resolve_result = resolve_from_lockfile(lockfile)?;
+    let nm = project_root.join("node_modules");
+    let license_report = scan_licenses(&nm, &[], &[])?;
+    let license_map: HashMap<String, String> = license_report.packages.iter()
+        .map(|p| (p.name.clone(), p.license.clone())).collect();
+    let mut components = Vec::new();
+    for pkg in &resolve_result.packages {
+        let license = license_map.get(&pkg.name).cloned().unwrap_or_else(|| "NOASSERTION".into());
+        let purl = format!("pkg:npm/{}@{}", pkg.name, pkg.version);
+        components.push(SbomComponent {
+            name: pkg.name.clone(), version: pkg.version.clone(),
+            license, purl, integrity: pkg.integrity.clone(),
+        });
+    }
+    let pj = project_root.join("package.json");
+    let c = fs::read_to_string(&pj).unwrap_or_default();
+    let project_name = extract_json_field(&c, "name").unwrap_or_else(|| "unknown".into());
+    let project_version = extract_json_field(&c, "version").unwrap_or_else(|| "0.0.0".into());
+    Ok(SbomReport { format: format.into(), components, project_name, project_version })
+}
+
+pub fn write_cyclonedx_json(report: &SbomReport) -> String {
+    let mut w = JsonWriter::new();
+    w.begin_object();
+    w.key("bomFormat"); w.value_string("CycloneDX");
+    w.key("specVersion"); w.value_string("1.5");
+    w.key("version"); w.value_i64(1);
+    w.key("metadata"); w.begin_object();
+    w.key("component"); w.begin_object();
+    w.key("type"); w.value_string("application");
+    w.key("name"); w.value_string(&report.project_name);
+    w.key("version"); w.value_string(&report.project_version);
+    w.end_object();
+    w.end_object();
+    w.key("components"); w.begin_array();
+    for comp in &report.components {
+        w.begin_object();
+        w.key("type"); w.value_string("library");
+        w.key("name"); w.value_string(&comp.name);
+        w.key("version"); w.value_string(&comp.version);
+        w.key("purl"); w.value_string(&comp.purl);
+        w.key("licenses"); w.begin_array();
+        w.begin_object();
+        w.key("license"); w.begin_object();
+        w.key("id"); w.value_string(&comp.license);
+        w.end_object();
+        w.end_object();
+        w.end_array();
+        w.end_object();
+    }
+    w.end_array();
+    w.end_object();
+    w.out.push('\n');
+    w.finish()
+}
+
+pub fn write_spdx_json(report: &SbomReport) -> String {
+    let mut w = JsonWriter::new();
+    w.begin_object();
+    w.key("spdxVersion"); w.value_string("SPDX-2.3");
+    w.key("dataLicense"); w.value_string("CC0-1.0");
+    w.key("SPDXID"); w.value_string("SPDXRef-DOCUMENT");
+    w.key("name"); w.value_string(&report.project_name);
+    w.key("documentNamespace"); w.value_string(
+        &format!("https://spdx.org/spdxdocs/{}-{}", report.project_name, report.project_version)
+    );
+    w.key("packages"); w.begin_array();
+    for (i, comp) in report.components.iter().enumerate() {
+        w.begin_object();
+        w.key("SPDXID"); w.value_string(&format!("SPDXRef-Package-{}", i));
+        w.key("name"); w.value_string(&comp.name);
+        w.key("versionInfo"); w.value_string(&comp.version);
+        w.key("downloadLocation"); w.value_string(&comp.purl);
+        w.key("licenseDeclared"); w.value_string(&comp.license);
+        w.key("externalRefs"); w.begin_array();
+        w.begin_object();
+        w.key("referenceCategory"); w.value_string("PACKAGE-MANAGER");
+        w.key("referenceType"); w.value_string("purl");
+        w.key("referenceLocator"); w.value_string(&comp.purl);
+        w.end_object();
+        w.end_array();
+        w.end_object();
+    }
+    w.end_array();
+    w.end_object();
+    w.out.push('\n');
+    w.finish()
 }
