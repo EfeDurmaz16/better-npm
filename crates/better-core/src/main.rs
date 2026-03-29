@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -7,7 +8,7 @@ use better_core::{
     ingest_to_file_cas, materialize_from_file_cas, materialize_tree, resolve_from_lockfile,
     run_lifecycle_scripts, scan_tree, try_clonefile_dir, unpacked_path, write_analyze_json,
     write_materialize_json, write_scan_json, CasLayout, JsonWriter, LifecycleRunResult,
-    LinkStrategy, MaterializeProfile, MaterializeStats, PhaseDurations, ScanAgg, VERSION,
+    InstallProgress, LinkStrategy, MaterializeProfile, MaterializeStats, PhaseDurations, ScanAgg, VERSION,
     // Phase B
     run_script, run_scripts_parallel,
     scan_licenses, check_dedupe, trace_dependency, check_outdated,
@@ -20,7 +21,9 @@ use better_core::{
     generate_lock_metadata, verify_lock_metadata,
     detect_workspaces, workspace_graph, workspace_changed, workspace_run,
     generate_sbom, write_cyclonedx_json, write_spdx_json,
+    LockfileWriter, verify_frozen_lockfile,
 };
+use better_core::engine::{EngineRegistry, PackageEngine};
 
 #[derive(Debug)]
 enum Command {
@@ -42,6 +45,8 @@ enum Command {
         jobs: usize,
         scripts: bool,
         dedup: bool,
+        frozen: bool,
+        json_progress: bool,
     },
     Run {
         project_root: PathBuf,
@@ -177,6 +182,7 @@ fn parse_args() -> Command {
     let mut store_root: Option<PathBuf> = None;
     let mut scripts_flag = true;
     let mut dedup = false;
+    let mut frozen = false;
     let mut allow: Vec<String> = Vec::new();
     let mut deny: Vec<String> = Vec::new();
     let mut threshold = 70i32;
@@ -193,6 +199,7 @@ fn parse_args() -> Command {
     let mut watch = false;
     let mut format_opt = "cyclonedx".to_string();
     let mut since_opt: Option<String> = None;
+    let mut json_progress = false;
 
     let mut i = 1usize;
     while i < args.len() {
@@ -271,6 +278,7 @@ fn parse_args() -> Command {
             "--scripts" => { scripts_flag = true; i += 1; }
             "--dedup" => { dedup = true; i += 1; }
             "--no-dedup" => { dedup = false; i += 1; }
+            "--frozen" | "--frozen-lockfile" => { frozen = true; i += 1; }
             "--allow" => {
                 if i + 1 >= args.len() { return Command::Help { error: Some("--allow requires a value".into()) }; }
                 allow = args[i + 1].split(',').map(|s| s.trim().to_string()).collect();
@@ -317,6 +325,7 @@ fn parse_args() -> Command {
                 template_opt = Some(args[i + 1].clone());
                 i += 2;
             }
+            "--json" => { json_progress = true; i += 1; }
             "--watch" | "-w" => { watch = true; i += 1; }
             "--format" => {
                 if i + 1 >= args.len() { return Command::Help { error: Some("--format requires a value".into()) }; }
@@ -355,7 +364,7 @@ fn parse_args() -> Command {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
             let lf = lockfile.unwrap_or_else(|| pr.join("package-lock.json"));
             let cr = cache_root.unwrap_or_else(default_cache_root);
-            Command::Install { lockfile: lf, project_root: pr, cache_root: cr, store_root, link_strategy, jobs, scripts: scripts_flag, dedup }
+            Command::Install { lockfile: lf, project_root: pr, cache_root: cr, store_root, link_strategy, jobs, scripts: scripts_flag, dedup, frozen, json_progress }
         },
         "run" => {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
@@ -951,12 +960,22 @@ fn main() {
                 std::process::exit(1);
             }
         },
-        Command::Install { lockfile, project_root, cache_root, store_root, link_strategy, jobs: _, scripts, dedup } => {
+        Command::Install { lockfile, project_root, cache_root, store_root, link_strategy, jobs: _, scripts, dedup, frozen, json_progress } => {
             let started = Instant::now();
+
+            // Engine detection: identify which ecosystem this project uses
+            let registry = EngineRegistry::new();
+            let detected_engines = registry.detect(&project_root);
+            let engine_name = detected_engines.first().map(|e| e.name()).unwrap_or("npm");
+            let _ = engine_name; // Will be used for multi-engine dispatch in future
+
             let npmrc = parse_npmrc(&project_root);
+            let is_tty = std::io::stderr().is_terminal();
+            let progress = InstallProgress::new(is_tty, json_progress);
 
             // Step 1: Resolve
             let t_resolve = Instant::now();
+            progress.set_resolve_total(1);
             let resolve_result = match resolve_from_lockfile(&lockfile) {
                 Ok(r) => r,
                 Err(reason) => {
@@ -970,12 +989,45 @@ fn main() {
                     std::process::exit(1);
                 }
             };
+            progress.set_resolve_total(resolve_result.packages.len() as u64);
+            progress.finish_resolve();
             let phase_resolve_ms = t_resolve.elapsed().as_millis() as u64;
+
+            // Frozen lockfile check: fail if better.lock exists and would change
+            if frozen {
+                match verify_frozen_lockfile(&project_root, &resolve_result.packages) {
+                    Ok(true) => { /* lockfile matches, proceed */ }
+                    Ok(false) => {
+                        let mut w = JsonWriter::new();
+                        w.begin_object();
+                        w.key("ok"); w.value_bool(false);
+                        w.key("kind"); w.value_string("better.install.report");
+                        w.key("reason"); w.value_string("--frozen: better.lock would change — lockfile is out of date");
+                        w.end_object(); w.out.push('\n');
+                        print!("{}", w.finish());
+                        std::process::exit(1);
+                    }
+                    Err(reason) => {
+                        let mut w = JsonWriter::new();
+                        w.begin_object();
+                        w.key("ok"); w.value_bool(false);
+                        w.key("kind"); w.value_string("better.install.report");
+                        w.key("reason"); w.value_string(&reason);
+                        w.end_object(); w.out.push('\n');
+                        print!("{}", w.finish());
+                        std::process::exit(1);
+                    }
+                }
+            }
 
             // Step 2: Fetch
             let t_fetch = Instant::now();
+            progress.set_fetch_total(resolve_result.packages.len() as u64);
             let fetch_result = match fetch_packages(&resolve_result.packages, &cache_root, Some(&npmrc)) {
-                Ok(r) => r,
+                Ok(r) => {
+                    progress.finish_fetch();
+                    r
+                }
                 Err(reason) => {
                     let mut w = JsonWriter::new();
                     w.begin_object();
@@ -1017,13 +1069,14 @@ fn main() {
 
             use rayon::prelude::*;
             let materialize_error: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+            progress.set_extract_total(resolve_result.packages.len() as u64);
 
             resolve_result.packages.par_iter().for_each(|pkg| {
                 if materialize_error.lock().ok().and_then(|g| g.as_ref().cloned()).is_some() { return; }
-                let (algo, hex) = match cas_key_from_integrity(&pkg.integrity) { Some(k) => k, None => return };
+                let (algo, hex) = match cas_key_from_integrity(&pkg.integrity) { Some(k) => k, None => { progress.inc_extract(); return } };
                 let unpacked = unpacked_path(&layout, &algo, &hex);
                 let src_dir = unpacked.join("package");
-                if !src_dir.exists() { return; }
+                if !src_dir.exists() { progress.inc_extract(); return; }
                 let dest_path = if pkg.rel_path.starts_with("node_modules/") {
                     node_modules.join(&pkg.rel_path[13..])
                 } else {
@@ -1038,17 +1091,20 @@ fn main() {
                             cas_linked.fetch_add(result.linked, std::sync::atomic::Ordering::Relaxed);
                             cas_copied.fetch_add(result.copied, std::sync::atomic::Ordering::Relaxed);
                             total_symlinks.fetch_add(result.symlinks, std::sync::atomic::Ordering::Relaxed);
+                            progress.inc_extract();
                             return;
                         }
                     }
                     if try_clonefile_dir(&src_dir, &dest_path) {
                         cloned.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        progress.inc_extract();
                         return;
                     }
                 } else {
                     if try_clonefile_dir(&src_dir, &dest_path) {
                         cloned.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         let _ = ingest_to_file_cas(&file_cas_root, &algo, &hex, &src_dir);
+                        progress.inc_extract();
                         return;
                     }
                     let _ = ingest_to_file_cas(&file_cas_root, &algo, &hex, &src_dir);
@@ -1058,6 +1114,7 @@ fn main() {
                             cas_linked.fetch_add(result.linked, std::sync::atomic::Ordering::Relaxed);
                             cas_copied.fetch_add(result.copied, std::sync::atomic::Ordering::Relaxed);
                             total_symlinks.fetch_add(result.symlinks, std::sync::atomic::Ordering::Relaxed);
+                            progress.inc_extract();
                             return;
                         }
                     }
@@ -1076,7 +1133,9 @@ fn main() {
                         }
                     }
                 }
+                progress.inc_extract();
             });
+            progress.finish_extract();
 
             if let Some(reason) = materialize_error.lock().ok().and_then(|g| g.clone()) {
                 let mut w = JsonWriter::new();
@@ -1092,7 +1151,9 @@ fn main() {
 
             // Step 4: Bin links
             let t_bins = Instant::now();
+            progress.set_link_total(resolve_result.packages.len() as u64);
             let bin_result = create_bin_links(&node_modules, &resolve_result.packages).unwrap_or_default();
+            progress.finish_link();
             let phase_binlinks_ms = t_bins.elapsed().as_millis() as u64;
 
             // Step 5: Lifecycle scripts
@@ -1104,6 +1165,19 @@ fn main() {
                 LifecycleRunResult { skipped_reason: Some("disabled".into()), ..Default::default() }
             };
             let phase_scripts_ms = t_scripts.elapsed().as_millis() as u64;
+
+            // Step 6: Write better.lock + better.lock.json (skip in frozen mode)
+            let t_lockfile = Instant::now();
+            let lockfile_result = if !frozen {
+                let lw = LockfileWriter::from_resolved_packages(&resolve_result.packages);
+                match lw.write_both(&project_root) {
+                    Ok(r) => Some(r),
+                    Err(_) => None, // non-fatal: lockfile writing failure shouldn't break install
+                }
+            } else {
+                None
+            };
+            let phase_lockfile_ms = t_lockfile.elapsed().as_millis() as u64;
 
             let duration_ms = started.elapsed().as_millis() as u64;
             let total_files = total_files.load(std::sync::atomic::Ordering::Relaxed);
@@ -1147,12 +1221,20 @@ fn main() {
             if let Some(reason) = &scripts_result.skipped_reason { w.key("skippedReason"); w.value_string(reason); }
             if let Some(code) = scripts_result.rebuild_exit_code { w.key("rebuildExitCode"); w.value_i64(code as i64); }
             w.end_object();
+            if let Some(ref lr) = lockfile_result {
+                w.key("betterLock"); w.begin_object();
+                w.key("packageCount"); w.value_u64(lr.package_count as u64);
+                w.key("binarySize"); w.value_u64(lr.binary_size);
+                w.key("fingerprint"); w.value_string(&lr.fingerprint);
+                w.end_object();
+            }
             w.key("timing"); w.begin_object();
             w.key("resolveMs"); w.value_u64(phase_resolve_ms);
             w.key("fetchMs"); w.value_u64(phase_fetch_ms);
             w.key("materializeMs"); w.value_u64(phase_materialize_ms);
             w.key("binLinksMs"); w.value_u64(phase_binlinks_ms);
             w.key("scriptsMs"); w.value_u64(phase_scripts_ms);
+            w.key("lockfileMs"); w.value_u64(phase_lockfile_ms);
             w.key("totalMs"); w.value_u64(duration_ms);
             w.end_object();
             w.end_object(); w.out.push('\n');

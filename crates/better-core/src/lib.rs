@@ -39,6 +39,9 @@ pub use scripts::*;
 pub mod lock;
 pub use lock::*;
 
+pub mod lockfile;
+pub use lockfile::*;
+
 pub mod npmrc;
 pub use npmrc::*;
 
@@ -66,8 +69,13 @@ pub use fetch::*;
 pub mod analyze;
 pub use analyze::*;
 
+pub mod engine;
+
 pub mod binlinks;
 pub use binlinks::*;
+
+pub mod progress;
+pub use progress::*;
 
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
