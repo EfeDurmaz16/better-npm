@@ -6,163 +6,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+pub mod types;
+pub use types::*;
+
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-// --- Types ---
-
-#[derive(Debug, Clone, Copy)]
-pub enum LinkStrategy {
-    Auto,
-    Hardlink,
-    Copy,
-}
-
-impl LinkStrategy {
-    pub fn from_arg(value: &str) -> Option<Self> {
-        match value {
-            "auto" => Some(Self::Auto),
-            "hardlink" => Some(Self::Hardlink),
-            "copy" => Some(Self::Copy),
-            _ => None,
-        }
-    }
-
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::Hardlink => "hardlink",
-            Self::Copy => "copy",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum MaterializeProfile {
-    Auto,
-    IoHeavy,
-    SmallFiles,
-}
-
-impl MaterializeProfile {
-    pub fn from_arg(value: &str) -> Option<Self> {
-        match value {
-            "auto" => Some(Self::Auto),
-            "io-heavy" => Some(Self::IoHeavy),
-            "small-files" => Some(Self::SmallFiles),
-            _ => None,
-        }
-    }
-
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::IoHeavy => "io-heavy",
-            Self::SmallFiles => "small-files",
-        }
-    }
-}
-
-#[derive(Default, Clone)]
-pub struct ScanAgg {
-    pub logical: u64,
-    pub physical: u64,
-    pub shared: u64,
-    pub file_count: u64,
-    pub package_count: u64,
-    pub approx: bool,
-}
-
-#[derive(Default, Clone)]
-pub struct MaterializeStats {
-    pub files: u64,
-    pub files_linked: u64,
-    pub files_copied: u64,
-    pub link_fallback_copies: u64,
-    pub directories: u64,
-    pub symlinks: u64,
-    pub fallback_eperm: u64,
-    pub fallback_exdev: u64,
-    pub fallback_other: u64,
-}
-
-#[derive(Default)]
-pub struct PhaseDurations {
-    pub scan_ms: u64,
-    pub mkdir_ms: u64,
-    pub link_copy_ms: u64,
-    pub total_ms: u64,
-}
-
-#[derive(Default)]
-pub struct MaterializeCounters {
-    pub files: AtomicU64,
-    pub files_linked: AtomicU64,
-    pub files_copied: AtomicU64,
-    pub link_fallback_copies: AtomicU64,
-    pub symlinks: AtomicU64,
-    pub fallback_eperm: AtomicU64,
-    pub fallback_exdev: AtomicU64,
-    pub fallback_other: AtomicU64,
-}
-
-impl MaterializeCounters {
-    pub fn snapshot(&self) -> MaterializeStats {
-        MaterializeStats {
-            files: self.files.load(Ordering::Relaxed),
-            files_linked: self.files_linked.load(Ordering::Relaxed),
-            files_copied: self.files_copied.load(Ordering::Relaxed),
-            link_fallback_copies: self.link_fallback_copies.load(Ordering::Relaxed),
-            directories: 0,
-            symlinks: self.symlinks.load(Ordering::Relaxed),
-            fallback_eperm: self.fallback_eperm.load(Ordering::Relaxed),
-            fallback_exdev: self.fallback_exdev.load(Ordering::Relaxed),
-            fallback_other: self.fallback_other.load(Ordering::Relaxed),
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct PackageOut {
-    pub key: String,
-    pub name: String,
-    pub version: String,
-    pub paths: Vec<String>,
-    pub min_depth: u64,
-    pub max_depth: u64,
-    pub logical: u64,
-    pub physical: u64,
-    pub shared: u64,
-    pub file_count: u64,
-    pub approx: bool,
-}
-
-pub struct DuplicateOut {
-    pub name: String,
-    pub versions: Vec<String>,
-    pub majors: Vec<String>,
-    pub count: u64,
-}
-
-pub struct DepthOut {
-    pub max_depth: u64,
-    pub p95_depth: u64,
-}
-
-/// Aggregate return type for analyze()
-pub struct AnalyzeReport {
-    pub totals: ScanAgg,
-    pub packages: Vec<PackageOut>,
-    pub duplicates: Vec<DuplicateOut>,
-    pub depth: DepthOut,
-    pub node_modules_dir: PathBuf,
-}
-
-/// Aggregate return type for materialize_tree()
-#[derive(Default)]
-pub struct MaterializeReport {
-    pub stats: MaterializeStats,
-    pub phases: PhaseDurations,
-}
 
 // --- JSON writer (no dependencies) ---
 
@@ -618,19 +465,6 @@ pub fn hardlink_with_retry(src: &Path, dst: &Path) -> Result<(), String> {
     }
 }
 
-#[derive(Clone)]
-pub struct MaterializeFileTask {
-    pub src: PathBuf,
-    pub dst: PathBuf,
-}
-
-#[derive(Clone)]
-pub struct MaterializeSymlinkTask {
-    pub src: PathBuf,
-    pub dst: PathBuf,
-    pub target: PathBuf,
-}
-
 pub fn create_symlink_with_retry(task: &MaterializeSymlinkTask) -> Result<(), String> {
     match create_symlink(&task.target, &task.dst, &task.src) {
         Ok(()) => Ok(()),
@@ -639,11 +473,6 @@ pub fn create_symlink_with_retry(task: &MaterializeSymlinkTask) -> Result<(), St
             create_symlink(&task.target, &task.dst, &task.src).map_err(|e| e.to_string())
         }
     }
-}
-
-pub enum MaterializeTask {
-    File(MaterializeFileTask),
-    Symlink(MaterializeSymlinkTask),
 }
 
 // --- clonefile (macOS APFS copy-on-write) ---
@@ -1394,21 +1223,6 @@ pub fn write_materialize_json(
 
 // --- Install engine: resolve and fetch ---
 
-#[derive(Clone)]
-pub struct ResolvedPackage {
-    pub name: String,
-    pub version: String,
-    pub rel_path: String,
-    pub resolved_url: String,
-    pub integrity: String,
-}
-
-#[derive(Clone)]
-pub struct ResolveResult {
-    pub packages: Vec<ResolvedPackage>,
-    pub lockfile_version: u64,
-}
-
 /// Parse package-lock.json and extract packages to install
 pub fn resolve_from_lockfile(lockfile_path: &Path) -> Result<ResolveResult, String> {
     let content = fs::read_to_string(lockfile_path).map_err(|e| e.to_string())?;
@@ -1618,30 +1432,6 @@ fn package_name_from_path(rel_path: &str) -> String {
     "unknown".to_string()
 }
 
-#[derive(Clone)]
-pub struct FetchResult {
-    pub packages_fetched: u64,
-    pub packages_cached: u64,
-    pub bytes_downloaded: u64,
-}
-
-/// Content-addressed store layout
-pub struct CasLayout {
-    pub tarballs_dir: PathBuf,
-    pub unpacked_dir: PathBuf,
-    pub tmp_dir: PathBuf,
-}
-
-impl CasLayout {
-    pub fn new(cache_dir: &Path) -> Self {
-        Self {
-            tarballs_dir: cache_dir.join("store").join("tarballs"),
-            unpacked_dir: cache_dir.join("store").join("unpacked"),
-            tmp_dir: cache_dir.join("tmp"),
-        }
-    }
-}
-
 /// Parse integrity string (e.g., "sha512-base64...") into (algorithm, hex_string)
 pub fn cas_key_from_integrity(integrity: &str) -> Option<(String, String)> {
     let parts: Vec<&str> = integrity.splitn(2, '-').collect();
@@ -1696,6 +1486,15 @@ pub fn fetch_packages(
     let packages_cached = AtomicU64::new(0);
     let bytes_downloaded = AtomicU64::new(0);
 
+    // Shared HTTP/2 client — reuses connections and multiplexes requests
+    let http_client = reqwest::blocking::Client::builder()
+        .use_rustls_tls()
+        .http2_adaptive_window(true)
+        .pool_max_idle_per_host(10)
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
     // Process packages in parallel
     packages.par_iter().try_for_each(|pkg| -> Result<(), String> {
         // Parse integrity
@@ -1722,8 +1521,6 @@ pub fn fetch_packages(
 
             // Download to temporary file
             let tmp_file = layout.tmp_dir.join(format!("{}.tgz.tmp", hex));
-            let agent = ureq::AgentBuilder::new().build();
-
             let mut download_url = pkg.resolved_url.clone();
             let mut auth_token: Option<&str> = None;
             if let Some(cfg) = npmrc {
@@ -1743,31 +1540,20 @@ pub fn fetch_packages(
                 }
             }
 
-            let mut request = agent.get(&download_url);
+            let mut request = http_client.get(&download_url);
             if let Some(token) = auth_token {
-                request = request.set("Authorization", &format!("Bearer {}", token));
+                request = request.header("Authorization", format!("Bearer {}", token));
             }
             let response = request
-                .call()
+                .send()
                 .map_err(|e| format!("Failed to download {}: {}", pkg.name, e))?;
 
-            let mut file = fs::File::create(&tmp_file)
-                .map_err(|e| format!("Failed to create tmp file: {}", e))?;
+            let bytes = response.bytes()
+                .map_err(|e| format!("Failed to read download: {}", e))?;
+            let bytes_written = bytes.len() as u64;
 
-            let mut bytes_written = 0u64;
-            let mut buffer = vec![0u8; 8192];
-            let mut reader = response.into_reader();
-
-            loop {
-                let n = reader.read(&mut buffer)
-                    .map_err(|e| format!("Failed to read download: {}", e))?;
-                if n == 0 {
-                    break;
-                }
-                file.write_all(&buffer[..n])
-                    .map_err(|e| format!("Failed to write to tmp file: {}", e))?;
-                bytes_written += n as u64;
-            }
+            fs::write(&tmp_file, &bytes)
+                .map_err(|e| format!("Failed to write to tmp file: {}", e))?;
 
             bytes_downloaded.fetch_add(bytes_written, Ordering::Relaxed);
 
@@ -1836,24 +1622,6 @@ pub fn fetch_packages(
 }
 
 // --- File-level CAS (Content Addressable Store) ---
-
-#[derive(Debug, Clone)]
-pub struct FileCasIngestResult {
-    pub total_files: u64,
-    pub new_files: u64,
-    pub existing_files: u64,
-    pub total_bytes: u64,
-    pub reused: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct FileCasMaterializeResult {
-    pub ok: bool,
-    pub files: u64,
-    pub linked: u64,
-    pub copied: u64,
-    pub symlinks: u64,
-}
 
 /// Get the store path for a file by its SHA-256 content hash.
 fn file_store_path(store_root: &Path, hex: &str) -> PathBuf {
@@ -2423,12 +2191,6 @@ pub fn materialize_from_file_cas(
 
 // --- Bin links ---
 
-#[derive(Debug, Clone, Default)]
-pub struct BinLinkResult {
-    pub links_created: u64,
-    pub links_failed: u64,
-}
-
 /// Parse the "bin" field from a package.json string.
 /// Returns Vec<(bin_name, relative_script_path)>.
 fn parse_bin_field(pkg_json: &str, pkg_name: &str) -> Vec<(String, String)> {
@@ -2687,30 +2449,6 @@ fn pathdiff_relative(base: &Path, target: &Path) -> PathBuf {
 
 // --- Lifecycle scripts ---
 
-#[derive(Debug, Clone)]
-pub struct LifecycleScriptInfo {
-    pub package_name: String,
-    pub package_dir: PathBuf,
-    pub script_name: String,
-    pub script_command: String,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct LifecycleDetectionResult {
-    pub has_native_addons: bool,
-    pub scripts: Vec<LifecycleScriptInfo>,
-    pub packages_with_binding_gyp: Vec<String>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct LifecycleRunResult {
-    pub scripts_run: u64,
-    pub scripts_succeeded: u64,
-    pub scripts_failed: u64,
-    pub skipped_reason: Option<String>,
-    pub rebuild_exit_code: Option<i32>,
-}
-
 /// Detect lifecycle scripts (install, preinstall, postinstall) and binding.gyp
 /// across all installed packages.
 pub fn detect_lifecycle_scripts(
@@ -2859,14 +2597,6 @@ fn chrono_now() -> String {
 // === Phase B: High-Value Commands ===
 
 // --- B.1: Script Runner ---
-
-#[derive(Debug)]
-pub struct ScriptRunResult {
-    pub script_name: String,
-    pub command: String,
-    pub exit_code: i32,
-    pub duration_ms: u64,
-}
 
 pub fn read_package_json_scripts(project_root: &Path) -> Result<Vec<(String, String)>, String> {
     let pkg_json = project_root.join("package.json");
@@ -3023,21 +2753,6 @@ pub fn run_scripts_parallel(project_root: &Path, script_names: &[String]) -> Vec
 
 // --- B.2: License Scanner ---
 
-#[derive(Debug, Clone)]
-pub struct LicenseInfo {
-    pub name: String,
-    pub version: String,
-    pub license: String,
-}
-
-#[derive(Debug)]
-pub struct LicenseReport {
-    pub packages: Vec<LicenseInfo>,
-    pub by_license: BTreeMap<String, u64>,
-    pub total_packages: u64,
-    pub violations: Vec<LicenseInfo>,
-}
-
 pub fn scan_licenses(node_modules: &Path, allow: &[String], deny: &[String]) -> Result<LicenseReport, String> {
     let pkg_dirs = list_packages_in_node_modules(node_modules)?;
     let mut packages = Vec::new();
@@ -3078,23 +2793,6 @@ pub fn scan_licenses(node_modules: &Path, allow: &[String], deny: &[String]) -> 
 
 // --- B.3: Dedupe Checker ---
 
-#[derive(Debug)]
-pub struct DedupeEntry {
-    pub name: String,
-    pub versions: Vec<String>,
-    pub instances: u64,
-    pub can_dedupe: bool,
-    pub saved_instances: u64,
-}
-
-#[derive(Debug)]
-pub struct DedupeReport {
-    pub duplicates: Vec<DedupeEntry>,
-    pub total_duplicates: u64,
-    pub deduplicatable: u64,
-    pub estimated_saved: u64,
-}
-
 pub fn check_dedupe(root: &Path) -> Result<DedupeReport, String> {
     let report = analyze(root, false)?;
     let mut entries = Vec::new();
@@ -3128,16 +2826,6 @@ pub fn check_dedupe(root: &Path) -> Result<DedupeReport, String> {
 }
 
 // --- B.4: Dependency Tracer (why) ---
-
-#[derive(Debug)]
-pub struct WhyReport {
-    pub package: String,
-    pub version: Option<String>,
-    pub is_direct: bool,
-    pub dependency_paths: Vec<Vec<String>>,
-    pub depended_on_by: Vec<(String, String)>,
-    pub total_paths: u64,
-}
 
 pub fn trace_dependency(project_root: &Path, lockfile: &Path, target: &str) -> Result<WhyReport, String> {
     let content = fs::read_to_string(lockfile)
@@ -3424,24 +3112,6 @@ fn classify_update(current: &SemVer, latest: &SemVer) -> &'static str {
     else { "current" }
 }
 
-#[derive(Debug, Clone)]
-pub struct OutdatedEntry {
-    pub name: String,
-    pub current: String,
-    pub latest: String,
-    pub update_type: String,
-}
-
-#[derive(Debug)]
-pub struct OutdatedReport {
-    pub packages: Vec<OutdatedEntry>,
-    pub total_checked: u64,
-    pub outdated: u64,
-    pub major: u64,
-    pub minor: u64,
-    pub patch: u64,
-}
-
 pub fn check_outdated(_project_root: &Path, lockfile: &Path) -> Result<OutdatedReport, String> {
     use rayon::prelude::*;
 
@@ -3455,9 +3125,13 @@ pub fn check_outdated(_project_root: &Path, lockfile: &Path) -> Result<OutdatedR
     }
     let pkg_list: Vec<(String, String)> = unique.into_iter().collect();
 
-    let agent = ureq::AgentBuilder::new()
+    let http_client = reqwest::blocking::Client::builder()
+        .use_rustls_tls()
+        .http2_adaptive_window(true)
+        .pool_max_idle_per_host(10)
         .timeout(std::time::Duration::from_secs(10))
-        .build();
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
     // Fetch latest versions in parallel
     let results: Vec<Option<OutdatedEntry>> = pkg_list.par_iter().map(|(name, current_version)| {
@@ -3467,11 +3141,11 @@ pub fn check_outdated(_project_root: &Path, lockfile: &Path) -> Result<OutdatedR
             format!("https://registry.npmjs.org/{}", name)
         };
 
-        let resp = match agent.get(&url).call() {
+        let resp = match http_client.get(&url).send() {
             Ok(r) => r,
             Err(_) => return None,
         };
-        let body = match resp.into_string() {
+        let body = match resp.text() {
             Ok(b) => b,
             Err(_) => return None,
         };
@@ -3521,22 +3195,6 @@ pub fn check_outdated(_project_root: &Path, lockfile: &Path) -> Result<OutdatedR
 }
 
 // --- B.6: Doctor ---
-
-#[derive(Debug, Clone)]
-pub struct DoctorFinding {
-    pub id: String,
-    pub title: String,
-    pub severity: String,
-    pub impact: i32,
-    pub recommendation: String,
-}
-
-#[derive(Debug)]
-pub struct DoctorReport {
-    pub score: i32,
-    pub threshold: i32,
-    pub findings: Vec<DoctorFinding>,
-}
 
 pub fn run_doctor(project_root: &Path, threshold: i32) -> Result<DoctorReport, String> {
     let mut findings = Vec::new();
@@ -3644,26 +3302,6 @@ pub fn run_doctor(project_root: &Path, threshold: i32) -> Result<DoctorReport, S
 
 // --- B.7: Cache Stats/GC ---
 
-#[derive(Debug)]
-pub struct CacheStatsReport {
-    pub cache_root: PathBuf,
-    pub total_bytes: u64,
-    pub package_count: u64,
-    pub tarball_count: u64,
-    pub tarball_bytes: u64,
-    pub unpacked_count: u64,
-    pub unpacked_bytes: u64,
-    pub file_cas_count: u64,
-    pub file_cas_bytes: u64,
-}
-
-#[derive(Debug)]
-pub struct CacheGcReport {
-    pub removed: u64,
-    pub freed_bytes: u64,
-    pub dry_run: bool,
-}
-
 pub fn cache_stats(cache_root: &Path) -> Result<CacheStatsReport, String> {
     let layout = CasLayout::new(cache_root);
     let file_store = cache_root.join("file-store");
@@ -3761,26 +3399,54 @@ fn gc_walk(dir: &Path, cutoff: &std::time::SystemTime, dry_run: bool, removed: &
 
 // --- B.8: Security Audit ---
 
-#[derive(Debug, Clone)]
-pub struct AuditVulnerability {
-    pub id: String,
-    pub summary: String,
-    pub severity: String,
-    pub package: String,
-    pub version: String,
-    pub fixed: String,
+// OSV API response types for serde deserialization
+#[derive(serde::Deserialize, Debug)]
+struct OsvBatchResponse {
+    results: Option<Vec<OsvBatchResult>>,
 }
 
-#[derive(Debug)]
-pub struct AuditReport {
-    pub scanned_packages: u64,
-    pub vulnerabilities: Vec<AuditVulnerability>,
-    pub total: u64,
-    pub critical: u64,
-    pub high: u64,
-    pub medium: u64,
-    pub low: u64,
-    pub risk_level: String,
+#[derive(serde::Deserialize, Debug)]
+struct OsvBatchResult {
+    vulns: Option<Vec<OsvVuln>>,
+}
+
+#[derive(serde::Deserialize, Debug)]
+struct OsvVuln {
+    id: Option<String>,
+    summary: Option<String>,
+    details: Option<String>,
+    severity: Option<Vec<OsvSeverity>>,
+    affected: Option<Vec<OsvAffected>>,
+}
+
+#[derive(serde::Deserialize, Debug)]
+#[allow(dead_code)]
+struct OsvSeverity {
+    #[serde(rename = "type")]
+    severity_type: Option<String>,
+    score: Option<String>,
+}
+
+#[derive(serde::Deserialize, Debug)]
+#[allow(dead_code)]
+struct OsvAffected {
+    package: Option<OsvPackage>,
+    ranges: Option<Vec<OsvRange>>,
+}
+
+#[derive(serde::Deserialize, Debug)]
+#[allow(dead_code)]
+struct OsvPackage {
+    name: Option<String>,
+    ecosystem: Option<String>,
+}
+
+#[derive(serde::Deserialize, Debug)]
+#[allow(dead_code)]
+struct OsvRange {
+    #[serde(rename = "type")]
+    range_type: Option<String>,
+    events: Option<Vec<serde_json::Value>>,
 }
 
 pub fn run_audit(lockfile: &Path, _project_root: &Path, min_severity: &str) -> Result<AuditReport, String> {
@@ -3818,23 +3484,24 @@ pub fn run_audit(lockfile: &Path, _project_root: &Path, min_severity: &str) -> R
     let body = query.finish();
 
     // POST to OSV.dev
-    let agent = ureq::AgentBuilder::new()
+    let osv_client = reqwest::blocking::Client::builder()
+        .use_rustls_tls()
         .timeout(std::time::Duration::from_secs(30))
-        .build();
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
-    let resp = agent.post("https://api.osv.dev/v1/querybatch")
-        .set("Content-Type", "application/json")
-        .send_string(&body)
+    let resp = osv_client.post("https://api.osv.dev/v1/querybatch")
+        .header("Content-Type", "application/json")
+        .body(body)
+        .send()
         .map_err(|e| format!("OSV API request failed: {}", e))?;
 
-    let resp_body = resp.into_string()
+    let resp_body = resp.text()
         .map_err(|e| format!("Failed to read OSV response: {}", e))?;
 
-    // Parse response
+    // Parse response using serde_json
     let mut vulns: Vec<AuditVulnerability> = Vec::new();
 
-    // Simple parsing: find all "vulns" arrays in the results
-    // Response format: {"results":[{"vulns":[{"id":"...","summary":"..."}]},{"vulns":[]},..]}
     let severity_rank = |s: &str| -> u8 {
         match s.to_lowercase().as_str() {
             "critical" => 4,
@@ -3846,7 +3513,7 @@ pub fn run_audit(lockfile: &Path, _project_root: &Path, min_severity: &str) -> R
     };
     let min_rank = severity_rank(min_severity);
 
-    // Walk through unique packages and match with results
+    // Build ordered list of unique packages (matches query order)
     let mut pkg_names: Vec<(String, String)> = Vec::new();
     let mut seen2: HashSet<String> = HashSet::new();
     for pkg in &resolve_result.packages {
@@ -3856,74 +3523,71 @@ pub fn run_audit(lockfile: &Path, _project_root: &Path, min_severity: &str) -> R
         }
     }
 
-    // Parse "results" array - each element corresponds to a query
-    // Simple approach: find each "vulns" occurrence and extract vulnerability info
-    let mut search_pos = 0;
-    let mut pkg_idx = 0usize;
-    while let Some(vulns_pos) = resp_body[search_pos..].find("\"vulns\"") {
-        let abs_pos = search_pos + vulns_pos;
-        search_pos = abs_pos + 6;
+    let batch_response: OsvBatchResponse = serde_json::from_str(&resp_body)
+        .unwrap_or(OsvBatchResponse { results: None });
 
-        let (pkg_name, pkg_version) = if pkg_idx < pkg_names.len() {
-            (pkg_names[pkg_idx].0.clone(), pkg_names[pkg_idx].1.clone())
-        } else {
-            ("unknown".to_string(), "0.0.0".to_string())
-        };
-        pkg_idx += 1;
+    if let Some(results) = batch_response.results {
+        for (pkg_idx, result) in results.iter().enumerate() {
+            let (pkg_name, pkg_version) = if pkg_idx < pkg_names.len() {
+                (pkg_names[pkg_idx].0.clone(), pkg_names[pkg_idx].1.clone())
+            } else {
+                ("unknown".to_string(), "0.0.0".to_string())
+            };
 
-        // Find the array content
-        let after = &resp_body[abs_pos..];
-        if let Some(arr_start) = after.find('[') {
-            let arr_section = &after[arr_start..];
-            // Check if empty array
-            let trimmed = arr_section.trim_start_matches('[').trim_start();
-            if trimmed.starts_with(']') { continue; }
+            if let Some(ref osv_vulns) = result.vulns {
+                for v in osv_vulns {
+                    let id = v.id.clone().unwrap_or_default();
+                    let summary = v.summary.clone()
+                        .or_else(|| v.details.clone())
+                        .unwrap_or_else(|| "No description".to_string());
 
-            // Extract individual vulnerability objects
-            let mut depth = 0i32;
-            let mut obj_start = 0usize;
-            let mut in_str = false;
-            let mut esc = false;
-
-            for (i, ch) in arr_section.char_indices() {
-                if esc { esc = false; continue; }
-                if ch == '\\' && in_str { esc = true; continue; }
-                if ch == '"' { in_str = !in_str; continue; }
-                if in_str { continue; }
-                if ch == '{' {
-                    if depth == 0 { obj_start = i; }
-                    depth += 1;
-                } else if ch == '}' {
-                    depth -= 1;
-                    if depth == 0 {
-                        let vuln_json = &arr_section[obj_start + 1..i];
-                        let id = extract_json_field(vuln_json, "id").unwrap_or_default();
-                        let summary = extract_json_field(vuln_json, "summary")
-                            .unwrap_or_else(|| "No description".to_string());
-
-                        // Try to extract severity
-                        let severity = extract_json_field(vuln_json, "severity")
-                            .or_else(|| {
-                                if vuln_json.contains("CRITICAL") { Some("CRITICAL".to_string()) }
-                                else if vuln_json.contains("HIGH") { Some("HIGH".to_string()) }
-                                else if vuln_json.contains("MODERATE") || vuln_json.contains("MEDIUM") { Some("MEDIUM".to_string()) }
+                    // Extract severity from CVSS score or severity array
+                    let severity = v.severity.as_ref()
+                        .and_then(|sevs| sevs.first())
+                        .and_then(|s| s.score.as_ref())
+                        .and_then(|score| {
+                            // Parse CVSS score to severity label
+                            score.parse::<f64>().ok().map(|val| {
+                                if val >= 9.0 { "CRITICAL".to_string() }
+                                else if val >= 7.0 { "HIGH".to_string() }
+                                else if val >= 4.0 { "MEDIUM".to_string() }
+                                else { "LOW".to_string() }
+                            }).or_else(|| {
+                                // Score might be a CVSS vector string; extract base score
+                                // e.g. "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+                                // Fall back to checking for severity keywords
+                                let upper = score.to_uppercase();
+                                if upper.contains("CRITICAL") { Some("CRITICAL".to_string()) }
+                                else if upper.contains("HIGH") { Some("HIGH".to_string()) }
+                                else if upper.contains("MEDIUM") || upper.contains("MODERATE") { Some("MEDIUM".to_string()) }
                                 else { Some("LOW".to_string()) }
                             })
-                            .unwrap_or_else(|| "UNKNOWN".to_string());
+                        })
+                        .unwrap_or_else(|| "LOW".to_string());
 
-                        if severity_rank(&severity) >= min_rank {
-                            vulns.push(AuditVulnerability {
-                                id: id.clone(),
-                                summary,
-                                severity: severity.to_uppercase(),
-                                package: pkg_name.clone(),
-                                version: pkg_version.clone(),
-                                fixed: extract_json_field(vuln_json, "fixed").unwrap_or_default(),
-                            });
-                        }
+                    // Extract fixed version from ranges events
+                    let fixed = v.affected.as_ref()
+                        .and_then(|aff| aff.first())
+                        .and_then(|a| a.ranges.as_ref())
+                        .and_then(|ranges| ranges.first())
+                        .and_then(|r| r.events.as_ref())
+                        .and_then(|events| {
+                            events.iter().find_map(|ev| {
+                                ev.get("fixed").and_then(|f| f.as_str()).map(|s| s.to_string())
+                            })
+                        })
+                        .unwrap_or_default();
+
+                    if severity_rank(&severity) >= min_rank {
+                        vulns.push(AuditVulnerability {
+                            id,
+                            summary,
+                            severity: severity.to_uppercase(),
+                            package: pkg_name.clone(),
+                            version: pkg_version.clone(),
+                            fixed,
+                        });
                     }
-                } else if ch == ']' && depth == 0 {
-                    break;
                 }
             }
         }
@@ -3950,29 +3614,6 @@ pub fn run_audit(lockfile: &Path, _project_root: &Path, min_severity: &str) -> R
 }
 
 // --- B.9: Benchmark ---
-
-#[derive(Debug, Clone)]
-pub struct BenchmarkTiming {
-    pub median_ms: u64,
-    pub min_ms: u64,
-    pub max_ms: u64,
-    pub mean_ms: u64,
-}
-
-#[derive(Debug, Clone)]
-pub struct BenchmarkResult {
-    pub name: String,
-    pub cold: BenchmarkTiming,
-    pub warm: BenchmarkTiming,
-}
-
-#[derive(Debug)]
-pub struct BenchmarkReport {
-    pub platform: String,
-    pub arch: String,
-    pub cpus: u64,
-    pub results: Vec<BenchmarkResult>,
-}
 
 fn compute_timing(mut times: Vec<u64>) -> BenchmarkTiming {
     if times.is_empty() {
@@ -4129,13 +3770,6 @@ pub fn validate_conventional_commit(message: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Debug)]
-pub struct HooksInstallResult {
-    pub hooks_installed: u64,
-    pub from_config: bool,
-    pub hooks: Vec<(String, String)>,
-}
-
 pub fn hooks_install(project_root: &Path) -> Result<HooksInstallResult, String> {
     let git_dir = project_root.join(".git");
     if !git_dir.exists() {
@@ -4253,18 +3887,6 @@ pub fn exec_script(project_root: &Path, script_path: &str, extra_args: &[String]
 
 // --- C.4: Env Info ---
 
-#[derive(Debug)]
-pub struct EnvInfo {
-    pub node_version: String,
-    pub npm_version: String,
-    pub better_version: String,
-    pub platform: String,
-    pub arch: String,
-    pub project_name: Option<String>,
-    pub project_version: Option<String>,
-    pub engines: Option<String>,
-}
-
 pub fn env_info(project_root: &Path) -> EnvInfo {
     let node_version = std::process::Command::new("node")
         .arg("--version")
@@ -4298,20 +3920,6 @@ pub fn env_info(project_root: &Path) -> EnvInfo {
         project_version,
         engines,
     }
-}
-
-#[derive(Debug)]
-pub struct EnvCheckEntry {
-    pub tool: String,
-    pub current: String,
-    pub required: String,
-    pub satisfied: bool,
-}
-
-#[derive(Debug)]
-pub struct EnvCheckResult {
-    pub checks: Vec<EnvCheckEntry>,
-    pub all_ok: bool,
 }
 
 pub fn env_check(project_root: &Path) -> Result<EnvCheckResult, String> {
@@ -4441,12 +4049,6 @@ app.listen(port, () => {
   console.log(`Server running on http://localhost:${port}`);
 });
 "#;
-
-#[derive(Debug)]
-pub struct InitResult {
-    pub files_created: Vec<String>,
-    pub template: Option<String>,
-}
 
 fn write_file(root: &Path, rel: &str, content: &str, files: &mut Vec<String>) -> Result<(), String> {
     let path = root.join(rel);
@@ -4763,22 +4365,6 @@ fn extract_json_number(json: &str, field_name: &str) -> Option<u64> {
 
 // === D.1: .npmrc parser + auth token injection ===
 
-pub struct NpmrcConfig {
-    pub default_registry: String,
-    pub scoped_registries: Vec<(String, String)>,
-    pub auth_tokens: Vec<(String, String)>,
-}
-
-impl Default for NpmrcConfig {
-    fn default() -> Self {
-        Self {
-            default_registry: "https://registry.npmjs.org/".to_string(),
-            scoped_registries: Vec::new(),
-            auth_tokens: Vec::new(),
-        }
-    }
-}
-
 pub fn parse_npmrc(project_root: &Path) -> NpmrcConfig {
     let mut config = NpmrcConfig::default();
     if let Ok(reg) = std::env::var("NPM_CONFIG_REGISTRY") {
@@ -4861,29 +4447,6 @@ fn find_auth_token<'a>(config: &'a NpmrcConfig, registry_url: &str) -> Option<&'
 }
 
 // === D.2: Script sandboxing policy ===
-
-pub struct ScriptPolicy {
-    pub default_policy: String,
-    pub allowed_packages: Vec<String>,
-    pub blocked_packages: Vec<String>,
-    pub allowed_script_types: Vec<String>,
-    pub trusted_scopes: Vec<String>,
-}
-
-pub struct ScriptScanEntry {
-    pub name: String,
-    pub version: String,
-    pub scripts: Vec<(String, String)>,
-    pub policy: String,
-    pub reason: String,
-}
-
-pub struct ScriptScanResult {
-    pub packages: Vec<ScriptScanEntry>,
-    pub total_with_scripts: u64,
-    pub allowed: u64,
-    pub blocked: u64,
-}
 
 pub fn load_script_policy(project_root: &Path) -> ScriptPolicy {
     let policy_file = project_root.join(".better-scripts.json");
@@ -5007,43 +4570,6 @@ fn write_script_policy(project_root: &Path, policy: &ScriptPolicy) -> Result<(),
 }
 
 // === D.3: Policy engine ===
-
-pub struct PolicyRule {
-    pub id: String,
-    pub severity: String,
-    pub description: String,
-    pub max_duplicates: Option<u64>,
-    pub max_depth: Option<u64>,
-    pub banned_packages: Vec<String>,
-}
-
-pub struct PolicyWaiver {
-    pub rule: String,
-    pub package: String,
-}
-
-pub struct PolicyConfig {
-    pub threshold: i32,
-    pub rules: Vec<PolicyRule>,
-    pub waivers: Vec<PolicyWaiver>,
-}
-
-pub struct PolicyViolation {
-    pub rule: String,
-    pub severity: String,
-    pub package: String,
-    pub reason: String,
-}
-
-pub struct PolicyCheckResult {
-    pub score: i32,
-    pub threshold: i32,
-    pub pass: bool,
-    pub violations: Vec<PolicyViolation>,
-    pub errors: u64,
-    pub warnings: u64,
-    pub waived: u64,
-}
 
 fn default_policy_config() -> PolicyConfig {
     PolicyConfig {
@@ -5205,28 +4731,6 @@ pub fn policy_init(project_root: &Path) -> Result<String, String> {
 
 // === D.4: Lock metadata / fingerprint ===
 
-pub struct LockFingerprint {
-    pub platform: String,
-    pub arch: String,
-    pub node_major: u64,
-    pub pm: String,
-}
-
-pub struct LockMetadata {
-    pub key: String,
-    pub lockfile_file: String,
-    pub lockfile_hash: String,
-    pub fingerprint: LockFingerprint,
-}
-
-pub struct LockVerifyResult {
-    pub ok: bool,
-    pub key_matches: bool,
-    pub lockfile_matches: bool,
-    pub expected: Option<LockMetadata>,
-    pub current: LockMetadata,
-}
-
 fn build_lock_metadata(project_root: &Path) -> Result<LockMetadata, String> {
     use sha2::{Digest, Sha256};
     let lockfile_candidates = [
@@ -5313,41 +4817,6 @@ pub fn verify_lock_metadata(project_root: &Path) -> Result<LockVerifyResult, Str
 }
 
 // === D.5: Workspace support ===
-
-pub struct WorkspacePackage {
-    pub name: String,
-    pub version: String,
-    pub dir: PathBuf,
-    pub relative_dir: String,
-    pub workspace_deps: Vec<String>,
-    pub scripts: Vec<(String, String)>,
-}
-
-pub struct WorkspaceInfo {
-    pub workspace_type: String,
-    pub packages: Vec<WorkspacePackage>,
-}
-
-pub struct WorkspaceGraphResult {
-    pub sorted: Vec<String>,
-    pub levels: Vec<Vec<String>>,
-    pub cycles: Vec<Vec<String>>,
-}
-
-pub struct WorkspaceChangedResult {
-    pub since_ref: String,
-    pub changed_files: u64,
-    pub changed_packages: Vec<String>,
-    pub affected_packages: Vec<String>,
-}
-
-pub struct WorkspaceRunResult {
-    pub command: String,
-    pub total: u64,
-    pub success: u64,
-    pub failure: u64,
-    pub results: Vec<(String, i32, u64)>,
-}
 
 pub fn detect_workspaces(project_root: &Path) -> Result<WorkspaceInfo, String> {
     let pkg_json = project_root.join("package.json");
@@ -5539,21 +5008,6 @@ pub fn workspace_run(
 }
 
 // === D.6: SBOM export (CycloneDX + SPDX) ===
-
-pub struct SbomComponent {
-    pub name: String,
-    pub version: String,
-    pub license: String,
-    pub purl: String,
-    pub integrity: String,
-}
-
-pub struct SbomReport {
-    pub format: String,
-    pub components: Vec<SbomComponent>,
-    pub project_name: String,
-    pub project_version: String,
-}
 
 pub fn generate_sbom(project_root: &Path, lockfile: &Path, format: &str) -> Result<SbomReport, String> {
     let resolve_result = resolve_from_lockfile(lockfile)?;
