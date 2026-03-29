@@ -4221,38 +4221,500 @@ fn main() {
             }
         }
 
-        Command::Login { sardis: _ } => {
-            println!("better -- login\n");
-            println!("  Sardis login not yet available. Set SARDIS_TOKEN env var for CI usage.");
+        Command::Login { sardis } => {
+            use better_core::sardis;
+            if !sardis {
+                println!("better -- login\n");
+                println!("  Use --sardis flag for Sardis wallet login.");
+                println!("  Usage: better login --sardis");
+                std::process::exit(0);
+            }
+            // Check for SARDIS_TOKEN env var first (CI usage)
+            if let Ok(token) = std::env::var("SARDIS_TOKEN") {
+                let req = sardis::auth::SardisLoginRequest {
+                    email: None,
+                    api_key: Some(token),
+                    device_id: format!("{}@{}", whoami::username(), gethostname::gethostname().to_string_lossy()),
+                };
+                match sardis::auth::sardis_login(&req) {
+                    Ok(resp) => {
+                        if global_flags.json || global_flags.agent_mode {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(true);
+                            w.key("kind"); w.value_string("better.login");
+                            w.key("walletId"); w.value_string(&resp.session.wallet_id);
+                            w.key("agentId"); w.value_string(&resp.session.agent_id);
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                        } else {
+                            println!("Logged in to Sardis.");
+                            println!("  wallet: {}", resp.session.wallet_id);
+                            println!("  agent:  {}", resp.session.agent_id);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("error: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                // Interactive: prompt for email
+                if !std::io::stdin().is_terminal() {
+                    eprintln!("error: non-interactive environment. Set SARDIS_TOKEN env var.");
+                    std::process::exit(1);
+                }
+                eprint!("  Sardis email: ");
+                let mut email = String::new();
+                std::io::stdin().read_line(&mut email).unwrap_or(0);
+                let email = email.trim().to_string();
+                if email.is_empty() {
+                    eprintln!("error: email is required");
+                    std::process::exit(1);
+                }
+                let req = sardis::auth::SardisLoginRequest {
+                    email: Some(email),
+                    api_key: None,
+                    device_id: format!("{}@{}", whoami::username(), gethostname::gethostname().to_string_lossy()),
+                };
+                match sardis::auth::sardis_login(&req) {
+                    Ok(resp) => {
+                        if global_flags.json || global_flags.agent_mode {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(true);
+                            w.key("kind"); w.value_string("better.login");
+                            w.key("walletId"); w.value_string(&resp.session.wallet_id);
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                        } else {
+                            println!("Logged in to Sardis.");
+                            println!("  wallet: {}", resp.session.wallet_id);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("error: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
         }
 
-        Command::Logout { sardis: _ } => {
-            println!("Logged out.");
+        Command::Logout { sardis } => {
+            use better_core::sardis;
+            if sardis {
+                match sardis::auth::sardis_logout() {
+                    Ok(()) => {
+                        if global_flags.json || global_flags.agent_mode {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(true);
+                            w.key("kind"); w.value_string("better.logout");
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                        } else {
+                            println!("Logged out of Sardis.");
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("error: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                println!("Logged out.");
+            }
         }
 
         Command::Wallet => {
-            println!("better -- wallet\n");
-            println!("  Connect your Sardis wallet: better login --sardis");
+            use better_core::sardis;
+            match sardis::auth::sardis_load_session() {
+                Ok(session) => {
+                    match sardis::wallet::wallet_balance(&session) {
+                        Ok(wallet) => {
+                            if global_flags.json || global_flags.agent_mode {
+                                let mut w = JsonWriter::new();
+                                w.begin_object();
+                                w.key("ok"); w.value_bool(true);
+                                w.key("kind"); w.value_string("better.wallet");
+                                w.key("walletId"); w.value_string(&wallet.wallet_id);
+                                w.key("balance"); w.value_string(&wallet.balance);
+                                w.key("currency"); w.value_string(&wallet.currency);
+                                w.key("trustTier"); w.value_u64(wallet.trust_tier as u64);
+                                w.end_object(); w.out.push('\n');
+                                print!("{}", w.finish());
+                            } else {
+                                println!("better -- wallet\n");
+                                println!("  Wallet ID:  {}", wallet.wallet_id);
+                                println!("  Balance:    {} {}", wallet.balance, wallet.currency);
+                                println!("  Trust tier: {}", wallet.trust_tier);
+                            }
+                        }
+                        Err(sardis::auth::SardisError::SessionExpired) => {
+                            // Try refresh
+                            match sardis::auth::sardis_refresh(&session) {
+                                Ok(new_session) => {
+                                    match sardis::wallet::wallet_balance(&new_session) {
+                                        Ok(wallet) => {
+                                            println!("better -- wallet (session refreshed)\n");
+                                            println!("  Wallet ID:  {}", wallet.wallet_id);
+                                            println!("  Balance:    {} {}", wallet.balance, wallet.currency);
+                                        }
+                                        Err(e) => { eprintln!("error: {}", e); std::process::exit(1); }
+                                    }
+                                }
+                                Err(e) => { eprintln!("error: {}", e); std::process::exit(1); }
+                            }
+                        }
+                        Err(e) => { eprintln!("error: {}", e); std::process::exit(1); }
+                    }
+                }
+                Err(_) => {
+                    eprintln!("Not authenticated. Run `better login --sardis` first.");
+                    std::process::exit(1);
+                }
+            }
         }
 
-        Command::Pay { package: _, amount: _, all: _, budget: _, recurring: _ } => {
-            println!("better -- pay\n");
-            println!("  Payment via Sardis wallet. Not yet connected.");
+        Command::Pay { package, amount, all, budget, recurring } => {
+            use better_core::sardis;
+            use better_core::monetize;
+            let session = match sardis::auth::sardis_load_session() {
+                Ok(s) => s,
+                Err(_) => {
+                    eprintln!("Not authenticated. Run `better login --sardis` first.");
+                    std::process::exit(1);
+                }
+            };
+            if all {
+                // Pay all dependencies with budget distribution
+                let budget_str = budget.as_deref().unwrap_or("10.00");
+                let pr = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                match monetize::pay::pay_all(
+                    &session, &pr, budget_str, "USD",
+                    monetize::pay::DistributionStrategy::Equal,
+                ) {
+                    Ok(results) => {
+                        if global_flags.json || global_flags.agent_mode {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(true);
+                            w.key("kind"); w.value_string("better.pay.all");
+                            w.key("payments"); w.value_u64(results.len() as u64);
+                            w.key("budget"); w.value_string(budget_str);
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                        } else {
+                            println!("Paid {} dependencies (budget: {} USD)", results.len(), budget_str);
+                            for r in &results {
+                                println!("  {} — {} {} ({:?})", r.package_name, r.amount, r.currency, r.status);
+                            }
+                        }
+                    }
+                    Err(e) => { eprintln!("error: {}", e); std::process::exit(1); }
+                }
+            } else if let Some(ref pkg) = package {
+                let amt = amount.as_deref().unwrap_or("1.00");
+                if let Some(ref schedule_str) = recurring {
+                    let schedule = match schedule_str.as_str() {
+                        "monthly" => monetize::pay::RecurringSchedule::Monthly,
+                        "weekly" => monetize::pay::RecurringSchedule::Weekly,
+                        "quarterly" => monetize::pay::RecurringSchedule::Quarterly,
+                        _ => {
+                            eprintln!("error: invalid schedule '{}'. Use: monthly, weekly, quarterly", schedule_str);
+                            std::process::exit(2);
+                        }
+                    };
+                    match monetize::pay::setup_recurring(&session, pkg, amt, "USD", schedule) {
+                        Ok(result) => {
+                            if global_flags.json || global_flags.agent_mode {
+                                let mut w = JsonWriter::new();
+                                w.begin_object();
+                                w.key("ok"); w.value_bool(true);
+                                w.key("kind"); w.value_string("better.pay.recurring");
+                                w.key("transactionId"); w.value_string(&result.transaction_id);
+                                w.key("package"); w.value_string(&result.package_name);
+                                w.key("amount"); w.value_string(&result.amount);
+                                w.end_object(); w.out.push('\n');
+                                print!("{}", w.finish());
+                            } else {
+                                println!("Recurring payment set: {} {} to {} ({})",
+                                    result.amount, result.currency, result.package_name, schedule_str);
+                            }
+                        }
+                        Err(e) => { eprintln!("error: {}", e); std::process::exit(1); }
+                    }
+                } else {
+                    match monetize::pay::pay_package(&session, pkg, amt, "USD") {
+                        Ok(result) => {
+                            if global_flags.json || global_flags.agent_mode {
+                                let mut w = JsonWriter::new();
+                                w.begin_object();
+                                w.key("ok"); w.value_bool(true);
+                                w.key("kind"); w.value_string("better.pay");
+                                w.key("transactionId"); w.value_string(&result.transaction_id);
+                                w.key("package"); w.value_string(&result.package_name);
+                                w.key("amount"); w.value_string(&result.amount);
+                                w.key("status"); w.value_string(&format!("{:?}", result.status));
+                                w.end_object(); w.out.push('\n');
+                                print!("{}", w.finish());
+                            } else {
+                                println!("Paid {} {} to {} ({:?})",
+                                    result.amount, result.currency, result.package_name, result.status);
+                            }
+                        }
+                        Err(e) => { eprintln!("error: {}", e); std::process::exit(1); }
+                    }
+                }
+            } else {
+                eprintln!("error: specify a package name or use --all");
+                eprintln!("  Usage: better pay <package> [--amount <amt>]");
+                eprintln!("         better pay --all --budget <amt>");
+                std::process::exit(2);
+            }
         }
 
-        Command::Publish { project_root: _, monetize: _, pricing: _ } => {
-            println!("better -- publish\n");
-            println!("  Publishing with monetization coming soon.");
+        Command::Publish { project_root, monetize, pricing } => {
+            use better_core::monetize as mon;
+            if monetize {
+                let pkg_json_path = project_root.join("package.json");
+                if !pkg_json_path.exists() {
+                    eprintln!("error: no package.json in {}", project_root.display());
+                    std::process::exit(1);
+                }
+                let content = std::fs::read_to_string(&pkg_json_path).unwrap_or_default();
+                let mut pkg: serde_json::Value = match serde_json::from_str(&content) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!("error: invalid package.json: {}", e);
+                        std::process::exit(1);
+                    }
+                };
+
+                // Load or build pricing
+                let pricing_data = if let Some(ref pricing_path) = pricing {
+                    let p = std::path::Path::new(pricing_path);
+                    let data = std::fs::read_to_string(p).unwrap_or_else(|e| {
+                        eprintln!("error: cannot read pricing file {}: {}", pricing_path, e);
+                        std::process::exit(1);
+                    });
+                    match serde_json::from_str::<mon::publish::PackagePricing>(&data) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            eprintln!("error: invalid pricing JSON: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
+                } else {
+                    // Check existing pricing in package.json
+                    if let Some(existing) = pkg.get("better").and_then(|b| b.get("pricing")) {
+                        match serde_json::from_value::<mon::publish::PackagePricing>(existing.clone()) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                eprintln!("error: invalid existing pricing in package.json: {}", e);
+                                std::process::exit(1);
+                            }
+                        }
+                    } else {
+                        eprintln!("error: --monetize requires pricing config.");
+                        eprintln!("  Use --pricing <file.json> or add better.pricing to package.json");
+                        std::process::exit(2);
+                    }
+                };
+
+                // Validate
+                if let Err(errors) = mon::publish::validate_pricing(&pricing_data) {
+                    eprintln!("error: pricing validation failed:");
+                    for e in &errors {
+                        eprintln!("  - {}", e);
+                    }
+                    std::process::exit(1);
+                }
+
+                // Inject pricing into package.json
+                if let Err(e) = mon::publish::inject_pricing(&mut pkg, &pricing_data) {
+                    eprintln!("error: {}", e);
+                    std::process::exit(1);
+                }
+
+                std::fs::write(&pkg_json_path, serde_json::to_string_pretty(&pkg).unwrap())
+                    .unwrap_or_else(|e| {
+                        eprintln!("error: could not write package.json: {}", e);
+                        std::process::exit(1);
+                    });
+
+                if global_flags.json || global_flags.agent_mode {
+                    let mut w = JsonWriter::new();
+                    w.begin_object();
+                    w.key("ok"); w.value_bool(true);
+                    w.key("kind"); w.value_string("better.publish.monetize");
+                    w.key("model"); w.value_string(&format!("{:?}", pricing_data.model));
+                    w.key("walletId"); w.value_string(&pricing_data.sardis_wallet_id);
+                    w.end_object(); w.out.push('\n');
+                    print!("{}", w.finish());
+                } else {
+                    println!("Pricing injected into package.json ({:?})", pricing_data.model);
+                    println!("  wallet: {}", pricing_data.sardis_wallet_id);
+                    println!("\n  Run `npm publish` or `better publish` to publish.");
+                }
+            } else {
+                println!("better -- publish\n");
+                println!("  Use --monetize to add pricing metadata before publishing.");
+                println!("  Usage: better publish --monetize [--pricing <file.json>]");
+            }
         }
 
-        Command::Earnings { breakdown: _, period: _ } => {
-            println!("better -- earnings\n");
-            println!("  Connect your Sardis wallet to view earnings.");
+        Command::Earnings { breakdown, period } => {
+            use better_core::sardis;
+            use better_core::monetize;
+            let session = match sardis::auth::sardis_load_session() {
+                Ok(s) => s,
+                Err(_) => {
+                    eprintln!("Not authenticated. Run `better login --sardis` first.");
+                    std::process::exit(1);
+                }
+            };
+            match monetize::earnings::fetch_earnings(&session, period, breakdown) {
+                Ok(summary) => {
+                    if global_flags.json || global_flags.agent_mode {
+                        let mut w = JsonWriter::new();
+                        w.begin_object();
+                        w.key("ok"); w.value_bool(true);
+                        w.key("kind"); w.value_string("better.earnings");
+                        w.key("totalEarned"); w.value_string(&summary.total_earned);
+                        w.key("currency"); w.value_string(&summary.currency);
+                        w.key("periodStart"); w.value_string(&summary.period_start);
+                        w.key("periodEnd"); w.value_string(&summary.period_end);
+                        w.key("pendingPayout"); w.value_string(&summary.pending_payout);
+                        w.key("packages"); w.begin_array();
+                        for p in &summary.packages {
+                            w.begin_object();
+                            w.key("name"); w.value_string(&p.package_name);
+                            w.key("total"); w.value_string(&p.total);
+                            w.key("installsPaid"); w.value_u64(p.installs_paid);
+                            w.key("installsFree"); w.value_u64(p.installs_free);
+                            w.key("donations"); w.value_u64(p.donations);
+                            w.end_object();
+                        }
+                        w.end_array();
+                        w.end_object(); w.out.push('\n');
+                        print!("{}", w.finish());
+                    } else {
+                        println!("better -- earnings ({} — {})\n", summary.period_start, summary.period_end);
+                        println!("  Total earned:    {} {}", summary.total_earned, summary.currency);
+                        println!("  Pending payout:  {} {}", summary.pending_payout, summary.currency);
+                        if let Some(ref last) = summary.last_payout_at {
+                            println!("  Last payout:     {}", last);
+                        }
+                        println!();
+                        for p in &summary.packages {
+                            println!("  {} — {} {}", p.package_name, p.total, summary.currency);
+                            println!("    paid installs: {}, free: {}, donations: {}",
+                                p.installs_paid, p.installs_free, p.donations);
+                            if breakdown {
+                                if let Some(ref days) = p.breakdown {
+                                    for d in days {
+                                        println!("      {} — {} ({} tx)", d.date, d.amount, d.transactions);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("error: {}", e);
+                    std::process::exit(1);
+                }
+            }
         }
 
-        Command::Sponsor { package: _, amount: _, schedule: _, list: _ } => {
-            println!("better -- sponsor\n");
-            println!("  Sponsoring via Sardis wallet coming soon.");
+        Command::Sponsor { package, amount, schedule, list } => {
+            use better_core::sardis;
+            use better_core::monetize;
+            let session = match sardis::auth::sardis_load_session() {
+                Ok(s) => s,
+                Err(_) => {
+                    eprintln!("Not authenticated. Run `better login --sardis` first.");
+                    std::process::exit(1);
+                }
+            };
+            if list {
+                match monetize::sponsor::list_sponsorships(&session) {
+                    Ok(sponsorships) => {
+                        if global_flags.json || global_flags.agent_mode {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(true);
+                            w.key("kind"); w.value_string("better.sponsor.list");
+                            w.key("sponsorships"); w.begin_array();
+                            for s in &sponsorships {
+                                w.begin_object();
+                                if let Some(ref pkg) = s.package_name {
+                                    w.key("package"); w.value_string(pkg);
+                                }
+                                w.key("amount"); w.value_string(&s.amount);
+                                w.key("currency"); w.value_string(&s.currency);
+                                w.key("schedule"); w.value_string(&format!("{:?}", s.schedule));
+                                w.key("status"); w.value_string(&format!("{:?}", s.status));
+                                w.end_object();
+                            }
+                            w.end_array();
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                        } else {
+                            println!("better -- sponsorships\n");
+                            if sponsorships.is_empty() {
+                                println!("  No active sponsorships.");
+                            } else {
+                                for s in &sponsorships {
+                                    let target = s.package_name.as_deref()
+                                        .or(s.maintainer_id.as_deref())
+                                        .unwrap_or("unknown");
+                                    println!("  {} — {} {} ({:?}, {:?})",
+                                        target, s.amount, s.currency, s.schedule, s.status);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => { eprintln!("error: {}", e); std::process::exit(1); }
+                }
+            } else if let Some(ref pkg) = package {
+                let amt = amount.as_deref().unwrap_or("5.00");
+                let sched = match schedule.as_deref().unwrap_or("monthly") {
+                    "monthly" => monetize::sponsor::SponsorSchedule::Monthly,
+                    "quarterly" => monetize::sponsor::SponsorSchedule::Quarterly,
+                    "annual" => monetize::sponsor::SponsorSchedule::Annual,
+                    "one-time" | "onetime" => monetize::sponsor::SponsorSchedule::OneTime,
+                    other => {
+                        eprintln!("error: invalid schedule '{}'. Use: monthly, quarterly, annual, one-time", other);
+                        std::process::exit(2);
+                    }
+                };
+                match monetize::sponsor::create_sponsorship(&session, pkg, amt, "USD", sched) {
+                    Ok(sp) => {
+                        if global_flags.json || global_flags.agent_mode {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(true);
+                            w.key("kind"); w.value_string("better.sponsor");
+                            w.key("package"); w.value_string(pkg);
+                            w.key("amount"); w.value_string(&sp.amount);
+                            w.key("schedule"); w.value_string(&format!("{:?}", sp.schedule));
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                        } else {
+                            println!("Sponsorship created: {} {} to {} ({:?})",
+                                sp.amount, sp.currency, pkg, sp.schedule);
+                        }
+                    }
+                    Err(e) => { eprintln!("error: {}", e); std::process::exit(1); }
+                }
+            } else {
+                eprintln!("error: specify a package to sponsor or use --list");
+                eprintln!("  Usage: better sponsor <package> [--amount <amt>] [--schedule monthly]");
+                eprintln!("         better sponsor --list");
+                std::process::exit(2);
+            }
         }
     }
 }
