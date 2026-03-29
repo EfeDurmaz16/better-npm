@@ -18,6 +18,7 @@ Commands:
   benchmark          Run comparative cold/warm install benchmark
   lock               Generate/verify Better lock metadata
   merge-driver       Git merge driver for better.lock.json (install/uninstall/status)
+  risk [pkg...]      Dependency risk scoring (A–F grade, staleness, CVEs, bus factor)
   policy <subcmd>    Dependency policy enforcement (check, init)
   workspace <subcmd> Workspace management (list, info, graph, changed, run)
   audit              Scan dependencies for known vulnerabilities (OSV.dev)
@@ -112,6 +113,9 @@ export async function runCli(argv) {
         break;
       case "merge-driver":
         await (await import("./commands/mergeDriver.js")).runMergeDriver(rest);
+        break;
+      case "risk":
+        await (await import("./commands/risk.js")).cmdRisk(rest);
         break;
       case "policy":
         await (await import("./commands/policy.js")).cmdPolicy(rest);
