@@ -7,6 +7,7 @@
   <a href="#performance"><img src="https://img.shields.io/badge/2.6x_faster-than_bun-00b4d8?style=flat-square&logo=bun" alt="2.6x faster"/></a>
   <img src="https://img.shields.io/badge/pure-Rust-dea584?style=flat-square&logo=rust" alt="Pure Rust"/>
   <img src="https://img.shields.io/badge/commands-25-8b5cf6?style=flat-square" alt="25 commands"/>
+  <a href="https://github.com/EfeDurmaz16/better-npm/actions"><img src="https://img.shields.io/github/actions/workflow/status/EfeDurmaz16/better-npm/ci.yml?style=flat-square&label=CI" alt="CI"/></a>
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT License"/>
   <img src="https://img.shields.io/badge/zero_dependencies-at_runtime-555?style=flat-square" alt="Zero deps"/>
 </p>
@@ -67,14 +68,17 @@ Files share the same inode — editing one won't affect others (copy-on-write at
 ## Install
 
 ```bash
-# Build the Rust core
+# Quick install (recommended)
+curl -fsSL https://raw.githubusercontent.com/EfeDurmaz16/better-npm/main/scripts/install.sh | sh
+
+# Via npm
+npm install -g better
+
+# Via Homebrew
+brew install EfeDurmaz16/tap/better
+
+# From source
 cd crates && cargo build --release -p better-core
-
-# Use directly
-./crates/target/release/better-core install --project-root /path/to/project
-
-# Or via Node.js CLI (auto-detects Rust binary)
-node bin/better.js install
 ```
 
 ---
