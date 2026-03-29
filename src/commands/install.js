@@ -28,6 +28,7 @@ import { resolveWorkspacePackages, workspaceSummary } from "../lib/workspaces.js
 import { executionPlan, affectedPackages } from "../lib/topoSort.js";
 import { loadOverrides, validateOverrides } from "../lib/overrides.js";
 import { verifyFrozenLockfile } from "../lib/frozenLockfile.js";
+import { createInstallProgress } from "../tui/installProgress.js";
 
 async function exists(p) {
   try {
@@ -564,8 +565,20 @@ Workspace options:
     strict: false
   });
 
+  const installBar = createInstallProgress({
+    json: values.json === true,
+    silent: values["log-level"] === "silent"
+  });
+
   function progress(msg) {
     commandLogger.info(msg);
+    // Map well-known messages to TUI phase transitions
+    if (msg.includes("frozen lockfile")) installBar.phase("resolve");
+    else if (msg.includes("global cache hit") || msg.includes("reuse marker hit")) {
+      installBar.phase("link");
+    } else if (msg.includes("materializ")) installBar.phase("link");
+    else if (msg.includes("engine=better")) installBar.phase("fetch");
+    else if (msg.includes("running ")) installBar.phase("fetch");
   }
 
   const dryRun = values["dry-run"] === true;
@@ -616,6 +629,10 @@ Workspace options:
   const passthrough = [...passthroughUnknown, ...passthroughPositionals];
 
   const invocationCwd = process.cwd();
+
+  // Kick off TUI progress bar — phase 1: resolve
+  installBar.phase("resolve");
+
   const resolvedRoot = values["project-root"]
     ? { root: path.resolve(values["project-root"]), reason: "flag:--project-root" }
     : await resolveInstallProjectRoot(invocationCwd);
@@ -1115,6 +1132,7 @@ Workspace options:
   } else if (!skippedPmInstall) {
     if (engine === "better") {
       progress("engine=better: materializing from package-lock.json (experimental)");
+      installBar.phase("fetch");
       const started = Date.now();
       betterEngine = await installFromNpmLockfile(projectRoot, layout, {
         verify: values.verify ?? "integrity-required",
@@ -1146,6 +1164,7 @@ Workspace options:
       args = c.args;
 
       progress(`running ${cmd} ${args.join(" ")}`);
+      installBar.phase("fetch");
       install = await runCommand(cmd, args, { cwd: projectRoot, env: installEnv, passthroughStdio: !values.json });
       if (install.exitCode !== 0) {
         const err = new Error(`${cmd} exited with code ${install.exitCode}`);
@@ -1754,6 +1773,12 @@ Workspace options:
       outputLines.push(`- workspaces: ${ws.type}, ${ws.packageCount} package(s) (${ws.reason})`);
     }
   }
+
+  installBar.done({
+    totalMs: report.install.wallTimeMs,
+    packages: installMetrics.packagesAfter,
+    cacheHit: globalCacheDecision?.hit === true || reuseDecision?.hit === true
+  });
 
   printText(outputLines.join("\n"));
 }
