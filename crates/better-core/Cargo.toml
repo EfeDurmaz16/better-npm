@@ -23,3 +23,10 @@ base64 = "0.22"
 notify = "6"
 indicatif = "0.17"
 toml = "0.8"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+aes-gcm = "0.10"
+rand = "0.8"
+dirs = "5"
+gethostname = "0.4"
+whoami = "1"
