@@ -747,7 +747,7 @@ fn parse_args() -> (Command, GlobalFlags) {
         },
         "suggest" => {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
-            Command::Suggest { project_root: pr, json: json_progress }
+            Command::Suggest { project_root: pr, json: json_progress || global_flags.json || global_flags.agent_mode }
         },
         "completions" => {
             let shell = positional.first().cloned().unwrap_or_else(|| "bash".into());

@@ -27,6 +27,7 @@ Commands:
   license            Scan node_modules for package licenses
   outdated           Check for newer versions of installed packages
   scripts            Manage install script sandboxing (list, allow, block)
+  suggest            Suggest missing deps and flag unused ones from imports
   context <package>   Generate LLM-friendly context for a package
   context --all        Generate context for all installed dependencies
   context gc           Clean stale context cache entries
@@ -168,6 +169,9 @@ export async function runCli(argv) {
         break;
       case "scripts":
         await (await import("./commands/scripts.js")).cmdScripts(rest);
+        break;
+      case "suggest":
+        await (await import("./commands/suggest.js")).cmdSuggest(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
