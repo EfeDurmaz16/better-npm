@@ -33,6 +33,12 @@ pub use workspace::*;
 pub mod audit;
 pub use audit::*;
 
+pub mod audit_config;
+pub use audit_config::*;
+
+pub mod approval;
+pub use approval::*;
+
 pub mod scripts;
 pub use scripts::*;
 
@@ -82,6 +88,12 @@ pub use progress::*;
 
 pub mod strict;
 pub use strict::*;
+
+pub mod unused;
+pub use unused::*;
+
+pub mod license_policy;
+pub use license_policy::*;
 
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

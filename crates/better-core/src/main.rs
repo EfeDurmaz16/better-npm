@@ -8,7 +8,8 @@ use better_core::{
     ingest_to_file_cas, materialize_from_file_cas, materialize_tree, resolve_from_lockfile,
     run_lifecycle_scripts, scan_tree, try_clonefile_dir, unpacked_path, write_analyze_json,
     write_materialize_json, write_scan_json, CasLayout, JsonWriter, LifecycleRunResult,
-    InstallProgress, LinkStrategy, MaterializeProfile, MaterializeStats, PhaseDurations, ScanAgg, VERSION,
+    InstallProgress, LinkStrategy, MaterializeProfile, MaterializeStats, NodeLayout, PhaseDurations, ScanAgg,
+    StrictMaterializeStats, VERSION, materialize_strict,
     // Phase B
     run_script, run_scripts_parallel,
     scan_licenses, check_dedupe, trace_dependency, check_outdated,
@@ -18,11 +19,17 @@ use better_core::{
     // Phase D
     parse_npmrc, scan_scripts, scripts_allow, scripts_block,
     policy_check, policy_init,
+    // Audit allow-listing
+    run_audit_with_config, add_audit_ignore,
+    // Dependency approval
+    approve_package, revoke_package, pending_packages, check_all_approved,
     generate_lock_metadata, verify_lock_metadata,
     detect_workspaces, workspace_graph, workspace_changed, workspace_run,
     generate_sbom, write_cyclonedx_json, write_spdx_json,
     LockfileWriter, verify_frozen_lockfile,
     merge_lockfiles, run_merge_driver, install_merge_driver,
+    // v0.4 intelligence
+    detect_unused, load_license_policy, check_license_policy,
 };
 use better_core::engine::EngineRegistry;
 
@@ -48,6 +55,7 @@ enum Command {
         dedup: bool,
         frozen: bool,
         json_progress: bool,
+        node_layout: NodeLayout,
     },
     Run {
         project_root: PathBuf,
@@ -59,6 +67,7 @@ enum Command {
         root: PathBuf,
         allow: Vec<String>,
         deny: Vec<String>,
+        policy: bool,
     },
     Dedupe { root: PathBuf },
     Why {
@@ -73,6 +82,7 @@ enum Command {
     Doctor {
         project_root: PathBuf,
         threshold: i32,
+        unused: bool,
     },
     CacheStats { cache_root: PathBuf },
     CacheGc {
@@ -84,6 +94,9 @@ enum Command {
         project_root: PathBuf,
         lockfile: PathBuf,
         min_severity: String,
+        strict: bool,
+        add_ignore: Option<String>,
+        ignore_reason: Option<String>,
     },
     Benchmark {
         project_root: PathBuf,
@@ -111,6 +124,8 @@ enum Command {
     Policy {
         project_root: PathBuf,
         subcommand: String,
+        policy_arg: Option<String>,
+        approved_by: Option<String>,
     },
     Lock {
         project_root: PathBuf,
@@ -202,6 +217,13 @@ fn parse_args() -> Command {
     let mut format_opt = "cyclonedx".to_string();
     let mut since_opt: Option<String> = None;
     let mut json_progress = false;
+    let mut node_layout = NodeLayout::Hoist;
+    let mut strict = false;
+    let mut add_ignore: Option<String> = None;
+    let mut ignore_reason: Option<String> = None;
+    let mut approved_by: Option<String> = None;
+    let mut unused_flag = false;
+    let mut policy_flag = false;
 
     let mut i = 1usize;
     while i < args.len() {
@@ -327,8 +349,35 @@ fn parse_args() -> Command {
                 template_opt = Some(args[i + 1].clone());
                 i += 2;
             }
+            "--strict" => { node_layout = NodeLayout::Strict; strict = true; i += 1; }
+            "--hoist" | "--hoisted" => { node_layout = NodeLayout::Hoist; i += 1; }
+            "--add-ignore" => {
+                if i + 1 >= args.len() { return Command::Help { error: Some("--add-ignore requires a CVE ID".into()) }; }
+                add_ignore = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--reason" => {
+                if i + 1 >= args.len() { return Command::Help { error: Some("--reason requires a value".into()) }; }
+                ignore_reason = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--approved-by" => {
+                if i + 1 >= args.len() { return Command::Help { error: Some("--approved-by requires a value".into()) }; }
+                approved_by = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--node-layout" => {
+                if i + 1 >= args.len() { return Command::Help { error: Some("--node-layout requires a value".into()) }; }
+                match NodeLayout::from_arg(&args[i + 1]) {
+                    Some(l) => node_layout = l,
+                    None => return Command::Help { error: Some(format!("unknown --node-layout '{}'", args[i + 1])) },
+                }
+                i += 2;
+            }
             "--json" => { json_progress = true; i += 1; }
             "--watch" | "-w" => { watch = true; i += 1; }
+            "--unused" => { unused_flag = true; i += 1; }
+            "--policy" => { policy_flag = true; i += 1; }
             "--format" => {
                 if i + 1 >= args.len() { return Command::Help { error: Some("--format requires a value".into()) }; }
                 format_opt = args[i + 1].clone();
@@ -366,7 +415,7 @@ fn parse_args() -> Command {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
             let lf = lockfile.unwrap_or_else(|| pr.join("package-lock.json"));
             let cr = cache_root.unwrap_or_else(default_cache_root);
-            Command::Install { lockfile: lf, project_root: pr, cache_root: cr, store_root, link_strategy, jobs, scripts: scripts_flag, dedup, frozen, json_progress }
+            Command::Install { lockfile: lf, project_root: pr, cache_root: cr, store_root, link_strategy, jobs, scripts: scripts_flag, dedup, frozen, json_progress, node_layout }
         },
         "run" => {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
@@ -400,7 +449,7 @@ fn parse_args() -> Command {
                 let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
                 pr.join("node_modules")
             });
-            Command::License { root: r, allow, deny }
+            Command::License { root: r, allow, deny, policy: policy_flag }
         },
         "dedupe" | "dedup" => {
             let r = root.unwrap_or_else(|| project_root.unwrap_or_else(|| PathBuf::from(".")));
@@ -421,7 +470,7 @@ fn parse_args() -> Command {
         },
         "doctor" => {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
-            Command::Doctor { project_root: pr, threshold }
+            Command::Doctor { project_root: pr, threshold, unused: unused_flag }
         },
         "cache" => {
             let cr = cache_root.unwrap_or_else(default_cache_root);
@@ -434,7 +483,7 @@ fn parse_args() -> Command {
         "audit" => {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
             let lf = lockfile.unwrap_or_else(|| pr.join("package-lock.json"));
-            Command::Audit { project_root: pr, lockfile: lf, min_severity }
+            Command::Audit { project_root: pr, lockfile: lf, min_severity, strict, add_ignore, ignore_reason }
         },
         "benchmark" | "bench" => {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
@@ -470,7 +519,8 @@ fn parse_args() -> Command {
         "policy" => {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
             let subcmd = positional.first().cloned().unwrap_or_else(|| "check".into());
-            Command::Policy { project_root: pr, subcommand: subcmd }
+            let pol_arg = positional.get(1).cloned();
+            Command::Policy { project_root: pr, subcommand: subcmd, policy_arg: pol_arg, approved_by }
         },
         "lock" => {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
@@ -963,7 +1013,7 @@ fn main() {
                 std::process::exit(1);
             }
         },
-        Command::Install { lockfile, project_root, cache_root, store_root, link_strategy, jobs: _, scripts, dedup, frozen, json_progress } => {
+        Command::Install { lockfile, project_root, cache_root, store_root, link_strategy, jobs: _, scripts, dedup, frozen, json_progress, node_layout } => {
             let started = Instant::now();
 
             // Engine detection: identify which ecosystem this project uses
@@ -1319,7 +1369,7 @@ fn main() {
             }
         }
 
-        Command::License { root, allow, deny } => {
+        Command::License { root, allow, deny, policy } => {
             match scan_licenses(&root, &allow, &deny) {
                 Ok(report) => {
                     let mut w = JsonWriter::new();
@@ -1357,6 +1407,68 @@ fn main() {
                     w.end_object(); w.out.push('\n');
                     print!("{}", w.finish());
                     std::process::exit(1);
+                }
+            }
+            // License policy enforcement
+            if policy {
+                let project_root = root.parent().unwrap_or(std::path::Path::new("."));
+                match load_license_policy(project_root) {
+                    Ok(license_policy) => {
+                        match check_license_policy(&root, &license_policy) {
+                            Ok(result) => {
+                                let mut w = JsonWriter::new();
+                                w.begin_object();
+                                w.key("ok"); w.value_bool(result.violations.is_empty());
+                                w.key("kind"); w.value_string("better.license.policy");
+                                w.key("totalChecked"); w.value_u64(result.total_checked);
+                                w.key("passed"); w.value_u64(result.passed);
+                                w.key("overridden"); w.value_u64(result.overridden);
+                                w.key("violations"); w.begin_array();
+                                for v in &result.violations {
+                                    w.begin_object();
+                                    w.key("package"); w.value_string(&v.package);
+                                    w.key("version"); w.value_string(&v.version);
+                                    w.key("license"); w.value_string(&v.license);
+                                    w.key("reason"); w.value_string(&v.reason);
+                                    w.end_object();
+                                }
+                                w.end_array();
+                                w.key("warnings"); w.begin_array();
+                                for v in &result.warnings {
+                                    w.begin_object();
+                                    w.key("package"); w.value_string(&v.package);
+                                    w.key("version"); w.value_string(&v.version);
+                                    w.key("license"); w.value_string(&v.license);
+                                    w.key("reason"); w.value_string(&v.reason);
+                                    w.end_object();
+                                }
+                                w.end_array();
+                                w.end_object(); w.out.push('\n');
+                                print!("{}", w.finish());
+                                if !result.violations.is_empty() { std::process::exit(1); }
+                            }
+                            Err(reason) => {
+                                let mut w = JsonWriter::new();
+                                w.begin_object();
+                                w.key("ok"); w.value_bool(false);
+                                w.key("kind"); w.value_string("better.license.policy");
+                                w.key("reason"); w.value_string(&reason);
+                                w.end_object(); w.out.push('\n');
+                                print!("{}", w.finish());
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                    Err(reason) => {
+                        let mut w = JsonWriter::new();
+                        w.begin_object();
+                        w.key("ok"); w.value_bool(false);
+                        w.key("kind"); w.value_string("better.license.policy");
+                        w.key("reason"); w.value_string(&reason);
+                        w.end_object(); w.out.push('\n');
+                        print!("{}", w.finish());
+                        std::process::exit(1);
+                    }
                 }
             }
         }
@@ -1484,7 +1596,7 @@ fn main() {
             }
         }
 
-        Command::Doctor { project_root, threshold } => {
+        Command::Doctor { project_root, threshold, unused } => {
             match run_doctor(&project_root, threshold) {
                 Ok(report) => {
                     let mut w = JsonWriter::new();
@@ -1506,6 +1618,41 @@ fn main() {
                         w.end_object();
                     }
                     w.end_array();
+                    // Unused dependency detection
+                    if unused {
+                        match detect_unused(&project_root) {
+                            Ok(unused_result) => {
+                                w.key("unused"); w.begin_object();
+                                w.key("scannedFiles"); w.value_u64(unused_result.scanned_files as u64);
+                                w.key("totalDeps"); w.value_u64(unused_result.total_deps as u64);
+                                w.key("unused"); w.begin_array();
+                                for pkg in &unused_result.unused {
+                                    w.begin_object();
+                                    w.key("name"); w.value_string(&pkg.name);
+                                    w.key("version"); w.value_string(&pkg.version);
+                                    w.key("isDev"); w.value_bool(pkg.is_dev);
+                                    w.end_object();
+                                }
+                                w.end_array();
+                                w.key("maybeUnused"); w.begin_array();
+                                for pkg in &unused_result.maybe_unused {
+                                    w.begin_object();
+                                    w.key("name"); w.value_string(&pkg.name);
+                                    w.key("version"); w.value_string(&pkg.version);
+                                    w.key("isDev"); w.value_bool(pkg.is_dev);
+                                    w.key("possibleScriptUse"); w.value_bool(pkg.possible_script_use);
+                                    w.end_object();
+                                }
+                                w.end_array();
+                                w.end_object();
+                            }
+                            Err(reason) => {
+                                w.key("unused"); w.begin_object();
+                                w.key("error"); w.value_string(&reason);
+                                w.end_object();
+                            }
+                        }
+                    }
                     w.end_object(); w.out.push('\n');
                     print!("{}", w.finish());
                     if report.score < report.threshold { std::process::exit(1); }
@@ -1587,12 +1734,42 @@ fn main() {
             }
         }
 
-        Command::Audit { project_root, lockfile, min_severity } => {
-            match run_audit(&lockfile, &project_root, &min_severity) {
+        Command::Audit { project_root, lockfile, min_severity, strict, add_ignore, ignore_reason } => {
+            // Handle --add-ignore: add a CVE to the ignore list
+            if let Some(cve_id) = add_ignore {
+                let reason = ignore_reason.unwrap_or_else(|| "No reason provided".to_string());
+                match add_audit_ignore(&project_root, &cve_id, &reason) {
+                    Ok(path) => {
+                        let mut w = JsonWriter::new();
+                        w.begin_object();
+                        w.key("ok"); w.value_bool(true);
+                        w.key("kind"); w.value_string("better.audit.addIgnore");
+                        w.key("id"); w.value_string(&cve_id);
+                        w.key("reason"); w.value_string(&reason);
+                        w.key("path"); w.value_string(&path);
+                        w.end_object(); w.out.push('\n');
+                        print!("{}", w.finish());
+                    }
+                    Err(err) => {
+                        let mut w = JsonWriter::new();
+                        w.begin_object();
+                        w.key("ok"); w.value_bool(false);
+                        w.key("kind"); w.value_string("better.audit.addIgnore");
+                        w.key("reason"); w.value_string(&err);
+                        w.end_object(); w.out.push('\n');
+                        print!("{}", w.finish());
+                        std::process::exit(1);
+                    }
+                }
+                return;
+            }
+
+            // Run audit with allow-listing support
+            match run_audit_with_config(&lockfile, &project_root, &min_severity, strict) {
                 Ok(report) => {
                     let mut w = JsonWriter::new();
                     w.begin_object();
-                    w.key("ok"); w.value_bool(report.total == 0);
+                    w.key("ok"); w.value_bool(report.total == 0 && !report.strict_fail);
                     w.key("kind"); w.value_string("better.audit");
                     w.key("scannedPackages"); w.value_u64(report.scanned_packages);
                     w.key("vulnerabilities"); w.begin_array();
@@ -1614,10 +1791,21 @@ fn main() {
                     w.key("medium"); w.value_u64(report.medium);
                     w.key("low"); w.value_u64(report.low);
                     w.key("riskLevel"); w.value_string(&report.risk_level);
+                    w.key("ignored"); w.value_u64(report.ignored_count);
                     w.end_object();
+                    if !report.expired_warnings.is_empty() {
+                        w.key("expiredWaivers"); w.begin_array();
+                        for warning in &report.expired_warnings {
+                            w.value_string(warning);
+                        }
+                        w.end_array();
+                    }
+                    if report.strict_fail {
+                        w.key("strictFail"); w.value_bool(true);
+                    }
                     w.end_object(); w.out.push('\n');
                     print!("{}", w.finish());
-                    if report.total > 0 { std::process::exit(1); }
+                    if report.total > 0 || report.strict_fail { std::process::exit(1); }
                 }
                 Err(reason) => {
                     let mut w = JsonWriter::new();
@@ -1938,7 +2126,7 @@ fn main() {
             }
         }
 
-        Command::Policy { project_root, subcommand } => {
+        Command::Policy { project_root, subcommand, policy_arg, approved_by } => {
             match subcommand.as_str() {
                 "check" => {
                     match policy_check(&project_root) {
@@ -1997,6 +2185,102 @@ fn main() {
                             w.begin_object();
                             w.key("ok"); w.value_bool(false);
                             w.key("kind"); w.value_string("better.policy.init");
+                            w.key("reason"); w.value_string(&reason);
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                "approve" => {
+                    let pattern = match policy_arg {
+                        Some(p) => p,
+                        None => {
+                            eprintln!("error: 'policy approve' requires a package pattern (e.g. lodash@4.17.21)");
+                            std::process::exit(2);
+                        }
+                    };
+                    let by = approved_by.unwrap_or_else(|| std::env::var("USER").unwrap_or_else(|_| "unknown".to_string()));
+                    match approve_package(&project_root, &pattern, &by) {
+                        Ok(path) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(true);
+                            w.key("kind"); w.value_string("better.policy.approve");
+                            w.key("pattern"); w.value_string(&pattern);
+                            w.key("approvedBy"); w.value_string(&by);
+                            w.key("path"); w.value_string(&path);
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                        }
+                        Err(reason) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(false);
+                            w.key("kind"); w.value_string("better.policy.approve");
+                            w.key("reason"); w.value_string(&reason);
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                "revoke" => {
+                    let name = match policy_arg {
+                        Some(n) => n,
+                        None => {
+                            eprintln!("error: 'policy revoke' requires a package name");
+                            std::process::exit(2);
+                        }
+                    };
+                    match revoke_package(&project_root, &name) {
+                        Ok(removed) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(true);
+                            w.key("kind"); w.value_string("better.policy.revoke");
+                            w.key("package"); w.value_string(&name);
+                            w.key("removed"); w.value_u64(removed);
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                        }
+                        Err(reason) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(false);
+                            w.key("kind"); w.value_string("better.policy.revoke");
+                            w.key("reason"); w.value_string(&reason);
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                "pending" => {
+                    match pending_packages(&project_root) {
+                        Ok(result) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(true);
+                            w.key("kind"); w.value_string("better.policy.pending");
+                            w.key("approved"); w.value_u64(result.approved_count);
+                            w.key("unapproved"); w.begin_array();
+                            for (name, version) in &result.unapproved {
+                                w.begin_object();
+                                w.key("name"); w.value_string(name);
+                                w.key("version"); w.value_string(version);
+                                w.end_object();
+                            }
+                            w.end_array();
+                            w.key("total"); w.value_u64(result.unapproved.len() as u64);
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                        }
+                        Err(reason) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(false);
+                            w.key("kind"); w.value_string("better.policy.pending");
                             w.key("reason"); w.value_string(&reason);
                             w.end_object(); w.out.push('\n');
                             print!("{}", w.finish());

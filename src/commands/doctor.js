@@ -9,6 +9,7 @@ import { childLogger } from "../lib/log.js";
 import { detectPackageManager } from "../pm/detect.js";
 import { runCommand } from "../lib/spawn.js";
 import { resolveWorkspacePackages, isWorkspace } from "../lib/workspaces.js";
+import { findBetterCore } from "../lib/core.js";
 
 async function exists(p) {
   try {
@@ -361,6 +362,24 @@ function securityFindingsFromAudit(audit) {
   return findings;
 }
 
+async function runUnusedDetection(projectRoot) {
+  const corePath = await findBetterCore();
+  if (!corePath) return { ok: false, error: "better-core binary not found" };
+  const args = ["doctor", "--project-root", projectRoot, "--unused"];
+  const res = await runCommand(corePath, args, {
+    cwd: projectRoot,
+    passthroughStdio: false,
+    captureLimitBytes: 10 * 1024 * 1024,
+    timeoutMs: 30_000
+  });
+  try {
+    const json = JSON.parse(res.stdout);
+    return json.unused ?? { ok: false, error: "no unused data in output" };
+  } catch {
+    return { ok: false, error: "failed to parse unused detection output" };
+  }
+}
+
 function findInconsistentVersions(workspacePackages) {
   const depMap = new Map();
 
@@ -448,6 +467,7 @@ export async function cmdDoctor(argv) {
     printText(`Usage:
   better doctor [--json] [--threshold N] [--fix] [--from FILE]
                 [--security auto|on|off] [--core|--no-core] [--workspace]
+                [--unused]
 `);
     return;
   }
@@ -465,7 +485,8 @@ export async function cmdDoctor(argv) {
       "fail-on": { type: "string", default: "fail" },
       core: { type: "boolean", default: false },
       "no-core": { type: "boolean", default: false },
-      workspace: { type: "boolean", default: false }
+      workspace: { type: "boolean", default: false },
+      unused: { type: "boolean", default: false }
     },
     allowPositionals: true,
     strict: false
@@ -630,6 +651,11 @@ export async function cmdDoctor(argv) {
     commandLogger.info("doctor.fix.end", { ok: fixResult.ok, exitCode: fixResult.exitCode });
   }
 
+  let unusedResult = null;
+  if (values.unused) {
+    unusedResult = await runUnusedDetection(projectRoot);
+  }
+
   const { score, deduction } = scoreFromAnalysis(analysis, { findings });
   const grouped = groupFindings(findings);
   const out = {
@@ -655,6 +681,7 @@ export async function cmdDoctor(argv) {
       securityAdvisories: findings.some((f) => String(f.id).startsWith("security_"))
     },
     securityAudit: audit,
+    unused: unusedResult,
     fixes,
     policySummary: (() => {
       const policyConfig = runtime?.policy ?? null;
@@ -687,7 +714,16 @@ export async function cmdDoctor(argv) {
         `- findings: ${findings.length}`,
         `- errors/warnings/info: ${grouped.error.length}/${grouped.warning.length}/${grouped.info.length}`,
         ...findings.slice(0, 10).map((f) => `  - [${f.severity}] ${f.title} (impact ${f.impact})`),
-        ...(out.policySummary?.configured ? [`- policy: ${out.policySummary.pass ? "PASS" : "FAIL"} (score ${out.policySummary.score})`] : [])
+        ...(out.policySummary?.configured ? [`- policy: ${out.policySummary.pass ? "PASS" : "FAIL"} (score ${out.policySummary.score})`] : []),
+        ...(unusedResult?.unused?.length > 0 ? [
+          `\nUnused dependencies (${unusedResult.unused.length}):`,
+          ...unusedResult.unused.map(p => `  x ${p.name}@${p.version} -- not imported anywhere`)
+        ] : []),
+        ...(unusedResult?.maybeUnused?.length > 0 ? [
+          `\nPossibly unused (${unusedResult.maybeUnused.length}):`,
+          ...unusedResult.maybeUnused.map(p => `  ? ${p.name}@${p.version} -- not imported, but referenced in scripts`)
+        ] : []),
+        ...(unusedResult?.scannedFiles != null ? [`\nScanned ${unusedResult.scannedFiles} files, ${unusedResult.totalDeps} total deps.`] : [])
       ].join("\n")
     );
   }
