@@ -46,7 +46,15 @@ export async function runCli(argv) {
   }
 
   if (first === "-v" || first === "--version" || first === "version") {
-    printText(`better v${VERSION}`);
+    let coreVersion = "not installed";
+    try {
+      const { execFileSync } = await import("node:child_process");
+      const { join, dirname } = await import("node:path");
+      const { fileURLToPath } = await import("node:url");
+      const binDir = join(dirname(fileURLToPath(import.meta.url)), "..", "bin");
+      coreVersion = execFileSync(join(binDir, "better-core"), ["--version"], { encoding: "utf8" }).trim();
+    } catch {}
+    printText(`better v${VERSION} (core: ${coreVersion})`);
     return;
   }
 
