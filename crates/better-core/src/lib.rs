@@ -98,6 +98,18 @@ pub use license_policy::*;
 pub mod registry;
 pub use registry::*;
 
+pub mod sandbox;
+pub use sandbox::*;
+
+pub mod provenance;
+pub use provenance::*;
+
+pub mod receipt;
+pub use receipt::*;
+
+pub mod firewall;
+pub use firewall::*;
+
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 

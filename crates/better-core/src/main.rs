@@ -13,7 +13,7 @@ use better_core::{
     // Phase B
     run_script, run_scripts_parallel,
     scan_licenses, check_dedupe, trace_dependency, check_outdated,
-    run_doctor, cache_stats, cache_gc, run_audit, run_benchmark,
+    run_doctor, cache_stats, cache_gc, run_benchmark,
     // Phase C
     hooks_install, exec_script, env_info, env_check, init_project, run_script_watch,
     // Phase D
@@ -22,16 +22,23 @@ use better_core::{
     // Audit allow-listing
     run_audit_with_config, add_audit_ignore,
     // Dependency approval
-    approve_package, revoke_package, pending_packages, check_all_approved,
+    approve_package, revoke_package, pending_packages,
     generate_lock_metadata, verify_lock_metadata,
     detect_workspaces, workspace_graph, workspace_changed, workspace_run,
-    generate_sbom, write_cyclonedx_json, write_spdx_json,
+    generate_sbom_v2,
     LockfileWriter, verify_frozen_lockfile,
     merge_lockfiles, run_merge_driver, install_merge_driver,
     // v0.4 intelligence
     detect_unused, load_license_policy, check_license_policy,
     // v0.5 registry
     registry_add, registry_list, registry_remove, registry_rotate,
+    // v0.5 provenance + receipt + firewall
+    verify_provenance, write_provenance_json,
+    write_install_receipt, list_receipts, verify_receipt, write_receipt_verify_json,
+    run_firewall, load_firewall_config, save_firewall_config, write_firewall_json,
+    // v0.5 sandbox
+    load_sandbox_policy, permissions_for_package, execute_sandboxed,
+    sandbox_scan, write_sandbox_scan_json,
 };
 use better_core::engine::EngineRegistry;
 
@@ -58,6 +65,9 @@ enum Command {
         frozen: bool,
         json_progress: bool,
         node_layout: NodeLayout,
+        sandbox: bool,
+        verify_provenance: bool,
+        require_provenance: bool,
     },
     Run {
         project_root: PathBuf,
@@ -144,6 +154,7 @@ enum Command {
         project_root: PathBuf,
         lockfile: PathBuf,
         format: String,
+        vex: bool,
     },
     Registry {
         subcommand: String,
@@ -151,6 +162,19 @@ enum Command {
         scope: Option<String>,
         token_env: Option<String>,
         priority: Option<u64>,
+    },
+    Provenance {
+        project_root: PathBuf,
+        lockfile: PathBuf,
+        require: bool,
+    },
+    Receipts {
+        project_root: PathBuf,
+        subcommand: String,
+    },
+    Firewall {
+        project_root: PathBuf,
+        subcommand: String,
     },
     Completions { shell: String },
     Version,
@@ -236,6 +260,10 @@ fn parse_args() -> Command {
     let mut scope_opt: Option<String> = None;
     let mut token_env_opt: Option<String> = None;
     let mut priority_opt: Option<u64> = None;
+    let mut sandbox_flag = false;
+    let mut vex_flag = false;
+    let mut verify_provenance_flag = false;
+    let mut require_provenance_flag = false;
 
     let mut i = 1usize;
     while i < args.len() {
@@ -312,6 +340,11 @@ fn parse_args() -> Command {
             }
             "--no-scripts" => { scripts_flag = false; i += 1; }
             "--scripts" => { scripts_flag = true; i += 1; }
+            "--sandbox" => { sandbox_flag = true; i += 1; }
+            "--no-sandbox" => { sandbox_flag = false; i += 1; }
+            "--vex" => { vex_flag = true; i += 1; }
+            "--verify-provenance" => { verify_provenance_flag = true; i += 1; }
+            "--require-provenance" => { require_provenance_flag = true; i += 1; }
             "--dedup" => { dedup = true; i += 1; }
             "--no-dedup" => { dedup = false; i += 1; }
             "--frozen" | "--frozen-lockfile" => { frozen = true; i += 1; }
@@ -445,7 +478,7 @@ fn parse_args() -> Command {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
             let lf = lockfile.unwrap_or_else(|| pr.join("package-lock.json"));
             let cr = cache_root.unwrap_or_else(default_cache_root);
-            Command::Install { lockfile: lf, project_root: pr, cache_root: cr, store_root, link_strategy, jobs, scripts: scripts_flag, dedup, frozen, json_progress, node_layout }
+            Command::Install { lockfile: lf, project_root: pr, cache_root: cr, store_root, link_strategy, jobs, scripts: scripts_flag, dedup, frozen, json_progress, node_layout, sandbox: sandbox_flag, verify_provenance: verify_provenance_flag, require_provenance: require_provenance_flag }
         },
         "run" => {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
@@ -567,12 +600,27 @@ fn parse_args() -> Command {
         "sbom" => {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
             let lf = lockfile.unwrap_or_else(|| pr.join("package-lock.json"));
-            Command::Sbom { project_root: pr, lockfile: lf, format: format_opt }
+            Command::Sbom { project_root: pr, lockfile: lf, format: format_opt, vex: vex_flag }
         },
         "registry" => {
             let subcmd = positional.first().cloned().unwrap_or_else(|| "list".into());
             let reg_url = positional.get(1).cloned();
             Command::Registry { subcommand: subcmd, registry_url: reg_url, scope: scope_opt, token_env: token_env_opt, priority: priority_opt }
+        },
+        "provenance" => {
+            let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
+            let lf = lockfile.unwrap_or_else(|| pr.join("package-lock.json"));
+            Command::Provenance { project_root: pr, lockfile: lf, require: require_provenance_flag }
+        },
+        "receipts" | "receipt" => {
+            let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
+            let subcmd = positional.first().cloned().unwrap_or_else(|| "list".into());
+            Command::Receipts { project_root: pr, subcommand: subcmd }
+        },
+        "firewall" => {
+            let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
+            let subcmd = positional.first().cloned().unwrap_or_else(|| "rules".into());
+            Command::Firewall { project_root: pr, subcommand: subcmd }
         },
         "completions" => {
             let shell = positional.first().cloned().unwrap_or_else(|| "bash".into());
@@ -590,7 +638,7 @@ fn print_help(error: Option<String>) {
         "better-core {VERSION}
 
 Usage:
-  better-core install [--lockfile <path>] [--project-root <path>] [--cache-root <path>] [--dedup] [--frozen]
+  better-core install [--lockfile <path>] [--project-root <path>] [--cache-root <path>] [--dedup] [--frozen] [--sandbox]
   better-core run <script> [--watch] [-- extra args...]
   better-core test|lint|build|start [--watch] [args...]
   better-core dev [args...]  (watch mode by default)
@@ -607,12 +655,15 @@ Usage:
   better-core exec <script.ts> [-- args...]
   better-core env [check] [--project-root <path>]
   better-core init [--name <name>] [--template react|next|express]
-  better-core scripts [list|scan|allow|block] [package] [--project-root <path>]
+  better-core scripts [list|scan|allow|block|sandbox-scan] [package] [--project-root <path>]
   better-core policy [check|init] [--project-root <path>]
   better-core lock [generate|verify] [--project-root <path>]
   better-core workspace [list|graph|changed|run] [--project-root <path>] [--since <ref>]
-  better-core sbom [--project-root <path>] [--lockfile <path>] [--format cyclonedx|spdx]
+  better-core sbom [--project-root <path>] [--lockfile <path>] [--format cyclonedx|spdx] [--vex]
   better-core registry [add|list|remove|rotate] [url] [--scope @org] [--token-env VAR] [--priority N]
+  better-core provenance [--project-root <path>] [--lockfile <path>] [--require-provenance]
+  better-core receipts [list|verify] [--project-root <path>]
+  better-core firewall [enable|disable|rules|scan] [--project-root <path>]
   better-core completions <bash|zsh|fish|powershell>
   better-core analyze --root <path> [--graph]
   better-core scan --root <path>
@@ -1113,6 +1164,149 @@ fn main() {
             }
         }
 
+        Command::Provenance { project_root: _, lockfile, require } => {
+            let resolve_result = match resolve_from_lockfile(&lockfile) {
+                Ok(r) => r,
+                Err(reason) => {
+                    eprintln!("error: {reason}");
+                    std::process::exit(1);
+                }
+            };
+            let mode = if require { "require" } else { "verify" };
+            match verify_provenance(&resolve_result.packages, mode) {
+                Ok(report) => {
+                    let json = write_provenance_json(&report);
+                    println!("{json}");
+                    if require && report.without_provenance > 0 {
+                        std::process::exit(1);
+                    }
+                }
+                Err(reason) => {
+                    eprintln!("error: {reason}");
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        Command::Receipts { project_root, subcommand } => {
+            match subcommand.as_str() {
+                "list" => {
+                    match list_receipts(&project_root) {
+                        Ok(receipts) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("kind"); w.value_string("better.receipts.list");
+                            w.key("count"); w.value_u64(receipts.len() as u64);
+                            w.key("receipts"); w.begin_array();
+                            for r in &receipts {
+                                w.begin_object();
+                                w.key("timestamp"); w.value_string(&r.timestamp);
+                                w.key("betterVersion"); w.value_string(&r.better_version);
+                                w.key("packagesInstalled"); w.value_u64(r.packages_installed);
+                                if let Some(score) = r.policy_score {
+                                    w.key("policyScore"); w.value_i64(score as i64);
+                                }
+                                if let Some(ref hash) = r.lockfile_hash {
+                                    w.key("lockfileHash"); w.value_string(hash);
+                                }
+                                w.end_object();
+                            }
+                            w.end_array();
+                            w.end_object();
+                            println!("{}", w.finish());
+                        }
+                        Err(reason) => {
+                            eprintln!("error: {reason}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                "verify" => {
+                    match verify_receipt(&project_root) {
+                        Ok(result) => {
+                            let json = write_receipt_verify_json(&result);
+                            println!("{json}");
+                            if !result.ok {
+                                std::process::exit(1);
+                            }
+                        }
+                        Err(reason) => {
+                            eprintln!("error: {reason}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                other => {
+                    eprintln!("error: unknown receipts subcommand: {other}");
+                    eprintln!("usage: better receipts [list|verify]");
+                    std::process::exit(2);
+                }
+            }
+        }
+
+        Command::Firewall { project_root, subcommand } => {
+            match subcommand.as_str() {
+                "enable" => {
+                    let mut config = load_firewall_config(&project_root);
+                    config.enabled = true;
+                    match save_firewall_config(&project_root, &config) {
+                        Ok(()) => println!("{{\"ok\":true,\"message\":\"firewall enabled\"}}"),
+                        Err(reason) => {
+                            eprintln!("error: {reason}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                "disable" => {
+                    let mut config = load_firewall_config(&project_root);
+                    config.enabled = false;
+                    match save_firewall_config(&project_root, &config) {
+                        Ok(()) => println!("{{\"ok\":true,\"message\":\"firewall disabled\"}}"),
+                        Err(reason) => {
+                            eprintln!("error: {reason}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                "rules" => {
+                    let config = load_firewall_config(&project_root);
+                    let mut w = JsonWriter::new();
+                    w.begin_object();
+                    w.key("kind"); w.value_string("better.firewall.rules");
+                    w.key("enabled"); w.value_bool(config.enabled);
+                    w.key("typosquatDetection"); w.value_bool(config.typosquat_detection);
+                    w.key("binaryDetection"); w.value_bool(config.binary_detection);
+                    w.key("newPackageWarning"); w.value_bool(config.new_package_warning);
+                    w.key("maxLevenshteinDistance"); w.value_u64(config.max_levenshtein_distance as u64);
+                    w.key("newPackageDays"); w.value_u64(config.new_package_days);
+                    w.end_object();
+                    println!("{}", w.finish());
+                }
+                "scan" => {
+                    let lockfile = project_root.join("package-lock.json");
+                    let resolve_result = match resolve_from_lockfile(&lockfile) {
+                        Ok(r) => r,
+                        Err(reason) => {
+                            eprintln!("error: {reason}");
+                            std::process::exit(1);
+                        }
+                    };
+                    let config = load_firewall_config(&project_root);
+                    let report = run_firewall(&resolve_result.packages, &project_root, &config);
+                    let json = write_firewall_json(&report);
+                    println!("{json}");
+                    if report.blocked > 0 {
+                        std::process::exit(1);
+                    }
+                }
+                other => {
+                    eprintln!("error: unknown firewall subcommand: {other}");
+                    eprintln!("usage: better firewall [enable|disable|rules|scan]");
+                    std::process::exit(2);
+                }
+            }
+        }
+
         Command::Completions { shell } => {
             match shell.as_str() {
                 "bash" => print!("{}", generate_bash_completions()),
@@ -1186,7 +1380,7 @@ fn main() {
                 std::process::exit(1);
             }
         },
-        Command::Install { lockfile, project_root, cache_root, store_root, link_strategy, jobs: _, scripts, dedup, frozen, json_progress, node_layout } => {
+        Command::Install { lockfile, project_root, cache_root, store_root, link_strategy, jobs: _, scripts, dedup, frozen, json_progress, node_layout, sandbox, verify_provenance: vp, require_provenance: rp } => {
             let started = Instant::now();
 
             // Engine detection: identify which ecosystem this project uses
@@ -1414,11 +1608,54 @@ fn main() {
             progress.finish_link();
             let phase_binlinks_ms = t_bins.elapsed().as_millis() as u64;
 
-            // Step 5: Lifecycle scripts
+            // Step 5: Lifecycle scripts (with optional sandboxing)
             let t_scripts = Instant::now();
             let scripts_result = if scripts {
                 let detection = detect_lifecycle_scripts(&node_modules, &resolve_result.packages);
-                run_lifecycle_scripts(&project_root, &detection)
+                if sandbox {
+                    let sandbox_policy = load_sandbox_policy(&project_root);
+                    let mut result = LifecycleRunResult::default();
+                    for script_info in &detection.scripts {
+                        result.scripts_run += 1;
+                        let perms = match permissions_for_package(
+                            &sandbox_policy,
+                            &script_info.package_name,
+                            &script_info.package_dir,
+                        ) {
+                            Some(p) => p,
+                            None => {
+                                eprintln!("  sandbox: blocked scripts for {}", script_info.package_name);
+                                result.scripts_failed += 1;
+                                continue;
+                            }
+                        };
+                        match execute_sandboxed(
+                            "sh",
+                            &["-c", &script_info.script_command],
+                            &script_info.package_dir,
+                            &perms,
+                        ) {
+                            Ok(sr) => {
+                                if sr.exit_code == 0 {
+                                    result.scripts_succeeded += 1;
+                                } else {
+                                    result.scripts_failed += 1;
+                                    eprintln!("  sandbox: script failed for {} (exit {})", script_info.package_name, sr.exit_code);
+                                }
+                                for v in &sr.sandbox_violations {
+                                    eprintln!("  sandbox violation: {}", v);
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("  sandbox error for {}: {}", script_info.package_name, e);
+                                result.scripts_failed += 1;
+                            }
+                        }
+                    }
+                    result
+                } else {
+                    run_lifecycle_scripts(&project_root, &detection)
+                }
             } else {
                 LifecycleRunResult { skipped_reason: Some("disabled".into()), ..Default::default() }
             };
@@ -1436,6 +1673,67 @@ fn main() {
                 None
             };
             let phase_lockfile_ms = t_lockfile.elapsed().as_millis() as u64;
+
+            // Step 7: Provenance verification (if requested)
+            let mut provenance_packages: Vec<String> = Vec::new();
+            if vp || rp {
+                let mode = if rp { "require" } else { "verify" };
+                match verify_provenance(&resolve_result.packages, mode) {
+                    Ok(report) => {
+                        for att in &report.attestations {
+                            if att.has_attestation && att.signature_valid {
+                                provenance_packages.push(format!("{}@{}", att.package, att.version));
+                            }
+                        }
+                        if vp && report.without_provenance > 0 {
+                            eprintln!("warning: {} package(s) lack provenance attestation", report.without_provenance);
+                        }
+                    }
+                    Err(reason) => {
+                        if rp {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(false);
+                            w.key("kind"); w.value_string("better.install.report");
+                            w.key("reason"); w.value_string(&reason);
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                            std::process::exit(1);
+                        } else {
+                            eprintln!("warning: provenance check failed: {}", reason);
+                        }
+                    }
+                }
+            }
+
+            // Step 8: Dependency firewall
+            let firewall_config = load_firewall_config(&project_root);
+            let _firewall_report = if firewall_config.enabled {
+                let report = run_firewall(&resolve_result.packages, &project_root, &firewall_config);
+                if report.blocked > 0 {
+                    eprintln!("firewall: {} package(s) blocked, {} warning(s)", report.blocked, report.warnings);
+                    for alert in &report.alerts {
+                        if alert.severity == "high" {
+                            eprintln!("  BLOCKED: {}", alert.message);
+                        }
+                    }
+                } else if report.warnings > 0 {
+                    eprintln!("firewall: {} warning(s)", report.warnings);
+                }
+                Some(report)
+            } else {
+                None
+            };
+
+            // Step 9: Write install receipt
+            let lockfile_hash = lockfile_result.as_ref().map(|lr| lr.fingerprint.clone());
+            let _ = write_install_receipt(
+                &project_root,
+                &resolve_result.packages,
+                None,
+                lockfile_hash.as_deref(),
+                &provenance_packages,
+            );
 
             let duration_ms = started.elapsed().as_millis() as u64;
             let total_files = total_files.load(std::sync::atomic::Ordering::Relaxed);
@@ -2335,6 +2633,23 @@ fn main() {
                         }
                     }
                 }
+                "sandbox-scan" => {
+                    match sandbox_scan(&project_root) {
+                        Ok(result) => {
+                            print!("{}", write_sandbox_scan_json(&result));
+                        }
+                        Err(reason) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(false);
+                            w.key("kind"); w.value_string("better.scripts.sandbox-scan");
+                            w.key("reason"); w.value_string(&reason);
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                            std::process::exit(1);
+                        }
+                    }
+                }
                 other => {
                     eprintln!("error: unknown scripts subcommand: {other}");
                     std::process::exit(2);
@@ -2825,13 +3140,9 @@ fn main() {
             }
         }
 
-        Command::Sbom { project_root, lockfile, format } => {
-            match generate_sbom(&project_root, &lockfile, &format) {
-                Ok(report) => {
-                    let output = match format.as_str() {
-                        "spdx" => write_spdx_json(&report),
-                        _ => write_cyclonedx_json(&report),
-                    };
+        Command::Sbom { project_root, lockfile, format, vex } => {
+            match generate_sbom_v2(&project_root, &lockfile, &format, vex) {
+                Ok(output) => {
                     print!("{}", output);
                 }
                 Err(reason) => {
