@@ -573,6 +573,12 @@ pub struct PolicyRule {
     pub max_duplicates: Option<u64>,
     pub max_depth: Option<u64>,
     pub banned_packages: Vec<String>,
+    // v2 fields
+    pub max_install_size_mb: Option<u64>,
+    pub min_maintainers: Option<u64>,
+    pub min_publish_age_days: Option<u64>,
+    pub require_source: Option<bool>,
+    pub max_direct_deps: Option<u64>,
 }
 
 pub struct PolicyWaiver {
