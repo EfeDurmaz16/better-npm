@@ -22,6 +22,7 @@ use better_core::{
     detect_workspaces, workspace_graph, workspace_changed, workspace_run,
     generate_sbom, write_cyclonedx_json, write_spdx_json,
     LockfileWriter, verify_frozen_lockfile,
+    merge_lockfiles, run_merge_driver, install_merge_driver,
 };
 use better_core::engine::EngineRegistry;
 
@@ -114,6 +115,7 @@ enum Command {
     Lock {
         project_root: PathBuf,
         subcommand: String,
+        lock_args: Vec<String>,
     },
     Workspace {
         project_root: PathBuf,
@@ -473,7 +475,8 @@ fn parse_args() -> Command {
         "lock" => {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
             let subcmd = positional.first().cloned().unwrap_or_else(|| "generate".into());
-            Command::Lock { project_root: pr, subcommand: subcmd }
+            let lock_args: Vec<String> = if positional.len() > 1 { positional[1..].to_vec() } else { Vec::new() };
+            Command::Lock { project_root: pr, subcommand: subcmd, lock_args }
         },
         "workspace" | "ws" => {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
@@ -2008,7 +2011,7 @@ fn main() {
             }
         }
 
-        Command::Lock { project_root, subcommand } => {
+        Command::Lock { project_root, subcommand, lock_args } => {
             match subcommand.as_str() {
                 "generate" => {
                     match generate_lock_metadata(&project_root) {
@@ -2071,6 +2074,101 @@ fn main() {
                             w.begin_object();
                             w.key("ok"); w.value_bool(false);
                             w.key("kind"); w.value_string("better.lock.verify");
+                            w.key("reason"); w.value_string(&reason);
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                "merge" => {
+                    if lock_args.len() < 3 {
+                        eprintln!("error: lock merge requires 3 arguments: <base> <ours> <theirs>");
+                        std::process::exit(2);
+                    }
+                    let base_path = PathBuf::from(&lock_args[0]);
+                    let ours_path = PathBuf::from(&lock_args[1]);
+                    let theirs_path = PathBuf::from(&lock_args[2]);
+                    match merge_lockfiles(&base_path, &ours_path, &theirs_path, &project_root) {
+                        Ok(result) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(result.ok);
+                            w.key("kind"); w.value_string("better.lock.merge");
+                            w.key("totalPackages"); w.value_u64(result.total_packages as u64);
+                            w.key("added"); w.begin_array();
+                            for a in &result.added { w.value_string(a); }
+                            w.end_array();
+                            w.key("removed"); w.begin_array();
+                            for r in &result.removed { w.value_string(r); }
+                            w.end_array();
+                            w.key("conflicts"); w.begin_array();
+                            for c in &result.conflicts { w.value_string(c); }
+                            w.end_array();
+                            if let Some(ref wr) = result.write_result {
+                                w.key("fingerprint"); w.value_string(&wr.fingerprint);
+                            }
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                            if !result.ok { std::process::exit(1); }
+                        }
+                        Err(reason) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(false);
+                            w.key("kind"); w.value_string("better.lock.merge");
+                            w.key("reason"); w.value_string(&reason);
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                "merge-driver" => {
+                    // Git merge driver: better-core lock merge-driver %O %A %B
+                    if lock_args.len() < 3 {
+                        eprintln!("error: merge-driver requires 3 arguments: <base> <ours> <theirs>");
+                        std::process::exit(2);
+                    }
+                    let base_path = PathBuf::from(&lock_args[0]);
+                    let ours_path = PathBuf::from(&lock_args[1]);
+                    let theirs_path = PathBuf::from(&lock_args[2]);
+                    match run_merge_driver(&base_path, &ours_path, &theirs_path) {
+                        Ok(result) => {
+                            if !result.ok {
+                                eprintln!("better.lock merge: {} conflict(s)", result.conflicts.len());
+                                for c in &result.conflicts {
+                                    eprintln!("  conflict: {}", c);
+                                }
+                                std::process::exit(1);
+                            }
+                            // Clean merge — exit 0
+                        }
+                        Err(reason) => {
+                            eprintln!("better.lock merge failed: {}", reason);
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                "install-driver" => {
+                    match install_merge_driver(&project_root) {
+                        Ok(result) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(true);
+                            w.key("kind"); w.value_string("better.lock.install-driver");
+                            w.key("installed"); w.value_bool(result.installed);
+                            w.key("filesModified"); w.begin_array();
+                            for f in &result.files_modified { w.value_string(f); }
+                            w.end_array();
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                        }
+                        Err(reason) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(false);
+                            w.key("kind"); w.value_string("better.lock.install-driver");
                             w.key("reason"); w.value_string(&reason);
                             w.end_object(); w.out.push('\n');
                             print!("{}", w.finish());

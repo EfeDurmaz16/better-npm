@@ -42,6 +42,9 @@ pub use lock::*;
 pub mod lockfile;
 pub use lockfile::*;
 
+pub mod lock_merge;
+pub use lock_merge::*;
+
 pub mod npmrc;
 pub use npmrc::*;
 
@@ -76,6 +79,9 @@ pub use binlinks::*;
 
 pub mod progress;
 pub use progress::*;
+
+pub mod strict;
+pub use strict::*;
 
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
