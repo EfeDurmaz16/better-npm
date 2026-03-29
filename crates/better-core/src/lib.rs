@@ -110,6 +110,12 @@ pub use receipt::*;
 pub mod firewall;
 pub use firewall::*;
 
+pub mod venv;
+pub use venv::*;
+
+pub mod migrate;
+pub use migrate::*;
+
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -781,7 +787,13 @@ pub fn run_script(project_root: &Path, script_name: &str, extra_args: &[String])
     let started = Instant::now();
     let bin_dir = project_root.join("node_modules").join(".bin");
     let path_var = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", bin_dir.display(), path_var);
+    let mut new_path = format!("{}:{}", bin_dir.display(), path_var);
+
+    // If this is a Python project with a venv, prepend .venv/bin to PATH
+    let venv_env = venv::venv_run_env(project_root);
+    if let Some(venv_path) = venv_env.get("PATH") {
+        new_path = format!("{}:{}", venv_path.split(':').next().unwrap_or(""), new_path);
+    }
 
     let mut full_cmd = command.clone();
     if !extra_args.is_empty() {
@@ -799,6 +811,10 @@ pub fn run_script(project_root: &Path, script_name: &str, extra_args: &[String])
         .stdin(std::process::Stdio::inherit());
     for (k, v) in &dotenv_vars {
         cmd.env(k, v);
+    }
+    // Set VIRTUAL_ENV if venv exists
+    if let Some(venv_dir) = venv_env.get("VIRTUAL_ENV") {
+        cmd.env("VIRTUAL_ENV", venv_dir);
     }
     let status = cmd.status()
         .map_err(|e| format!("Failed to run: {}", e))?;

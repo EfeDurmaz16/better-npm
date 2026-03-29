@@ -19,6 +19,8 @@ pub struct SidecarPackage {
     pub resolved: String,
     pub integrity: String,
     pub dependencies: BTreeMap<String, String>, // dep_name -> version_range
+    /// Ecosystem identifier (0=npm, 1=python). Default 0.
+    pub ecosystem: u8,
 }
 
 /// Result of a three-way merge operation.
@@ -95,6 +97,7 @@ pub fn parse_lock_sidecar_str(json: &str) -> Result<LockSidecar, String> {
             resolved,
             integrity,
             dependencies,
+            ecosystem: 0, // Default to npm; v2 sidecar parsing can override
         });
     }
 
@@ -232,6 +235,7 @@ fn sidecar_to_lock_packages(sidecar: &LockSidecar) -> Vec<LockPackage> {
             integrity: pkg.integrity.clone(),
             resolved: pkg.resolved.clone(),
             dependencies,
+            ecosystem: pkg.ecosystem,
         }
     }).collect()
 }
@@ -395,6 +399,7 @@ mod tests {
                 resolved: format!("https://registry.npmjs.org/{}/-/{}-{}.tgz", name, name, version),
                 integrity: integrity.to_string(),
                 dependencies: BTreeMap::new(),
+                ecosystem: 0,
             });
         }
         LockSidecar { version: 1, packages: map }

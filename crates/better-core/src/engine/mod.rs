@@ -1,4 +1,5 @@
 pub mod npm;
+pub mod python;
 
 use std::fmt;
 use std::path::Path;
@@ -163,7 +164,7 @@ impl EngineRegistry {
     pub fn new() -> Self {
         let mut registry = Self { engines: Vec::new() };
         registry.register(Box::new(npm::NpmEngine));
-        // Future: registry.register(Box::new(python::PythonEngine));
+        registry.register(Box::new(python::PythonEngine::new()));
         // Future: registry.register(Box::new(cargo::CargoEngine));
         registry
     }
