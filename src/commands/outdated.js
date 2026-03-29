@@ -253,15 +253,27 @@ Output:
     return;
   }
 
-  const packages = [];
   const checkedCount = Object.keys(allDeps).length;
-  let processedCount = 0;
 
-  for (const [name, range] of Object.entries(allDeps)) {
-    processedCount++;
-    commandLogger.info("outdated.check", { name, progress: `${processedCount}/${checkedCount}` });
+  // Parallel registry lookups with concurrency limit
+  async function parallelMap(items, fn, concurrency = 10) {
+    const results = [];
+    let index = 0;
+    async function worker() {
+      while (index < items.length) {
+        const i = index++;
+        results[i] = await fn(items[i]).catch(err => ({ error: err.message, name: items[i][0] }));
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+    return results;
+  }
 
-    const isDev = !dependencies[name] && devDependencies[name];
+  const depEntries = Object.entries(allDeps);
+  const results = await parallelMap(depEntries, async ([name, range]) => {
+    commandLogger.info("outdated.check", { name });
+
+    const isDev = !dependencies[name] && !!devDependencies[name];
 
     // Get current version from lockfile
     let current = null;
@@ -271,18 +283,17 @@ Output:
       current = lockEntry?.version ?? null;
     }
 
-    // Fetch registry info
+    // Fetch registry info with 5s timeout via AbortController
     let registryData = null;
     try {
-      registryData = await fetchPackageInfo(name, 10000);
+      registryData = await fetchPackageInfo(name, 5000);
     } catch (err) {
       commandLogger.warn("outdated.registry_error", { name, error: err.message });
-      // Continue with null data - will be marked as unavailable
+      return null;
     }
 
-    if (!registryData) {
-      // Package not found or error - skip
-      continue;
+    if (!registryData || !current) {
+      return null;
     }
 
     const latest = registryData["dist-tags"]?.latest ?? null;
@@ -291,23 +302,14 @@ Output:
 
     const updateType = classifyUpdate(current, wanted, latest);
 
-    if (!current) {
-      // Package declared but not in lockfile - skip or report
-      continue;
+    if (!updateType) {
+      return null;
     }
 
-    if (updateType) {
-      packages.push({
-        name,
-        current,
-        wanted,
-        latest,
-        range,
-        updateType,
-        isDev
-      });
-    }
-  }
+    return { name, current, wanted, latest, range, updateType, isDev };
+  }, 10);
+
+  const packages = results.filter(r => r !== null && !r.error);
 
   // Filter by level if specified
   let filteredPackages = packages;
