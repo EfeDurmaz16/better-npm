@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use napi_derive::napi;
@@ -11,6 +11,7 @@ use better_core::{
     trace_dependency, check_dedupe, detect_workspaces, workspace_graph,
     policy_check,
 };
+use better_core::audit::{smart_audit, AuditFilter, ScoredVuln};
 
 // --- Scan ---
 
@@ -620,6 +621,128 @@ pub fn napi_audit(project_root: String, min_severity: Option<String>) -> NapiAud
             total: 0.0, critical: 0.0, high: 0.0, medium: 0.0, low: 0.0,
             risk_level: "unknown".to_string(),
         },
+    }
+}
+
+// --- Smart Audit ---
+
+#[napi(object)]
+pub struct NapiSmartAuditInput {
+    #[napi(js_name = "projectRoot")]
+    pub project_root: String,
+    #[napi(js_name = "rootDeps")]
+    pub root_deps: HashMap<String, String>,
+    #[napi(js_name = "rootDevDeps")]
+    pub root_dev_deps: HashMap<String, String>,
+    #[napi(js_name = "rootOptionalDeps")]
+    pub root_optional_deps: HashMap<String, String>,
+    #[napi(js_name = "depGraph")]
+    pub dep_graph: HashMap<String, Vec<String>>,
+    #[napi(js_name = "resolvedVersions")]
+    pub resolved_versions: HashMap<String, String>,
+    #[napi(js_name = "prodOnly")]
+    pub prod_only: bool,
+    #[napi(js_name = "minScore")]
+    pub min_score: Option<f64>,
+    #[napi(js_name = "ignoreDev")]
+    pub ignore_dev: bool,
+    #[napi(js_name = "fixableOnly")]
+    pub fixable_only: bool,
+    #[napi(js_name = "minSeverity")]
+    pub min_severity: Option<String>,
+}
+
+#[napi(object)]
+pub struct NapiScoredVuln {
+    pub id: String,
+    pub summary: String,
+    pub severity: String,
+    pub context: String,
+    #[napi(js_name = "baseScore")]
+    pub base_score: f64,
+    #[napi(js_name = "contextWeight")]
+    pub context_weight: f64,
+    #[napi(js_name = "effectiveScore")]
+    pub effective_score: f64,
+    #[napi(js_name = "packageName")]
+    pub package_name: String,
+    #[napi(js_name = "packageVersion")]
+    pub package_version: String,
+    #[napi(js_name = "fixAvailable")]
+    pub fix_available: Option<String>,
+}
+
+#[napi(object)]
+pub struct NapiSmartAuditResult {
+    pub ok: bool,
+    pub reason: Option<String>,
+    pub total: f64,
+    pub filtered: f64,
+    pub vulns: Vec<NapiScoredVuln>,
+    #[napi(js_name = "riskLevel")]
+    pub risk_level: String,
+}
+
+fn scored_vuln_to_napi(v: &ScoredVuln) -> NapiScoredVuln {
+    NapiScoredVuln {
+        id: v.id.clone(),
+        summary: v.summary.clone(),
+        severity: v.severity.as_str().to_string(),
+        context: v.context.as_str().to_string(),
+        base_score: v.base_score,
+        context_weight: v.context_weight,
+        effective_score: v.effective_score,
+        package_name: v.package_name.clone(),
+        package_version: v.package_version.clone(),
+        fix_available: v.fix_available.clone(),
+    }
+}
+
+#[napi(js_name = "smartAudit")]
+pub fn napi_smart_audit(input: NapiSmartAuditInput) -> NapiSmartAuditResult {
+    let root = Path::new(&input.project_root);
+    let lockfile = root.join("package-lock.json");
+    let severity = input.min_severity.clone().unwrap_or_else(|| "low".to_string());
+
+    // First run the base audit to get raw vulnerabilities
+    let raw_report = match run_audit(&lockfile, root, &severity) {
+        Ok(r) => r,
+        Err(reason) => {
+            return NapiSmartAuditResult {
+                ok: false,
+                reason: Some(reason),
+                total: 0.0,
+                filtered: 0.0,
+                vulns: vec![],
+                risk_level: "unknown".to_string(),
+            };
+        }
+    };
+
+    let filter = AuditFilter::from_args(
+        input.prod_only,
+        input.min_score,
+        input.ignore_dev,
+        input.fixable_only,
+    );
+
+    let report = smart_audit(
+        &raw_report.vulnerabilities,
+        &input.root_deps,
+        &input.root_dev_deps,
+        &input.root_optional_deps,
+        &input.dep_graph,
+        &input.resolved_versions,
+        &filter,
+    );
+
+    NapiSmartAuditResult {
+        ok: true,
+        reason: None,
+        total: report.total as f64,
+        filtered: report.filtered as f64,
+        vulns: report.vulns.iter().map(scored_vuln_to_napi).collect(),
+        risk_level: report.risk_level,
     }
 }
 
