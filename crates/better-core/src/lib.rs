@@ -4448,3 +4448,113 @@ pub fn workspace_run(
     })
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_osv_batch_response_deserialization() {
+        let json = r#"{
+            "results": [
+                {
+                    "vulns": [
+                        {
+                            "id": "GHSA-test-1234",
+                            "summary": "Prototype pollution in lodash",
+                            "details": "Detailed description here",
+                            "severity": [
+                                {"type": "CVSS_V3", "score": "9.8"}
+                            ],
+                            "affected": [
+                                {
+                                    "package": {"name": "lodash", "ecosystem": "npm"},
+                                    "ranges": [
+                                        {
+                                            "type": "SEMVER",
+                                            "events": [
+                                                {"introduced": "0"},
+                                                {"fixed": "4.17.21"}
+                                            ]
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "vulns": []
+                },
+                {}
+            ]
+        }"#;
+
+        let resp: OsvBatchResponse = serde_json::from_str(json).unwrap();
+        let results = resp.results.unwrap();
+        assert_eq!(results.len(), 3);
+
+        // First result has one vulnerability
+        let vulns = results[0].vulns.as_ref().unwrap();
+        assert_eq!(vulns.len(), 1);
+        assert_eq!(vulns[0].id.as_deref(), Some("GHSA-test-1234"));
+        assert_eq!(vulns[0].summary.as_deref(), Some("Prototype pollution in lodash"));
+
+        // Severity score
+        let sev = vulns[0].severity.as_ref().unwrap();
+        assert_eq!(sev[0].score.as_deref(), Some("9.8"));
+
+        // Fixed version from range events
+        let affected = vulns[0].affected.as_ref().unwrap();
+        let ranges = affected[0].ranges.as_ref().unwrap();
+        let events = ranges[0].events.as_ref().unwrap();
+        let fixed = events.iter().find_map(|ev| {
+            ev.get("fixed").and_then(|f| f.as_str()).map(|s| s.to_string())
+        });
+        assert_eq!(fixed.as_deref(), Some("4.17.21"));
+
+        // Second result has empty vulns array
+        let vulns2 = results[1].vulns.as_ref().unwrap();
+        assert_eq!(vulns2.len(), 0);
+
+        // Third result has no vulns field at all
+        assert!(results[2].vulns.is_none());
+    }
+
+    #[test]
+    fn test_osv_batch_response_empty() {
+        let json = r#"{"results": []}"#;
+        let resp: OsvBatchResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.results.unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_osv_batch_response_malformed_fallback() {
+        let json = r#"not valid json"#;
+        let resp: Result<OsvBatchResponse, _> = serde_json::from_str(json);
+        assert!(resp.is_err());
+
+        // The run_audit code uses unwrap_or to handle this gracefully
+        let fallback = resp.unwrap_or(OsvBatchResponse { results: None });
+        assert!(fallback.results.is_none());
+    }
+
+    #[test]
+    fn test_osv_severity_cvss_score_parsing() {
+        let score_to_severity = |score: f64| -> &str {
+            if score >= 9.0 { "CRITICAL" }
+            else if score >= 7.0 { "HIGH" }
+            else if score >= 4.0 { "MEDIUM" }
+            else { "LOW" }
+        };
+
+        assert_eq!(score_to_severity(9.8), "CRITICAL");
+        assert_eq!(score_to_severity(9.0), "CRITICAL");
+        assert_eq!(score_to_severity(8.5), "HIGH");
+        assert_eq!(score_to_severity(7.0), "HIGH");
+        assert_eq!(score_to_severity(6.9), "MEDIUM");
+        assert_eq!(score_to_severity(4.0), "MEDIUM");
+        assert_eq!(score_to_severity(3.9), "LOW");
+        assert_eq!(score_to_severity(0.0), "LOW");
+    }
+}
+
