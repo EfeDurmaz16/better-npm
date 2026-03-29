@@ -184,7 +184,9 @@ Options:
   --json                Machine-readable JSON output
   --project-root PATH   Override project root
   --severity LEVEL      Minimum severity to report (critical|high|medium|low) [default: low]
-  --fix                 Show upgrade suggestions
+  --fix                 Show upgrade suggestions to resolve CVEs
+  --apply               Write overrides to package.json and run install (use with --fix)
+  --dry-run             With --apply: show what would change without writing
   --fail-on LEVEL       Exit with code 1 if vulns at this severity or above [default: none]
   --timeout MS          API timeout in milliseconds [default: 15000]
   --workspace           Scan all workspace packages
@@ -201,6 +203,8 @@ Options:
       "project-root": { type: "string" },
       severity: { type: "string", default: "low" },
       fix: { type: "boolean", default: false },
+      apply: { type: "boolean", default: false },
+      "dry-run": { type: "boolean", default: false },
       "fail-on": { type: "string", default: "none" },
       timeout: { type: "string", default: "15000" },
       workspace: { type: "boolean", default: false }
@@ -312,7 +316,7 @@ Options:
   return finalizeAudit({ graph, uniquePackages, projectRoot, lockfile, jsonOutput, minSeverity, severityOrder, failOn, values, logger });
 }
 
-function finalizeAudit({ graph, uniquePackages, projectRoot, lockfile, jsonOutput, minSeverity, severityOrder, failOn, values, logger }) {
+async function finalizeAudit({ graph, uniquePackages, projectRoot, lockfile, jsonOutput, minSeverity, severityOrder, failOn, values, logger }) {
   // Filter by severity
   const minIdx = severityOrder[minSeverity];
   const filteredVulns = [];
@@ -378,11 +382,45 @@ function finalizeAudit({ graph, uniquePackages, projectRoot, lockfile, jsonOutpu
 
       if (values.fix) {
         const suggestions = suggestUpgrades(graph);
+        const fixable = suggestions.filter(s => s.fixedVersion != null);
+        const unfixable = suggestions.filter(s => s.fixedVersion == null);
+
         if (suggestions.length > 0) {
           printText("Suggested upgrades:");
-          for (const s of suggestions) {
-            const fixStr = s.fixedVersion ? ` -> ${s.fixedVersion}` : " (no fix available)";
-            printText(`  ${s.name}@${s.currentVersion}${fixStr} (${s.severity}, ${s.vulnCount} vuln${s.vulnCount > 1 ? "s" : ""})`);
+          for (const s of fixable) {
+            printText(`  \x1b[32m${s.name}@${s.currentVersion} → ${s.fixedVersion}\x1b[0m (${s.severity}, ${s.vulnCount} CVE${s.vulnCount > 1 ? "s" : ""})`);
+          }
+          for (const s of unfixable) {
+            printText(`  \x1b[90m${s.name}@${s.currentVersion} — no fix available (${s.severity})\x1b[0m`);
+          }
+        }
+
+        // --apply: write overrides to package.json and optionally run install
+        if ((values.apply || values["dry-run"]) && fixable.length > 0) {
+          const pkgPath = path.join(projectRoot, "package.json");
+          let pkg;
+          try {
+            pkg = JSON.parse(await fs.readFile(pkgPath, "utf8"));
+          } catch {
+            printText("\x1b[31m✖ Cannot read package.json — cannot apply fixes\x1b[0m");
+          }
+
+          if (pkg) {
+            pkg.overrides = pkg.overrides ?? {};
+            for (const s of fixable) {
+              pkg.overrides[s.name] = s.fixedVersion;
+            }
+
+            if (values["dry-run"]) {
+              printText("\n\x1b[1m[dry-run] Would add to package.json overrides:\x1b[0m");
+              for (const s of fixable) {
+                printText(`  "${s.name}": "${s.fixedVersion}"`);
+              }
+            } else {
+              await fs.writeFile(pkgPath, JSON.stringify(pkg, null, 2) + "\n", "utf8");
+              printText(`\n\x1b[32m✔ Applied ${fixable.length} override(s) to package.json\x1b[0m`);
+              printText("\x1b[90mRun `better install` to materialise the fixes.\x1b[0m");
+            }
           }
         }
       }
