@@ -30,6 +30,8 @@ use better_core::{
     merge_lockfiles, run_merge_driver, install_merge_driver,
     // v0.4 intelligence
     detect_unused, load_license_policy, check_license_policy,
+    // v0.5 registry
+    registry_add, registry_list, registry_remove, registry_rotate,
 };
 use better_core::engine::EngineRegistry;
 
@@ -143,6 +145,13 @@ enum Command {
         lockfile: PathBuf,
         format: String,
     },
+    Registry {
+        subcommand: String,
+        registry_url: Option<String>,
+        scope: Option<String>,
+        token_env: Option<String>,
+        priority: Option<u64>,
+    },
     Completions { shell: String },
     Version,
     Help { error: Option<String> },
@@ -224,6 +233,9 @@ fn parse_args() -> Command {
     let mut approved_by: Option<String> = None;
     let mut unused_flag = false;
     let mut policy_flag = false;
+    let mut scope_opt: Option<String> = None;
+    let mut token_env_opt: Option<String> = None;
+    let mut priority_opt: Option<u64> = None;
 
     let mut i = 1usize;
     while i < args.len() {
@@ -378,6 +390,24 @@ fn parse_args() -> Command {
             "--watch" | "-w" => { watch = true; i += 1; }
             "--unused" => { unused_flag = true; i += 1; }
             "--policy" => { policy_flag = true; i += 1; }
+            "--scope" => {
+                if i + 1 >= args.len() { return Command::Help { error: Some("--scope requires a value".into()) }; }
+                scope_opt = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--token" | "--token-env" => {
+                if i + 1 >= args.len() { return Command::Help { error: Some("--token-env requires a value".into()) }; }
+                token_env_opt = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--priority" => {
+                if i + 1 >= args.len() { return Command::Help { error: Some("--priority requires a value".into()) }; }
+                match args[i + 1].parse::<u64>() {
+                    Ok(p) => priority_opt = Some(p),
+                    Err(_) => return Command::Help { error: Some(format!("invalid --priority '{}'", args[i + 1])) },
+                }
+                i += 2;
+            }
             "--format" => {
                 if i + 1 >= args.len() { return Command::Help { error: Some("--format requires a value".into()) }; }
                 format_opt = args[i + 1].clone();
@@ -539,6 +569,11 @@ fn parse_args() -> Command {
             let lf = lockfile.unwrap_or_else(|| pr.join("package-lock.json"));
             Command::Sbom { project_root: pr, lockfile: lf, format: format_opt }
         },
+        "registry" => {
+            let subcmd = positional.first().cloned().unwrap_or_else(|| "list".into());
+            let reg_url = positional.get(1).cloned();
+            Command::Registry { subcommand: subcmd, registry_url: reg_url, scope: scope_opt, token_env: token_env_opt, priority: priority_opt }
+        },
         "completions" => {
             let shell = positional.first().cloned().unwrap_or_else(|| "bash".into());
             Command::Completions { shell }
@@ -577,6 +612,7 @@ Usage:
   better-core lock [generate|verify] [--project-root <path>]
   better-core workspace [list|graph|changed|run] [--project-root <path>] [--since <ref>]
   better-core sbom [--project-root <path>] [--lockfile <path>] [--format cyclonedx|spdx]
+  better-core registry [add|list|remove|rotate] [url] [--scope @org] [--token-env VAR] [--priority N]
   better-core completions <bash|zsh|fish|powershell>
   better-core analyze --root <path> [--graph]
   better-core scan --root <path>
@@ -592,7 +628,7 @@ fn generate_bash_completions() -> &'static str {
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-    commands="install analyze cache doctor serve benchmark lock policy workspace audit dashboard run why dedupe license outdated scripts lint test dev build start exec env init hooks sbom completions scan materialize version help"
+    commands="install analyze cache doctor serve benchmark lock policy workspace audit dashboard run why dedupe license outdated scripts lint test dev build start exec env init hooks sbom registry completions scan materialize version help"
 
     case "${prev}" in
         better|better-core)
@@ -944,6 +980,139 @@ fn generate_powershell_completions() -> &'static str {
 
 fn main() {
     match parse_args() {
+        Command::Registry { subcommand, registry_url, scope, token_env, priority } => {
+            match subcommand.as_str() {
+                "add" => {
+                    let url = match registry_url {
+                        Some(u) => u,
+                        None => {
+                            eprintln!("error: 'registry add' requires a URL");
+                            std::process::exit(2);
+                        }
+                    };
+                    match registry_add(&url, scope.as_deref(), token_env.as_deref(), priority) {
+                        Ok(path) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(true);
+                            w.key("kind"); w.value_string("better.registry.add");
+                            w.key("url"); w.value_string(&url);
+                            if let Some(ref s) = scope { w.key("scope"); w.value_string(s); }
+                            w.key("path"); w.value_string(&path);
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                        }
+                        Err(reason) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(false);
+                            w.key("kind"); w.value_string("better.registry.add");
+                            w.key("reason"); w.value_string(&reason);
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                "list" | "ls" => {
+                    match registry_list() {
+                        Ok(config) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(true);
+                            w.key("kind"); w.value_string("better.registry.list");
+                            w.key("registries"); w.begin_array();
+                            for entry in &config.registries {
+                                w.begin_object();
+                                w.key("url"); w.value_string(&entry.url);
+                                match &entry.scope {
+                                    Some(s) => { w.key("scope"); w.value_string(s); }
+                                    None => { w.key("scope"); w.value_null(); }
+                                }
+                                if let Some(ref te) = entry.token_env {
+                                    w.key("tokenEnv"); w.value_string(te);
+                                }
+                                w.key("priority"); w.value_u64(entry.priority);
+                                w.end_object();
+                            }
+                            w.end_array();
+                            w.key("total"); w.value_u64(config.registries.len() as u64);
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                        }
+                        Err(reason) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(false);
+                            w.key("kind"); w.value_string("better.registry.list");
+                            w.key("reason"); w.value_string(&reason);
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                "remove" | "rm" => {
+                    let url = match registry_url {
+                        Some(u) => u,
+                        None => {
+                            eprintln!("error: 'registry remove' requires a URL");
+                            std::process::exit(2);
+                        }
+                    };
+                    match registry_remove(&url) {
+                        Ok(removed) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(true);
+                            w.key("kind"); w.value_string("better.registry.remove");
+                            w.key("url"); w.value_string(&url);
+                            w.key("removed"); w.value_u64(removed);
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                        }
+                        Err(reason) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(false);
+                            w.key("kind"); w.value_string("better.registry.remove");
+                            w.key("reason"); w.value_string(&reason);
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                "rotate" => {
+                    match registry_rotate(scope.as_deref()) {
+                        Ok(msg) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(true);
+                            w.key("kind"); w.value_string("better.registry.rotate");
+                            w.key("message"); w.value_string(&msg);
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                        }
+                        Err(reason) => {
+                            let mut w = JsonWriter::new();
+                            w.begin_object();
+                            w.key("ok"); w.value_bool(false);
+                            w.key("kind"); w.value_string("better.registry.rotate");
+                            w.key("reason"); w.value_string(&reason);
+                            w.end_object(); w.out.push('\n');
+                            print!("{}", w.finish());
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                other => {
+                    eprintln!("error: unknown registry subcommand: {other}");
+                    std::process::exit(2);
+                }
+            }
+        }
+
         Command::Completions { shell } => {
             match shell.as_str() {
                 "bash" => print!("{}", generate_bash_completions()),

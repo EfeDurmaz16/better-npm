@@ -95,6 +95,9 @@ pub use unused::*;
 pub mod license_policy;
 pub use license_policy::*;
 
+pub mod registry;
+pub use registry::*;
+
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
