@@ -29,6 +29,7 @@ import { executionPlan, affectedPackages } from "../lib/topoSort.js";
 import { loadOverrides, validateOverrides } from "../lib/overrides.js";
 import { verifyFrozenLockfile } from "../lib/frozenLockfile.js";
 import { createInstallProgress } from "../tui/installProgress.js";
+import { parseLockfilePackages, saveSnapshot } from "../lib/deltaUpdate.js";
 
 async function exists(p) {
   try {
@@ -1712,6 +1713,21 @@ Workspace options:
     }
   }
   await saveState(layout, state);
+
+  // Save delta snapshot for future incremental diff
+  try {
+    const lockfileCandidates = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock"];
+    for (const lf of lockfileCandidates) {
+      const lfPath = path.join(projectRoot, lf);
+      const packages = await parseLockfilePackages(lfPath);
+      if (packages.size > 0) {
+        await saveSnapshot(layout.root, projectRoot, packages);
+        break;
+      }
+    }
+  } catch {
+    // Non-fatal: delta snapshot is optional
+  }
 
   if (values.report) {
     const outPath = path.resolve(values.report);

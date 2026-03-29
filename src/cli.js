@@ -22,6 +22,7 @@ Commands:
   update [pkg...]    Auto-update intelligence — patch/minor/major with changelog snippets
   size [pkg...]      Install size impact — own + subtree disk footprint, % of total
   prefetch           Pre-warm registry cache from package.json scripts + source imports
+  delta              Show lockfile delta (added/removed/changed) vs last install
   policy <subcmd>    Dependency policy enforcement (check, init)
   workspace <subcmd> Workspace management (list, info, graph, changed, run)
   audit              Scan dependencies for known vulnerabilities (OSV.dev)
@@ -129,6 +130,9 @@ export async function runCli(argv) {
         break;
       case "prefetch":
         await (await import("./commands/prefetch.js")).cmdPrefetch(rest);
+        break;
+      case "delta":
+        await (await import("./commands/delta.js")).cmdDelta(rest);
         break;
       case "policy":
         await (await import("./commands/policy.js")).cmdPolicy(rest);
