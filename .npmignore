@@ -1,0 +1,14 @@
+crates/
+tests/
+test/
+apps/
+.github/
+docs/
+*.cpuprofile
+CPU.*
+pnpm-lock.yaml
+vitest.config.ts
+tsup.config.ts
+tsconfig.json
+benchmark.json
+health.json

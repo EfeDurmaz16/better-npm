@@ -1,7 +1,6 @@
 {
   "name": "better",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "bin": {
     "better": "./bin/better.js"
@@ -15,11 +14,20 @@
     "build": "node --check ./bin/better.js && node --check ./src/cli.js",
     "typecheck": "node --check ./src/cli.js",
     "dev": "node ./bin/better.js --help",
+    "prepublishOnly": "node --check ./bin/better.js && node --check ./src/cli.js",
+    "postinstall": "node scripts/postinstall.js",
     "core:build": "cargo build --manifest-path crates/Cargo.toml -p better-core --release",
     "core:build:debug": "cargo build --manifest-path crates/Cargo.toml -p better-core",
     "napi:build": "cargo build --manifest-path crates/Cargo.toml -p better-napi --release && cp crates/target/release/libbetter_napi.dylib crates/better-napi/better-core.darwin-arm64.node",
     "napi:build:debug": "cargo build --manifest-path crates/Cargo.toml -p better-napi && cp crates/target/debug/libbetter_napi.dylib crates/better-napi/better-core.darwin-arm64.node"
   },
+  "files": [
+    "bin/",
+    "src/",
+    "scripts/postinstall.js",
+    "scripts/install.sh",
+    "README.md"
+  ],
   "engines": {
     "node": ">=20"
   }
