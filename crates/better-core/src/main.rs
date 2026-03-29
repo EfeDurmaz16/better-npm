@@ -23,7 +23,7 @@ use better_core::{
     generate_sbom, write_cyclonedx_json, write_spdx_json,
     LockfileWriter, verify_frozen_lockfile,
 };
-use better_core::engine::{EngineRegistry, PackageEngine};
+use better_core::engine::EngineRegistry;
 
 #[derive(Debug)]
 enum Command {
