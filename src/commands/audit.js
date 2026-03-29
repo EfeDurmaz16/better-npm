@@ -262,7 +262,12 @@ Options:
       workspace: { type: "boolean", default: false },
       strict: { type: "boolean", default: false },
       "add-ignore": { type: "string" },
-      reason: { type: "string", default: "No reason provided" }
+      reason: { type: "string", default: "No reason provided" },
+      "prod-only": { type: "boolean", default: false },
+      "min-score": { type: "string", default: "0" },
+      "ignore-dev": { type: "boolean", default: false },
+      "fixable-only": { type: "boolean", default: false },
+      smart: { type: "boolean", default: true }
     },
     allowPositionals: true,
     strict: false
@@ -359,7 +364,7 @@ Options:
     if (!scanResult.ok) throw new Error(`OSV API error: ${scanResult.reason}`);
 
     const graph = buildVulnGraph(scanResult.results, mergedDepTree);
-    return finalizeAudit({ graph, uniquePackages, projectRoot, lockfile: "workspace", jsonOutput, minSeverity, severityOrder, failOn, values, logger, auditConfig });
+    return finalizeAudit({ graph, uniquePackages, projectRoot, lockfile: "workspace", jsonOutput, minSeverity, severityOrder, failOn, values, logger, auditConfig, smartResult: null });
   }
 
   // Step 1: Resolve packages from lockfile
@@ -393,10 +398,53 @@ Options:
   // Step 3: Build vulnerability graph
   const graph = buildVulnGraph(scanResult.results, depTree);
 
-  return finalizeAudit({ graph, uniquePackages, projectRoot, lockfile, jsonOutput, minSeverity, severityOrder, failOn, values, logger, auditConfig });
+  // Step 4: Smart audit (context-aware scoring) if enabled
+  let smartResult = null;
+  const useSmartAudit = values.smart !== false;
+  if (useSmartAudit) {
+    const pkg = await readJsonFile(path.join(projectRoot, "package.json"));
+    if (pkg) {
+      const rootDeps = pkg.dependencies ?? {};
+      const rootDevDeps = pkg.devDependencies ?? {};
+      const rootOptionalDeps = pkg.optionalDependencies ?? {};
+
+      // Build dep graph and resolved versions from depTree
+      const depGraphMap = {};
+      const resolvedVersionsMap = {};
+      for (const [name, info] of Object.entries(depTree)) {
+        if (name === "__root__") continue;
+        resolvedVersionsMap[name] = info.version;
+        const key = `${name}@${info.version}`;
+        if (info.dependencies) {
+          depGraphMap[key] = Object.entries(info.dependencies).map(
+            ([depName, depVer]) => `${depName}@${depTree[depName]?.version ?? depVer}`
+          );
+        }
+      }
+
+      try {
+        smartResult = runSmartAuditNapi(projectRoot, {
+          rootDeps,
+          rootDevDeps,
+          rootOptionalDeps,
+          depGraph: depGraphMap,
+          resolvedVersions: resolvedVersionsMap,
+          prodOnly: values["prod-only"],
+          minScore: parseFloat(values["min-score"]) || 0,
+          ignoreDev: values["ignore-dev"],
+          fixableOnly: values["fixable-only"],
+          minSeverity,
+        });
+      } catch {
+        // NAPI not available, fall through to standard display
+      }
+    }
+  }
+
+  return finalizeAudit({ graph, uniquePackages, projectRoot, lockfile, jsonOutput, minSeverity, severityOrder, failOn, values, logger, auditConfig, smartResult });
 }
 
-function finalizeAudit({ graph, uniquePackages, projectRoot, lockfile, jsonOutput, minSeverity, severityOrder, failOn, values, logger, auditConfig }) {
+function finalizeAudit({ graph, uniquePackages, projectRoot, lockfile, jsonOutput, minSeverity, severityOrder, failOn, values, logger, auditConfig, smartResult }) {
   // Filter by severity
   const minIdx = severityOrder[minSeverity];
   const filteredVulns = [];
@@ -433,7 +481,13 @@ function finalizeAudit({ graph, uniquePackages, projectRoot, lockfile, jsonOutpu
     minSeverity,
     ignoredCount,
     expiredWaivers: expiredWarnings.length > 0 ? expiredWarnings : undefined,
-    strictFail: values.strict && filteredVulns.some(n => n.vulns.length > 0) ? true : undefined
+    strictFail: values.strict && filteredVulns.some(n => n.vulns.length > 0) ? true : undefined,
+    smart: smartResult ? {
+      total: smartResult.total,
+      filtered: smartResult.filtered,
+      riskLevel: smartResult.riskLevel,
+      vulns: smartResult.vulns,
+    } : undefined,
   };
 
   if (jsonOutput) {
@@ -473,6 +527,19 @@ function finalizeAudit({ graph, uniquePackages, projectRoot, lockfile, jsonOutpu
         }
         if (node.exposurePaths.length > 0) {
           printText(`  exposure: ${formatExposurePath(node.exposurePaths[0])}`);
+        }
+        printText("");
+      }
+
+      // Smart audit context-aware scoring
+      if (smartResult && smartResult.vulns.length > 0) {
+        printText("Context-aware scoring:");
+        printText(`  ${smartResult.total} total vulns, ${smartResult.filtered} after filtering (risk: ${smartResult.riskLevel})`);
+        printText("");
+        for (const v of smartResult.vulns) {
+          const fixStr = v.fixAvailable ? ` [fix: ${v.fixAvailable}]` : "";
+          printText(`  ${v.packageName}@${v.packageVersion} | ${v.severity} | ${v.context} | score: ${v.effectiveScore.toFixed(1)}${fixStr}`);
+          printText(`    ${v.id}: ${v.summary}`);
         }
         printText("");
       }

@@ -195,6 +195,27 @@ export function runAuditNapi(projectRoot, opts = {}) {
   return result;
 }
 
+// --- NAPI: smart audit ---
+export function runSmartAuditNapi(projectRoot, opts = {}) {
+  const addon = tryLoadNapiAddon();
+  if (!addon || typeof addon.smartAudit !== "function") return null;
+  const result = addon.smartAudit({
+    projectRoot,
+    rootDeps: opts.rootDeps || {},
+    rootDevDeps: opts.rootDevDeps || {},
+    rootOptionalDeps: opts.rootOptionalDeps || {},
+    depGraph: opts.depGraph || {},
+    resolvedVersions: opts.resolvedVersions || {},
+    prodOnly: !!opts.prodOnly,
+    minScore: opts.minScore != null ? opts.minScore : null,
+    ignoreDev: !!opts.ignoreDev,
+    fixableOnly: !!opts.fixableOnly,
+    minSeverity: opts.minSeverity || null,
+  });
+  if (!result || typeof result !== "object") throw new Error("napi smartAudit returned invalid result");
+  return result;
+}
+
 // --- NAPI: license ---
 export function runLicenseNapi(projectRoot, opts = {}) {
   const addon = tryLoadNapiAddon();
