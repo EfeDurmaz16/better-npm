@@ -81,70 +81,299 @@ function parsePkgLock(lockData) {
 }
 
 /**
- * Parse pnpm-lock.yaml (basic support)
+ * Parse pnpm-lock.yaml to build full dependency graph.
+ *
+ * Supports lockfileVersion 5.x / 6.x / 9.x.
+ *
+ * The `packages` section is keyed by `/{name}@{version}` (v5/v6) or
+ * `{name}@{version}` (v9). Each entry may have a `dependencies` and/or
+ * `optionalDependencies` map of `name: version`.
+ *
+ * We build the same adjacency graph used by the npm lock parser so
+ * `findAllPaths` and `findReverseDeps` work identically.
  */
 function parsePnpmLock(yamlContent) {
   const graph = new Map();
   const lines = yamlContent.split("\n");
 
-  let inDependencies = false;
-  let inPackages = false;
+  // ── Phase 1: collect root deps & parse packages section ──────────
+
+  let section = null;        // current top-level section name
+  let currentPkgKey = null;  // e.g. "/express@4.18.2" or "express@4.18.2"
+  let inPkgDeps = false;     // inside a package's dependencies / optionalDependencies
+  let indent = 0;            // indentation of the current package key line
+
   const rootDeps = {};
+  // Temporary store: pkgKey -> { version, deps: {name: version} }
+  const packagesRaw = new Map();
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
 
-    // Root dependencies section
-    if (line.match(/^dependencies:/)) {
-      inDependencies = true;
-      inPackages = false;
+    // Detect top-level sections (no leading whitespace)
+    if (/^\S/.test(line)) {
+      if (/^dependencies:/.test(line)) { section = "dependencies"; }
+      else if (/^devDependencies:/.test(line)) { section = "devDependencies"; }
+      else if (/^optionalDependencies:/.test(line)) { section = "optionalDependencies"; }
+      else if (/^packages:/.test(line)) { section = "packages"; }
+      else { section = null; }
+      currentPkgKey = null;
+      inPkgDeps = false;
       continue;
     }
 
-    if (line.match(/^devDependencies:/)) {
-      inDependencies = true;
-      inPackages = false;
-      continue;
-    }
-
-    if (line.match(/^packages:/)) {
-      inPackages = true;
-      inDependencies = false;
-      continue;
-    }
-
-    // Parse root dependencies
-    if (inDependencies && line.match(/^  \w/)) {
-      const match = line.match(/^  ([^:]+):\s*(.+)/);
-      if (match) {
-        rootDeps[match[1]] = match[2];
+    // ── Root dependency sections ──────────────────────────────────
+    if (section === "dependencies" || section === "devDependencies" || section === "optionalDependencies") {
+      // v6/v9 nested format:  "  express:\n    specifier: ^4\n    version: 4.18.2"
+      // v5 flat format:       "  express: 4.18.2"
+      const depMatch = line.match(/^  ['"]?([^'":]+)['"]?:\s*(.+)?/);
+      if (depMatch) {
+        const name = depMatch[1].trim();
+        const value = (depMatch[2] || "").trim();
+        if (value && !value.startsWith("{")) {
+          rootDeps[name] = value;
+        }
       }
+      // Nested specifier/version lines (v6+)
+      const versionMatch = line.match(/^\s+version:\s*['"]?([^'"]+)['"]?/);
+      if (versionMatch) {
+        // We need to associate this with the last dep name we saw
+        const prevMatch = lines[i - 1] && lines[i - 1].match(/^  ['"]?([^'":]+)['"]?:/);
+        // Check if the previous non-version line was the dep name
+        if (!prevMatch) {
+          // Could be specifier in between; search upward
+          for (let j = i - 1; j >= 0; j--) {
+            if (/^\s+specifier:/.test(lines[j])) continue;
+            const nm = lines[j].match(/^  ['"]?([^'":]+)['"]?:/);
+            if (nm) { rootDeps[nm[1].trim()] = versionMatch[1]; break; }
+            break;
+          }
+        } else {
+          rootDeps[prevMatch[1].trim()] = versionMatch[1];
+        }
+      }
+      continue;
     }
 
-    // Reset on new top-level section
-    if (line.match(/^\w/) && !line.match(/^(dependencies|devDependencies|packages):/)) {
-      inDependencies = false;
-      inPackages = false;
+    // ── Packages section ──────────────────────────────────────────
+    if (section === "packages") {
+      // Package key lines — v5/v6: "  /express@4.18.2:" or v9: "  express@4.18.2:"
+      // Also handle quoted keys: "  '/express@4.18.2':" or "  'express@4.18.2(peer):"
+      const pkgKeyMatch = line.match(/^  ['"]?\/?([^'":][^'":]*?)['"]?:\s*$/);
+      if (pkgKeyMatch) {
+        currentPkgKey = pkgKeyMatch[1]; // e.g. "express@4.18.2"
+        inPkgDeps = false;
+        indent = 2;
+        if (!packagesRaw.has(currentPkgKey)) {
+          packagesRaw.set(currentPkgKey, { version: null, deps: {} });
+        }
+        continue;
+      }
+
+      if (!currentPkgKey) continue;
+      const pkg = packagesRaw.get(currentPkgKey);
+
+      // Version line:  "    version: 4.18.2"
+      const verMatch = line.match(/^\s{4,}version:\s*['"]?([^'"]+)['"]?/);
+      if (verMatch) {
+        pkg.version = verMatch[1];
+        inPkgDeps = false;
+        continue;
+      }
+
+      // dependencies: / optionalDependencies: sub-section
+      if (/^\s{4}dependencies:\s*$/.test(line) || /^\s{4}optionalDependencies:\s*$/.test(line)) {
+        inPkgDeps = true;
+        continue;
+      }
+
+      // Another 4-space key resets inPkgDeps (e.g. "    resolution:", "    engines:")
+      if (/^\s{4}\S/.test(line) && !/^\s{6}/.test(line) && inPkgDeps) {
+        inPkgDeps = false;
+      }
+
+      // Dependency entries:  "      accepts: 1.3.8"
+      if (inPkgDeps) {
+        const depEntry = line.match(/^\s{6,}['"]?([^'":]+)['"]?:\s*['"]?([^'"]+)['"]?/);
+        if (depEntry) {
+          pkg.deps[depEntry[1].trim()] = depEntry[2].trim();
+        }
+      }
     }
   }
 
+  // ── Phase 2: build graph ─────────────────────────────────────────
+
   graph.set("__ROOT__", { deps: rootDeps, version: "0.0.0" });
 
-  // Basic package parsing - this is simplified
-  // Real pnpm parsing would need a proper YAML parser
+  for (const [pkgKey, pkgData] of packagesRaw) {
+    // pkgKey is like "express@4.18.2" or "@babel/core@7.20.0"
+    // Extract name: everything up to the last '@'
+    const atIdx = pkgKey.lastIndexOf("@");
+    if (atIdx <= 0) continue; // malformed
+    const name = pkgKey.slice(0, atIdx);
+    const version = pkgData.version || pkgKey.slice(atIdx + 1);
+
+    // Remap deps from {name: exactVersion} to simple name refs
+    // so that findAllPaths (which walks by package name) works
+    const deps = {};
+    for (const [depName, depVer] of Object.entries(pkgData.deps)) {
+      deps[depName] = depVer;
+    }
+
+    if (!graph.has(name)) {
+      graph.set(name, { deps, version });
+    }
+  }
+
   return graph;
 }
 
 /**
- * Parse yarn.lock (basic support)
+ * Parse yarn.lock (v1 classic and v2+ berry) to build full dependency graph.
+ *
+ * yarn.lock v1 format:
+ *   "lodash@^4.17.0":
+ *     version "4.17.21"
+ *     resolved "…"
+ *     dependencies:
+ *       some-dep "^1.0.0"
+ *
+ * yarn.lock v2/berry format (YAML-ish):
+ *   "lodash@npm:^4.17.0":
+ *     version: 4.17.21
+ *     resolution: "…"
+ *     dependencies:
+ *       some-dep: "npm:^1.0.0"
+ *
+ * We parse both formats into the same graph structure.
  */
 function parseYarnLock(lockContent) {
   const graph = new Map();
   const lines = lockContent.split("\n");
 
-  // Yarn lock doesn't have full dependency tree, so we return minimal graph
-  // To properly support this, we'd need to read package.json as well
-  graph.set("__ROOT__", { deps: {}, version: "0.0.0" });
+  const isBerry = lines.some(l => /^__metadata:/.test(l));
+
+  // Temporary store: name -> { version, deps }
+  // Multiple resolution entries may exist; we keep the first version per name.
+  const packagesRaw = new Map();
+
+  let currentNames = [];   // package names from the header line
+  let currentVersion = null;
+  let currentDeps = {};
+  let inDeps = false;
+
+  function flush() {
+    if (currentNames.length > 0 && currentVersion) {
+      for (const name of currentNames) {
+        if (!packagesRaw.has(name)) {
+          packagesRaw.set(name, { version: currentVersion, deps: { ...currentDeps } });
+        }
+      }
+    }
+    currentNames = [];
+    currentVersion = null;
+    currentDeps = {};
+    inDeps = false;
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Skip comments and empty lines
+    if (/^\s*#/.test(line) || /^\s*$/.test(line)) continue;
+    // Skip __metadata block
+    if (/^__metadata:/.test(line)) { flush(); continue; }
+
+    // ── Header line (no leading whitespace, or quoted) ──────────
+    // v1: "lodash@^4.17.0", "lodash@^4.17.0, lodash@^4.17.21":
+    // v2: "lodash@npm:^4.17.0":
+    if (/^[^\s]/.test(line) || /^"/.test(line)) {
+      flush();
+
+      // Strip trailing colon
+      let header = line.replace(/:\s*$/, "").trim();
+      // Remove surrounding quotes
+      header = header.replace(/^"(.*)"$/, "$1");
+
+      // Split comma-separated entries
+      const entries = header.split(/,\s*/);
+      const names = new Set();
+      for (const entry of entries) {
+        let cleaned = entry.replace(/^"(.*)"$/, "$1").trim();
+        // Remove npm: protocol prefix for berry: "lodash@npm:^4.17.0" -> "lodash@^4.17.0"
+        cleaned = cleaned.replace(/@npm:/, "@");
+        // Extract package name (everything before the last @, excluding scoped prefix)
+        const atIdx = cleaned.lastIndexOf("@");
+        if (atIdx > 0) {
+          names.add(cleaned.slice(0, atIdx));
+        } else if (atIdx === -1 && cleaned.length > 0) {
+          names.add(cleaned);
+        }
+      }
+      currentNames = [...names];
+      continue;
+    }
+
+    // ── Indented lines (package properties) ──────────────────────
+    if (currentNames.length === 0) continue;
+
+    // version line
+    // v1: '  version "4.17.21"'
+    // v2: '  version: 4.17.21' or '  version: "4.17.21"'
+    const verMatch = line.match(/^\s+version[:\s]+["']?([^"'\s]+)["']?/);
+    if (verMatch) {
+      currentVersion = verMatch[1];
+      inDeps = false;
+      continue;
+    }
+
+    // dependencies / optionalDependencies header
+    if (/^\s+dependencies:\s*$/.test(line) || /^\s+optionalDependencies:\s*$/.test(line)) {
+      inDeps = true;
+      continue;
+    }
+
+    // Any other non-dep section header resets inDeps
+    if (/^\s{2}\S/.test(line) && !/^\s{4}/.test(line) && inDeps) {
+      inDeps = false;
+      continue;
+    }
+
+    // Dependency entries
+    if (inDeps) {
+      // v1: '    some-dep "^1.0.0"'
+      const v1Dep = line.match(/^\s{4,}["']?([^"'\s]+)["']?\s+["']([^"']+)["']/);
+      if (v1Dep) {
+        currentDeps[v1Dep[1]] = v1Dep[2];
+        continue;
+      }
+      // v2: '    some-dep: "npm:^1.0.0"' or '    some-dep: ^1.0.0'
+      const v2Dep = line.match(/^\s{4,}["']?([^"':\s]+)["']?:\s*["']?([^"'\s]+)["']?/);
+      if (v2Dep) {
+        currentDeps[v2Dep[1]] = v2Dep[2].replace(/^npm:/, "");
+        continue;
+      }
+    }
+  }
+  flush();
+
+  // ── Build graph ──────────────────────────────────────────────────
+
+  // Root deps come from the fact that every top-level yarn.lock entry that
+  // is referenced in package.json is a direct dep. Since we don't have
+  // package.json here, we mark all packages that appear at the top level
+  // as potential deps and let the caller's "isDirect" check handle it via
+  // the root node's deps map.
+  const rootDeps = {};
+  for (const [name, data] of packagesRaw) {
+    rootDeps[name] = data.version;
+    if (!graph.has(name)) {
+      graph.set(name, { deps: data.deps, version: data.version });
+    }
+  }
+
+  graph.set("__ROOT__", { deps: rootDeps, version: "0.0.0" });
 
   return graph;
 }
