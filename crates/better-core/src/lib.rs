@@ -125,6 +125,9 @@ pub use output::{OutputMode, GlobalFlags, CommandOutput, BetterError, ErrorCode}
 pub mod context;
 pub mod mcp;
 pub mod search;
+pub mod osp;
+pub mod sardis;
+pub mod monetize;
 
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
