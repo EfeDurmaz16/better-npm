@@ -14,7 +14,7 @@ import {
   hasFileCasManifest,
   getFileCasStats,
   gcFileCas
-} from "../src/engine/better/fileCas.js";
+} from "../src/lib/fileCas.js";
 
 describe("fileCas", () => {
   let tempDir;

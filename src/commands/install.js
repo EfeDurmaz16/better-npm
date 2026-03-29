@@ -9,7 +9,6 @@ import { runCommand } from "../lib/spawn.js";
 import { detectPackageManager } from "../pm/detect.js";
 import { printJson, printText } from "../lib/output.js";
 import { createParityContext, runParityCheck } from "../parity/checker.js";
-import { installFromNpmLockfile } from "../engine/better/installBetterNpm.js";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
 import { getRuntimeConfig } from "../lib/config.js";
 import { childLogger } from "../lib/log.js";
@@ -23,7 +22,7 @@ import {
   entryBytesFromNodeModulesSnapshot
 } from "../lib/globalCache.js";
 import { evaluateReuseMarker, writeReuseMarker } from "../lib/reuseMarker.js";
-import { findBetterCore, tryLoadNapiAddon } from "../lib/core.js";
+import { findBetterCore, tryLoadNapiAddon, runBetterCoreInstall } from "../lib/core.js";
 import { resolveWorkspacePackages, workspaceSummary } from "../lib/workspaces.js";
 import { executionPlan, affectedPackages } from "../lib/topoSort.js";
 import { loadOverrides, validateOverrides } from "../lib/overrides.js";
@@ -147,9 +146,6 @@ function suggestFsConcurrencyTuning({ engine, fsConcurrency, globalMaterialize }
 
 function pmInstallCommand(pm, passthrough, engine, opts = {}) {
   const { frozen = false, production = false, yarnBerry = false } = opts;
-  if (engine === "better") {
-    return { cmd: "better", args: ["install", "--engine", "better", ...passthrough] };
-  }
   if (engine === "bun") {
     const args = ["install"];
     if (frozen) args.push("--frozen-lockfile");
@@ -234,11 +230,10 @@ function collectUnknownFlagArgs(values, knownKeys) {
 
 function inferPmCacheStats({ pm, engine, installResult, betterEngine }) {
   if (engine === "better") {
-    const replayReuseHits = Number(betterEngine?.incrementalOps?.kept ?? 0);
     return {
-      hits: Number(betterEngine?.extracted?.reusedTarballs ?? 0) + replayReuseHits,
-      misses: Number(betterEngine?.extracted?.downloadedTarballs ?? 0),
-      source: "better-engine-cas"
+      hits: Number(betterEngine?.cache_hits ?? 0),
+      misses: Number(betterEngine?.cache_misses ?? betterEngine?.packages ?? 0),
+      source: "better-core-rust"
     };
   }
   const text = `${installResult?.stdout ?? ""}\n${installResult?.stderr ?? ""}`;
@@ -285,51 +280,30 @@ function normalizeCacheScripts(value) {
 async function resolveReplayRuntime(coreMode) {
   const runtime = {
     requested: coreMode,
-    selected: "js",
+    selected: "rust",
     fallbackUsed: false,
     fallbackReason: null,
     corePath: null
   };
-  if (coreMode === "js") return runtime;
 
   // Try napi addon first
   if (coreMode === "napi" || coreMode === "auto") {
     const addon = tryLoadNapiAddon();
     if (addon) {
-      return {
-        ...runtime,
-        selected: "napi",
-        fallbackUsed: true,
-        fallbackReason: "napi_replay_not_implemented"
-      };
+      return { ...runtime, selected: "napi" };
     } else if (coreMode === "napi") {
-      return {
-        ...runtime,
-        fallbackUsed: true,
-        fallbackReason: "napi_addon_not_found"
-      };
+      throw new Error("napi addon not found (build via `npm run napi:build`)");
     }
   }
 
   const corePath = await findBetterCore();
   if (!corePath) {
-    if (coreMode === "rust") {
-      return {
-        ...runtime,
-        fallbackUsed: true,
-        fallbackReason: "rust_core_not_found"
-      };
-    }
-    return runtime;
+    throw new Error(
+      'better-core binary not found. Install via:\n  curl -fsSL https://raw.githubusercontent.com/EfeDurmaz16/better-npm/main/scripts/install.sh | sh'
+    );
   }
 
-  // Rust replay path is staged behind fallback for now.
-  return {
-    ...runtime,
-    corePath,
-    fallbackUsed: true,
-    fallbackReason: "rust_replay_not_implemented"
-  };
+  return { ...runtime, corePath };
 }
 
 async function runLifecycleRebuild(pm, projectRoot, jsonOutput, env) {
@@ -1114,15 +1088,22 @@ Workspace options:
     };
   } else if (!skippedPmInstall) {
     if (engine === "better") {
-      progress("engine=better: materializing from package-lock.json (experimental)");
+      progress("engine=better: installing via Rust core");
+      const corePath = await findBetterCore();
+      if (!corePath) {
+        throw new Error(
+          'better-core binary not found. Install via:\n  curl -fsSL https://raw.githubusercontent.com/EfeDurmaz16/better-npm/main/scripts/install.sh | sh'
+        );
+      }
       const started = Date.now();
-      betterEngine = await installFromNpmLockfile(projectRoot, layout, {
-        verify: values.verify ?? "integrity-required",
+      betterEngine = await runBetterCoreInstall(corePath, projectRoot, {
+        lockfile: path.join(projectRoot, "package-lock.json"),
+        cacheRoot: layout.root,
+        storeRoot: layout.store?.root,
         linkStrategy: values["link-strategy"] ?? "auto",
-        scripts: values.scripts ?? "rebuild",
-        binLinks: values["bin-links"] ?? "rootOnly",
-        incremental,
-        fsConcurrency
+        jobs: fsConcurrency,
+        scripts: values.scripts !== "off",
+        dedup: false
       });
       const ended = Date.now();
       cmd = "better";
@@ -1382,7 +1363,7 @@ Workspace options:
       : null,
     reuse: {
       nodeModulesBytesReused: globalCacheDecision.hit ? entryBytesFromNodeModulesSnapshot(nodeModules) : 0,
-      artifactBytesReused: Number(betterEngine?.extracted?.reusedTarballs ?? 0),
+      artifactBytesReused: Number(betterEngine?.cache_hits ?? 0),
       downloadBytesAvoided: globalCacheDecision.hit ? entryBytesFromNodeModulesSnapshot(nodeModules) : 0
     },
     scripts: cacheScriptResult

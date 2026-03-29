@@ -1,4 +1,3 @@
-import { analyzeProject } from "../analyze/analyzeProject.js";
 import { findBetterCore, runBetterCoreAnalyze, tryLoadNapiAddon, runBetterCoreAnalyzeNapi } from "./core.js";
 
 export async function analyzeWithBestEngine(projectRoot, opts = {}) {
@@ -14,7 +13,7 @@ export async function analyzeWithBestEngine(projectRoot, opts = {}) {
         return { analysis, engine: "napi", corePath: null };
       } catch (err) {
         if (coreMode === "napi") throw err;
-        // fall through to binary/JS
+        // fall through to binary
       }
     } else if (coreMode === "napi") {
       throw new Error("napi addon not found (build via `npm run napi:build`)");
@@ -29,13 +28,14 @@ export async function analyzeWithBestEngine(projectRoot, opts = {}) {
         return { analysis, engine: "core", corePath };
       } catch (err) {
         if (coreMode === "force") throw err;
-        // fall through to JS
+        // fall through to error
       }
     } else if (coreMode === "force") {
       throw new Error("better-core not found (set BETTER_CORE_PATH or build via `npm run core:build`)");
     }
   }
 
-  const analysis = await analyzeProject(projectRoot, { includeGraph });
-  return { analysis, engine: "js", corePath: null };
+  throw new Error(
+    'better-core binary not found. Install via:\n  curl -fsSL https://raw.githubusercontent.com/EfeDurmaz16/better-npm/main/scripts/install.sh | sh'
+  );
 }

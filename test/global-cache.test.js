@@ -19,6 +19,19 @@ async function hasTar() {
   }
 }
 
+async function hasBetterCore() {
+  try {
+    const { findBetterCore } = await import("../src/lib/core.js");
+    const corePath = await findBetterCore();
+    if (!corePath) return false;
+    // Verify the install subcommand is functional
+    const { stdout } = await execFileAsync(corePath, ["install", "--help"], { timeout: 5_000 });
+    return stdout.includes("install");
+  } catch {
+    return false;
+  }
+}
+
 async function packFixture(dir, pkgName) {
   const pkgDir = path.join(dir, "pkg");
   await fs.mkdir(pkgDir, { recursive: true });
@@ -44,7 +57,7 @@ async function packFixture(dir, pkgName) {
   return { tgz, integrity };
 }
 
-test("global cache: stores on first run and hits on second run (better engine)", { skip: !(await hasTar()) }, async () => {
+test("global cache: stores on first run and hits on second run (better engine)", { skip: !(await hasTar()) || !(await hasBetterCore()) }, async () => {
   const dir = await makeTempDir("better-global-cache-");
   try {
     const { tgz, integrity } = await packFixture(dir, "foo");
@@ -121,7 +134,7 @@ test("global cache: stores on first run and hits on second run (better engine)",
   }
 });
 
-test("cache warm/materialize/verify commands use global cache entry", { skip: !(await hasTar()) }, async () => {
+test("cache warm/materialize/verify commands use global cache entry", { skip: !(await hasTar()) || !(await hasBetterCore()) }, async () => {
   const dir = await makeTempDir("better-global-cache-cmds-");
   try {
     const { tgz, integrity } = await packFixture(dir, "bar");

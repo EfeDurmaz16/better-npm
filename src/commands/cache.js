@@ -15,8 +15,8 @@ import {
   materializeFromGlobalCache,
   captureProjectNodeModulesToGlobalCache
 } from "../lib/globalCache.js";
-import { readManifest, writeManifest, getCasInventory, manifestPath } from "../engine/better/cas.js";
-import { getFileCasStats, gcFileCas } from "../engine/better/fileCas.js";
+import { readManifest, writeManifest, getCasInventory, manifestPath } from "../lib/cas.js";
+import { getFileCasStats, gcFileCas } from "../lib/fileCas.js";
 
 async function listFiles(dir) {
   try {

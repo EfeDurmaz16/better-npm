@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
-import { ensureEmptyDir, materializeTree, materializeTreeWithRetry, atomicReplaceDir } from "../engine/better/materialize.js";
+import { ensureEmptyDir, atomicReplaceDir } from "./materialize.js";
 import { findBetterCore, runBetterCoreMaterialize, tryLoadNapiAddon, runBetterCoreMaterializeNapi } from "./core.js";
 
 async function exists(p) {
@@ -323,8 +323,9 @@ export async function materializeFromGlobalCache(layout, key, projectRoot, opts 
   }
 
   if (!usedCore) {
-    await materializeTree(verify.paths.nodeModulesPath, staging, { linkStrategy, stats, fsConcurrency });
-    runtime.fallbackCode = stats.lastFallbackCode ?? null;
+    throw new Error(
+      'better-core binary not found. Install via:\n  curl -fsSL https://raw.githubusercontent.com/EfeDurmaz16/better-npm/main/scripts/install.sh | sh'
+    );
   }
   await atomicReplaceDir(staging, path.join(projectRoot, "node_modules"));
   const endedAt = Date.now();
@@ -443,8 +444,9 @@ export async function captureProjectNodeModulesToGlobalCache(layout, key, projec
   }
 
   if (!usedCore) {
-    await materializeTree(source, stagingNodeModules, { linkStrategy, stats, fsConcurrency });
-    runtime.fallbackCode = stats.lastFallbackCode ?? null;
+    throw new Error(
+      'better-core binary not found. Install via:\n  curl -fsSL https://raw.githubusercontent.com/EfeDurmaz16/better-npm/main/scripts/install.sh | sh'
+    );
   }
   await fs.mkdir(stagingRoot, { recursive: true });
   await fs.writeFile(
