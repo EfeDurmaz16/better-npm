@@ -27,6 +27,7 @@ Commands:
   license            Scan node_modules for package licenses
   outdated           Check for newer versions of installed packages
   scripts            Manage install script sandboxing (list, allow, block)
+  completions <shell> Generate shell completions (bash, zsh, fish, powershell)
   lint|test|dev|build  Script aliases for better run
 
 Global options:
@@ -147,6 +148,13 @@ export async function runCli(argv) {
       case "scripts":
         await (await import("./commands/scripts.js")).cmdScripts(rest);
         break;
+      case "completions": {
+        const shell = rest[0] || "bash";
+        const { spawnSync } = await import("node:child_process");
+        const result = spawnSync("better-core", ["completions", shell], { stdio: "inherit" });
+        process.exitCode = result.status;
+        break;
+      }
       case "lint":
       case "test":
       case "dev":

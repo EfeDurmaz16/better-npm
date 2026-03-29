@@ -121,6 +121,7 @@ enum Command {
         lockfile: PathBuf,
         format: String,
     },
+    Completions { shell: String },
     Version,
     Help { error: Option<String> },
 }
@@ -476,6 +477,10 @@ fn parse_args() -> Command {
             let lf = lockfile.unwrap_or_else(|| pr.join("package-lock.json"));
             Command::Sbom { project_root: pr, lockfile: lf, format: format_opt }
         },
+        "completions" => {
+            let shell = positional.first().cloned().unwrap_or_else(|| "bash".into());
+            Command::Completions { shell }
+        },
         _ => Command::Help { error: Some(format!("unknown command: {sub}")) },
     }
 }
@@ -510,6 +515,7 @@ Usage:
   better-core lock [generate|verify] [--project-root <path>]
   better-core workspace [list|graph|changed|run] [--project-root <path>] [--since <ref>]
   better-core sbom [--project-root <path>] [--lockfile <path>] [--format cyclonedx|spdx]
+  better-core completions <bash|zsh|fish|powershell>
   better-core analyze --root <path> [--graph]
   better-core scan --root <path>
   better-core version
@@ -517,8 +523,374 @@ Usage:
     );
 }
 
+fn generate_bash_completions() -> &'static str {
+    r#"_better() {
+    local cur prev commands
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+
+    commands="install analyze cache doctor serve benchmark lock policy workspace audit dashboard run why dedupe license outdated scripts lint test dev build start exec env init hooks sbom completions scan materialize version help"
+
+    case "${prev}" in
+        better|better-core)
+            COMPREPLY=( $(compgen -W "${commands}" -- "${cur}") )
+            return 0
+            ;;
+        cache)
+            COMPREPLY=( $(compgen -W "stats gc" -- "${cur}") )
+            return 0
+            ;;
+        scripts)
+            COMPREPLY=( $(compgen -W "list scan allow block" -- "${cur}") )
+            return 0
+            ;;
+        policy)
+            COMPREPLY=( $(compgen -W "check init" -- "${cur}") )
+            return 0
+            ;;
+        lock)
+            COMPREPLY=( $(compgen -W "generate verify" -- "${cur}") )
+            return 0
+            ;;
+        workspace|ws)
+            COMPREPLY=( $(compgen -W "list graph changed run" -- "${cur}") )
+            return 0
+            ;;
+        env)
+            COMPREPLY=( $(compgen -W "check" -- "${cur}") )
+            return 0
+            ;;
+        hooks)
+            COMPREPLY=( $(compgen -W "install" -- "${cur}") )
+            return 0
+            ;;
+        completions)
+            COMPREPLY=( $(compgen -W "bash zsh fish powershell" -- "${cur}") )
+            return 0
+            ;;
+        --template)
+            COMPREPLY=( $(compgen -W "react next express" -- "${cur}") )
+            return 0
+            ;;
+        --format)
+            COMPREPLY=( $(compgen -W "cyclonedx spdx" -- "${cur}") )
+            return 0
+            ;;
+        --min-severity)
+            COMPREPLY=( $(compgen -W "low medium high critical" -- "${cur}") )
+            return 0
+            ;;
+        --link-strategy)
+            COMPREPLY=( $(compgen -W "auto clone hardlink copy" -- "${cur}") )
+            return 0
+            ;;
+    esac
+
+    if [[ "${cur}" == -* ]]; then
+        local opts="--json --cache-root --log-level --config --project-root --lockfile --root --help --version"
+        COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+        return 0
+    fi
+}
+complete -F _better better
+complete -F _better better-core
+"#
+}
+
+fn generate_zsh_completions() -> &'static str {
+    r#"#compdef better better-core
+
+_better() {
+    local -a commands
+    commands=(
+        'install:Wrap your package manager install'
+        'analyze:Analyze node_modules sizes and duplication'
+        'cache:Inspect/manage Better cache (stats, gc)'
+        'doctor:Dependency health checks and score'
+        'serve:Start web UI server for dependency visualization'
+        'benchmark:Run comparative cold/warm install benchmark'
+        'lock:Generate/verify Better lock metadata'
+        'policy:Dependency policy enforcement (check, init)'
+        'workspace:Workspace management (list, graph, changed, run)'
+        'audit:Scan dependencies for known vulnerabilities'
+        'dashboard:Interactive TUI dashboard for project health'
+        'run:Run package.json scripts'
+        'why:Show why a package is installed'
+        'dedupe:Detect duplicate packages in node_modules'
+        'license:Scan node_modules for package licenses'
+        'outdated:Check for newer versions of installed packages'
+        'scripts:Manage install script sandboxing'
+        'exec:Execute a script file'
+        'env:Show/check environment info'
+        'init:Initialize a new project'
+        'hooks:Install git hooks'
+        'sbom:Generate Software Bill of Materials'
+        'completions:Generate shell completions'
+        'scan:Scan node_modules tree'
+        'materialize:Materialize packages from CAS'
+        'lint:Run lint script'
+        'test:Run test script'
+        'dev:Run dev script (watch mode)'
+        'build:Run build script'
+        'start:Run start script'
+        'version:Show version'
+        'help:Show help'
+    )
+
+    _arguments -C \
+        '--json[Machine-readable JSON output]' \
+        '--cache-root[Override cache root]:path:_files -/' \
+        '--log-level[Log level]:level:(debug info warn error silent)' \
+        '--config[Config file path]:path:_files' \
+        '--project-root[Project root]:path:_files -/' \
+        '--lockfile[Lockfile path]:path:_files' \
+        '1:command:->cmd' \
+        '*::arg:->args'
+
+    case "$state" in
+        cmd)
+            _describe -t commands 'better command' commands
+            ;;
+        args)
+            case "${words[1]}" in
+                cache)
+                    _values 'subcommand' 'stats[Show cache statistics]' 'gc[Run garbage collection]'
+                    ;;
+                scripts)
+                    _values 'subcommand' 'list[List scripts]' 'scan[Scan for scripts]' 'allow[Allow a script]' 'block[Block a script]'
+                    ;;
+                policy)
+                    _values 'subcommand' 'check[Check policy]' 'init[Initialize policy]'
+                    ;;
+                lock)
+                    _values 'subcommand' 'generate[Generate lock metadata]' 'verify[Verify lock metadata]'
+                    ;;
+                workspace|ws)
+                    _values 'subcommand' 'list[List workspaces]' 'graph[Show dependency graph]' 'changed[Show changed packages]' 'run[Run command in workspaces]'
+                    ;;
+                env)
+                    _values 'subcommand' 'check[Check environment]'
+                    ;;
+                hooks)
+                    _values 'subcommand' 'install[Install git hooks]'
+                    ;;
+                completions)
+                    _values 'shell' 'bash' 'zsh' 'fish' 'powershell'
+                    ;;
+                init)
+                    _arguments '--name[Project name]:name:' '--template[Template]:template:(react next express)'
+                    ;;
+                sbom)
+                    _arguments '--format[Output format]:format:(cyclonedx spdx)'
+                    ;;
+                audit)
+                    _arguments '--min-severity[Minimum severity]:severity:(low medium high critical)'
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_better "$@"
+"#
+}
+
+fn generate_fish_completions() -> &'static str {
+    r#"# Fish completions for better / better-core
+
+# Disable file completions by default
+complete -c better -f
+complete -c better-core -f
+
+# Commands
+complete -c better -n "__fish_use_subcommand" -a install -d "Wrap your package manager install"
+complete -c better -n "__fish_use_subcommand" -a analyze -d "Analyze node_modules sizes and duplication"
+complete -c better -n "__fish_use_subcommand" -a cache -d "Inspect/manage Better cache"
+complete -c better -n "__fish_use_subcommand" -a doctor -d "Dependency health checks and score"
+complete -c better -n "__fish_use_subcommand" -a serve -d "Start web UI server"
+complete -c better -n "__fish_use_subcommand" -a benchmark -d "Run comparative install benchmark"
+complete -c better -n "__fish_use_subcommand" -a lock -d "Generate/verify lock metadata"
+complete -c better -n "__fish_use_subcommand" -a policy -d "Dependency policy enforcement"
+complete -c better -n "__fish_use_subcommand" -a workspace -d "Workspace management"
+complete -c better -n "__fish_use_subcommand" -a audit -d "Scan for known vulnerabilities"
+complete -c better -n "__fish_use_subcommand" -a dashboard -d "Interactive TUI dashboard"
+complete -c better -n "__fish_use_subcommand" -a run -d "Run package.json scripts"
+complete -c better -n "__fish_use_subcommand" -a why -d "Show why a package is installed"
+complete -c better -n "__fish_use_subcommand" -a dedupe -d "Detect duplicate packages"
+complete -c better -n "__fish_use_subcommand" -a license -d "Scan for package licenses"
+complete -c better -n "__fish_use_subcommand" -a outdated -d "Check for newer versions"
+complete -c better -n "__fish_use_subcommand" -a scripts -d "Manage install script sandboxing"
+complete -c better -n "__fish_use_subcommand" -a exec -d "Execute a script file"
+complete -c better -n "__fish_use_subcommand" -a env -d "Show/check environment info"
+complete -c better -n "__fish_use_subcommand" -a init -d "Initialize a new project"
+complete -c better -n "__fish_use_subcommand" -a hooks -d "Install git hooks"
+complete -c better -n "__fish_use_subcommand" -a sbom -d "Generate SBOM"
+complete -c better -n "__fish_use_subcommand" -a completions -d "Generate shell completions"
+complete -c better -n "__fish_use_subcommand" -a scan -d "Scan node_modules tree"
+complete -c better -n "__fish_use_subcommand" -a lint -d "Run lint script"
+complete -c better -n "__fish_use_subcommand" -a test -d "Run test script"
+complete -c better -n "__fish_use_subcommand" -a dev -d "Run dev script (watch mode)"
+complete -c better -n "__fish_use_subcommand" -a build -d "Run build script"
+complete -c better -n "__fish_use_subcommand" -a start -d "Run start script"
+complete -c better -n "__fish_use_subcommand" -a version -d "Show version"
+complete -c better -n "__fish_use_subcommand" -a help -d "Show help"
+
+# Copy all completions for better-core
+complete -c better-core -n "__fish_use_subcommand" -a install -d "Wrap your package manager install"
+complete -c better-core -n "__fish_use_subcommand" -a analyze -d "Analyze node_modules sizes and duplication"
+complete -c better-core -n "__fish_use_subcommand" -a cache -d "Inspect/manage Better cache"
+complete -c better-core -n "__fish_use_subcommand" -a doctor -d "Dependency health checks and score"
+complete -c better-core -n "__fish_use_subcommand" -a serve -d "Start web UI server"
+complete -c better-core -n "__fish_use_subcommand" -a benchmark -d "Run comparative install benchmark"
+complete -c better-core -n "__fish_use_subcommand" -a lock -d "Generate/verify lock metadata"
+complete -c better-core -n "__fish_use_subcommand" -a policy -d "Dependency policy enforcement"
+complete -c better-core -n "__fish_use_subcommand" -a workspace -d "Workspace management"
+complete -c better-core -n "__fish_use_subcommand" -a audit -d "Scan for known vulnerabilities"
+complete -c better-core -n "__fish_use_subcommand" -a dashboard -d "Interactive TUI dashboard"
+complete -c better-core -n "__fish_use_subcommand" -a run -d "Run package.json scripts"
+complete -c better-core -n "__fish_use_subcommand" -a why -d "Show why a package is installed"
+complete -c better-core -n "__fish_use_subcommand" -a dedupe -d "Detect duplicate packages"
+complete -c better-core -n "__fish_use_subcommand" -a license -d "Scan for package licenses"
+complete -c better-core -n "__fish_use_subcommand" -a outdated -d "Check for newer versions"
+complete -c better-core -n "__fish_use_subcommand" -a scripts -d "Manage install script sandboxing"
+complete -c better-core -n "__fish_use_subcommand" -a exec -d "Execute a script file"
+complete -c better-core -n "__fish_use_subcommand" -a env -d "Show/check environment info"
+complete -c better-core -n "__fish_use_subcommand" -a init -d "Initialize a new project"
+complete -c better-core -n "__fish_use_subcommand" -a hooks -d "Install git hooks"
+complete -c better-core -n "__fish_use_subcommand" -a sbom -d "Generate SBOM"
+complete -c better-core -n "__fish_use_subcommand" -a completions -d "Generate shell completions"
+complete -c better-core -n "__fish_use_subcommand" -a scan -d "Scan node_modules tree"
+complete -c better-core -n "__fish_use_subcommand" -a lint -d "Run lint script"
+complete -c better-core -n "__fish_use_subcommand" -a test -d "Run test script"
+complete -c better-core -n "__fish_use_subcommand" -a dev -d "Run dev script (watch mode)"
+complete -c better-core -n "__fish_use_subcommand" -a build -d "Run build script"
+complete -c better-core -n "__fish_use_subcommand" -a start -d "Run start script"
+complete -c better-core -n "__fish_use_subcommand" -a version -d "Show version"
+complete -c better-core -n "__fish_use_subcommand" -a help -d "Show help"
+
+# Subcommands
+complete -c better -n "__fish_seen_subcommand_from cache" -a "stats gc"
+complete -c better -n "__fish_seen_subcommand_from scripts" -a "list scan allow block"
+complete -c better -n "__fish_seen_subcommand_from policy" -a "check init"
+complete -c better -n "__fish_seen_subcommand_from lock" -a "generate verify"
+complete -c better -n "__fish_seen_subcommand_from workspace" -a "list graph changed run"
+complete -c better -n "__fish_seen_subcommand_from env" -a "check"
+complete -c better -n "__fish_seen_subcommand_from hooks" -a "install"
+complete -c better -n "__fish_seen_subcommand_from completions" -a "bash zsh fish powershell"
+
+complete -c better-core -n "__fish_seen_subcommand_from cache" -a "stats gc"
+complete -c better-core -n "__fish_seen_subcommand_from scripts" -a "list scan allow block"
+complete -c better-core -n "__fish_seen_subcommand_from policy" -a "check init"
+complete -c better-core -n "__fish_seen_subcommand_from lock" -a "generate verify"
+complete -c better-core -n "__fish_seen_subcommand_from workspace" -a "list graph changed run"
+complete -c better-core -n "__fish_seen_subcommand_from env" -a "check"
+complete -c better-core -n "__fish_seen_subcommand_from hooks" -a "install"
+complete -c better-core -n "__fish_seen_subcommand_from completions" -a "bash zsh fish powershell"
+
+# Global options
+complete -c better -l json -d "Machine-readable JSON output"
+complete -c better -l cache-root -d "Override cache root" -r -F
+complete -c better -l log-level -d "Log level" -r -a "debug info warn error silent"
+complete -c better -l config -d "Config file path" -r -F
+complete -c better -l project-root -d "Project root" -r -F
+complete -c better -l lockfile -d "Lockfile path" -r -F
+complete -c better -s h -l help -d "Show help"
+complete -c better -s v -l version -d "Show version"
+
+complete -c better-core -l json -d "Machine-readable JSON output"
+complete -c better-core -l cache-root -d "Override cache root" -r -F
+complete -c better-core -l log-level -d "Log level" -r -a "debug info warn error silent"
+complete -c better-core -l config -d "Config file path" -r -F
+complete -c better-core -l project-root -d "Project root" -r -F
+complete -c better-core -l lockfile -d "Lockfile path" -r -F
+complete -c better-core -s h -l help -d "Show help"
+complete -c better-core -s v -l version -d "Show version"
+"#
+}
+
+fn generate_powershell_completions() -> &'static str {
+    r#"Register-ArgumentCompleter -Native -CommandName @('better', 'better-core') -ScriptBlock {
+    param($wordToComplete, $commandAst, $cursorPosition)
+
+    $commands = @(
+        @{ Name = 'install';     Description = 'Wrap your package manager install' }
+        @{ Name = 'analyze';     Description = 'Analyze node_modules sizes and duplication' }
+        @{ Name = 'cache';       Description = 'Inspect/manage Better cache' }
+        @{ Name = 'doctor';      Description = 'Dependency health checks and score' }
+        @{ Name = 'serve';       Description = 'Start web UI server' }
+        @{ Name = 'benchmark';   Description = 'Run comparative install benchmark' }
+        @{ Name = 'lock';        Description = 'Generate/verify lock metadata' }
+        @{ Name = 'policy';      Description = 'Dependency policy enforcement' }
+        @{ Name = 'workspace';   Description = 'Workspace management' }
+        @{ Name = 'audit';       Description = 'Scan for known vulnerabilities' }
+        @{ Name = 'dashboard';   Description = 'Interactive TUI dashboard' }
+        @{ Name = 'run';         Description = 'Run package.json scripts' }
+        @{ Name = 'why';         Description = 'Show why a package is installed' }
+        @{ Name = 'dedupe';      Description = 'Detect duplicate packages' }
+        @{ Name = 'license';     Description = 'Scan for package licenses' }
+        @{ Name = 'outdated';    Description = 'Check for newer versions' }
+        @{ Name = 'scripts';     Description = 'Manage install script sandboxing' }
+        @{ Name = 'exec';        Description = 'Execute a script file' }
+        @{ Name = 'env';         Description = 'Show/check environment info' }
+        @{ Name = 'init';        Description = 'Initialize a new project' }
+        @{ Name = 'hooks';       Description = 'Install git hooks' }
+        @{ Name = 'sbom';        Description = 'Generate SBOM' }
+        @{ Name = 'completions'; Description = 'Generate shell completions' }
+        @{ Name = 'scan';        Description = 'Scan node_modules tree' }
+        @{ Name = 'lint';        Description = 'Run lint script' }
+        @{ Name = 'test';        Description = 'Run test script' }
+        @{ Name = 'dev';         Description = 'Run dev script (watch mode)' }
+        @{ Name = 'build';       Description = 'Run build script' }
+        @{ Name = 'start';       Description = 'Run start script' }
+        @{ Name = 'version';     Description = 'Show version' }
+        @{ Name = 'help';        Description = 'Show help' }
+    )
+
+    $subcommands = @{
+        'cache'       = @('stats', 'gc')
+        'scripts'     = @('list', 'scan', 'allow', 'block')
+        'policy'      = @('check', 'init')
+        'lock'        = @('generate', 'verify')
+        'workspace'   = @('list', 'graph', 'changed', 'run')
+        'env'         = @('check')
+        'hooks'       = @('install')
+        'completions' = @('bash', 'zsh', 'fish', 'powershell')
+    }
+
+    $elements = $commandAst.CommandElements
+    if ($elements.Count -ge 2) {
+        $cmd = $elements[1].ToString()
+        if ($subcommands.ContainsKey($cmd)) {
+            $subcommands[$cmd] | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
+                [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
+            }
+            return
+        }
+    }
+
+    $commands | Where-Object { $_.Name -like "$wordToComplete*" } | ForEach-Object {
+        [System.Management.Automation.CompletionResult]::new($_.Name, $_.Name, 'ParameterValue', $_.Description)
+    }
+}
+"#
+}
+
 fn main() {
     match parse_args() {
+        Command::Completions { shell } => {
+            match shell.as_str() {
+                "bash" => print!("{}", generate_bash_completions()),
+                "zsh" => print!("{}", generate_zsh_completions()),
+                "fish" => print!("{}", generate_fish_completions()),
+                "powershell" | "ps" | "pwsh" => print!("{}", generate_powershell_completions()),
+                _ => {
+                    eprintln!("Unknown shell: {shell}");
+                    eprintln!("Supported shells: bash, zsh, fish, powershell");
+                    std::process::exit(1);
+                }
+            }
+        }
         Command::Version => {
             println!("{VERSION}");
         }
