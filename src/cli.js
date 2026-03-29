@@ -17,6 +17,12 @@ Commands:
   serve              Start web UI server for dependency visualization
   benchmark          Run comparative cold/warm install benchmark
   lock               Generate/verify Better lock metadata
+  merge-driver       Git merge driver for better.lock.json (install/uninstall/status)
+  risk [pkg...]      Dependency risk scoring (A–F grade, staleness, CVEs, bus factor)
+  update [pkg...]    Auto-update intelligence — patch/minor/major with changelog snippets
+  size [pkg...]      Install size impact — own + subtree disk footprint, % of total
+  prefetch           Pre-warm registry cache from package.json scripts + source imports
+  delta              Show lockfile delta (added/removed/changed) vs last install
   policy <subcmd>    Dependency policy enforcement (check, init)
   workspace <subcmd> Workspace management (list, info, graph, changed, run)
   audit              Scan dependencies for known vulnerabilities (OSV.dev)
@@ -139,6 +145,25 @@ export async function runCli(argv) {
         break;
       case "lock":
         await (await import("./commands/lock.js")).cmdLock(rest);
+        break;
+      case "merge-driver":
+        await (await import("./commands/mergeDriver.js")).runMergeDriver(rest);
+        break;
+      case "risk":
+        await (await import("./commands/risk.js")).cmdRisk(rest);
+        break;
+      case "update":
+      case "up":
+        await (await import("./commands/update.js")).cmdUpdate(rest);
+        break;
+      case "size":
+        await (await import("./commands/size.js")).cmdSize(rest);
+        break;
+      case "prefetch":
+        await (await import("./commands/prefetch.js")).cmdPrefetch(rest);
+        break;
+      case "delta":
+        await (await import("./commands/delta.js")).cmdDelta(rest);
         break;
       case "policy":
         await (await import("./commands/policy.js")).cmdPolicy(rest);

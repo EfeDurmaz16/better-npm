@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "type": "module",
   "bin": {
-    "better": "./bin/better.js"
+    "better": "./bin/better.js",
+    "better-merge-driver": "./bin/better-merge-driver.js"
   },
   "scripts": {
     "test": "node --test",
