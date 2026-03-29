@@ -3,6 +3,31 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 // --- Core types ---
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeLayout {
+    /// Traditional flat node_modules (default, npm-style hoisted)
+    Hoist,
+    /// Strict isolation: pnpm-style symlink structure preventing phantom deps
+    Strict,
+}
+
+impl NodeLayout {
+    pub fn from_arg(value: &str) -> Option<Self> {
+        match value {
+            "hoist" | "hoisted" | "flat" => Some(Self::Hoist),
+            "strict" | "isolated" | "pnpm" => Some(Self::Strict),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Hoist => "hoist",
+            Self::Strict => "strict",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum LinkStrategy {
     Auto,
@@ -250,6 +275,18 @@ pub struct LifecycleRunResult {
     pub scripts_failed: u64,
     pub skipped_reason: Option<String>,
     pub rebuild_exit_code: Option<i32>,
+}
+
+// --- Strict materialization types ---
+
+#[derive(Debug, Default)]
+pub struct StrictMaterializeStats {
+    pub packages: u64,
+    pub files_linked: u64,
+    pub files_copied: u64,
+    pub internal_symlinks: u64,
+    pub root_symlinks: u64,
+    pub directories: u64,
 }
 
 // --- Materialize task types ---

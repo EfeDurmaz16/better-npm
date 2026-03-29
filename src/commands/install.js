@@ -479,6 +479,7 @@ export async function cmdInstall(argv) {
                  [--measure-cache auto|on|off]
                  [--core-mode auto|js|rust|napi] [--fs-concurrency N] [--no-incremental]
                  [--parity-check auto|off|warn|strict]
+                 [--strict] [--hoist] [--node-layout strict|hoist]
                  [--workspace PKG | -w PKG] [--workspace-concurrency N] [--workspace-topo]
                  [-- --<pm-specific flags>]
 
@@ -528,6 +529,10 @@ Workspace options:
       scripts: { type: "string" }, // rebuild|off
       "link-strategy": { type: "string" }, // auto|hardlink|copy
       "bin-links": { type: "string" }, // rootOnly
+      // Node layout flags
+      "strict": { type: "boolean", default: false },
+      "hoist": { type: "boolean", default: false },
+      "node-layout": { type: "string" }, // strict|hoist
       // Workspace flags
       workspace: { type: "string", multiple: true },
       w: { type: "string", multiple: true },
@@ -1096,6 +1101,13 @@ Workspace options:
         );
       }
       const started = Date.now();
+      // Determine node layout: --strict > --hoist > --node-layout > default (hoist)
+      const nodeLayout = values.strict
+        ? "strict"
+        : values.hoist
+          ? "hoist"
+          : values["node-layout"] ?? "hoist";
+
       betterEngine = await runBetterCoreInstall(corePath, projectRoot, {
         lockfile: path.join(projectRoot, "package-lock.json"),
         cacheRoot: layout.root,
@@ -1103,7 +1115,8 @@ Workspace options:
         linkStrategy: values["link-strategy"] ?? "auto",
         jobs: fsConcurrency,
         scripts: values.scripts !== "off",
-        dedup: false
+        dedup: false,
+        nodeLayout,
       });
       const ended = Date.now();
       cmd = "better";

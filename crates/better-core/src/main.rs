@@ -647,6 +647,10 @@ fn generate_bash_completions() -> &'static str {
             COMPREPLY=( $(compgen -W "auto clone hardlink copy" -- "${cur}") )
             return 0
             ;;
+        --node-layout)
+            COMPREPLY=( $(compgen -W "hoist strict" -- "${cur}") )
+            return 0
+            ;;
     esac
 
     if [[ "${cur}" == -* ]]; then
@@ -1108,97 +1112,129 @@ fn main() {
             let cas_linked = std::sync::atomic::AtomicU64::new(0);
             let cas_copied = std::sync::atomic::AtomicU64::new(0);
             let fallback_materialized = std::sync::atomic::AtomicU64::new(0);
+            let mut strict_stats: Option<StrictMaterializeStats> = None;
 
-            for pkg in &resolve_result.packages {
-                let dest_path = if pkg.rel_path.starts_with("node_modules/") {
-                    node_modules.join(&pkg.rel_path[13..])
-                } else {
-                    node_modules.join(&pkg.rel_path)
-                };
-                if let Some(parent) = dest_path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-            }
-
-            use rayon::prelude::*;
-            let materialize_error: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
-            progress.set_extract_total(resolve_result.packages.len() as u64);
-
-            resolve_result.packages.par_iter().for_each(|pkg| {
-                if materialize_error.lock().ok().and_then(|g| g.as_ref().cloned()).is_some() { return; }
-                let (algo, hex) = match cas_key_from_integrity(&pkg.integrity) { Some(k) => k, None => { progress.inc_extract(); return } };
-                let unpacked = unpacked_path(&layout, &algo, &hex);
-                let src_dir = unpacked.join("package");
-                if !src_dir.exists() { progress.inc_extract(); return; }
-                let dest_path = if pkg.rel_path.starts_with("node_modules/") {
-                    node_modules.join(&pkg.rel_path[13..])
-                } else {
-                    node_modules.join(&pkg.rel_path)
-                };
-
-                if dedup {
-                    let _ = ingest_to_file_cas(&file_cas_root, &algo, &hex, &src_dir);
-                    if let Ok(result) = materialize_from_file_cas(&file_cas_root, &algo, &hex, &dest_path, link_strategy) {
-                        if result.ok && result.files > 0 {
-                            total_files.fetch_add(result.files, std::sync::atomic::Ordering::Relaxed);
-                            cas_linked.fetch_add(result.linked, std::sync::atomic::Ordering::Relaxed);
-                            cas_copied.fetch_add(result.copied, std::sync::atomic::Ordering::Relaxed);
-                            total_symlinks.fetch_add(result.symlinks, std::sync::atomic::Ordering::Relaxed);
-                            progress.inc_extract();
-                            return;
-                        }
-                    }
-                    if try_clonefile_dir(&src_dir, &dest_path) {
-                        cloned.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        progress.inc_extract();
-                        return;
-                    }
-                } else {
-                    if try_clonefile_dir(&src_dir, &dest_path) {
-                        cloned.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        let _ = ingest_to_file_cas(&file_cas_root, &algo, &hex, &src_dir);
-                        progress.inc_extract();
-                        return;
-                    }
-                    let _ = ingest_to_file_cas(&file_cas_root, &algo, &hex, &src_dir);
-                    if let Ok(result) = materialize_from_file_cas(&file_cas_root, &algo, &hex, &dest_path, link_strategy) {
-                        if result.ok && result.files > 0 {
-                            total_files.fetch_add(result.files, std::sync::atomic::Ordering::Relaxed);
-                            cas_linked.fetch_add(result.linked, std::sync::atomic::Ordering::Relaxed);
-                            cas_copied.fetch_add(result.copied, std::sync::atomic::Ordering::Relaxed);
-                            total_symlinks.fetch_add(result.symlinks, std::sync::atomic::Ordering::Relaxed);
-                            progress.inc_extract();
-                            return;
-                        }
-                    }
-                }
-
-                match materialize_tree(&src_dir, &dest_path, link_strategy, 4, MaterializeProfile::Auto) {
-                    Ok(report) => {
-                        total_files.fetch_add(report.stats.files, std::sync::atomic::Ordering::Relaxed);
-                        total_dirs.fetch_add(report.stats.directories, std::sync::atomic::Ordering::Relaxed);
-                        total_symlinks.fetch_add(report.stats.symlinks, std::sync::atomic::Ordering::Relaxed);
-                        fallback_materialized.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if node_layout == NodeLayout::Strict {
+                // Strict mode: pnpm-style isolated node_modules with symlinks
+                progress.set_extract_total(resolve_result.packages.len() as u64);
+                match materialize_strict(
+                    &resolve_result.packages,
+                    &project_root,
+                    &layout,
+                    &file_cas_root,
+                    link_strategy,
+                ) {
+                    Ok(ss) => {
+                        total_files.store(ss.files_linked + ss.files_copied, std::sync::atomic::Ordering::Relaxed);
+                        total_dirs.store(ss.directories, std::sync::atomic::Ordering::Relaxed);
+                        total_symlinks.store(ss.internal_symlinks + ss.root_symlinks, std::sync::atomic::Ordering::Relaxed);
+                        progress.finish_extract();
+                        strict_stats = Some(ss);
                     }
                     Err(reason) => {
-                        if let Ok(mut guard) = materialize_error.lock() {
-                            if guard.is_none() { *guard = Some(format!("Failed to materialize {}: {}", pkg.name, reason)); }
-                        }
+                        let mut w = JsonWriter::new();
+                        w.begin_object();
+                        w.key("ok"); w.value_bool(false);
+                        w.key("kind"); w.value_string("better.install.report");
+                        w.key("reason"); w.value_string(&reason);
+                        w.end_object(); w.out.push('\n');
+                        print!("{}", w.finish());
+                        std::process::exit(1);
                     }
                 }
-                progress.inc_extract();
-            });
-            progress.finish_extract();
+            } else {
+                // Hoist mode: traditional flat node_modules
+                for pkg in &resolve_result.packages {
+                    let dest_path = if pkg.rel_path.starts_with("node_modules/") {
+                        node_modules.join(&pkg.rel_path[13..])
+                    } else {
+                        node_modules.join(&pkg.rel_path)
+                    };
+                    if let Some(parent) = dest_path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                }
 
-            if let Some(reason) = materialize_error.lock().ok().and_then(|g| g.clone()) {
-                let mut w = JsonWriter::new();
-                w.begin_object();
-                w.key("ok"); w.value_bool(false);
-                w.key("kind"); w.value_string("better.install.report");
-                w.key("reason"); w.value_string(&reason);
-                w.end_object(); w.out.push('\n');
-                print!("{}", w.finish());
-                std::process::exit(1);
+                use rayon::prelude::*;
+                let materialize_error: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+                progress.set_extract_total(resolve_result.packages.len() as u64);
+
+                resolve_result.packages.par_iter().for_each(|pkg| {
+                    if materialize_error.lock().ok().and_then(|g| g.as_ref().cloned()).is_some() { return; }
+                    let (algo, hex) = match cas_key_from_integrity(&pkg.integrity) { Some(k) => k, None => { progress.inc_extract(); return } };
+                    let unpacked = unpacked_path(&layout, &algo, &hex);
+                    let src_dir = unpacked.join("package");
+                    if !src_dir.exists() { progress.inc_extract(); return; }
+                    let dest_path = if pkg.rel_path.starts_with("node_modules/") {
+                        node_modules.join(&pkg.rel_path[13..])
+                    } else {
+                        node_modules.join(&pkg.rel_path)
+                    };
+
+                    if dedup {
+                        let _ = ingest_to_file_cas(&file_cas_root, &algo, &hex, &src_dir);
+                        if let Ok(result) = materialize_from_file_cas(&file_cas_root, &algo, &hex, &dest_path, link_strategy) {
+                            if result.ok && result.files > 0 {
+                                total_files.fetch_add(result.files, std::sync::atomic::Ordering::Relaxed);
+                                cas_linked.fetch_add(result.linked, std::sync::atomic::Ordering::Relaxed);
+                                cas_copied.fetch_add(result.copied, std::sync::atomic::Ordering::Relaxed);
+                                total_symlinks.fetch_add(result.symlinks, std::sync::atomic::Ordering::Relaxed);
+                                progress.inc_extract();
+                                return;
+                            }
+                        }
+                        if try_clonefile_dir(&src_dir, &dest_path) {
+                            cloned.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            progress.inc_extract();
+                            return;
+                        }
+                    } else {
+                        if try_clonefile_dir(&src_dir, &dest_path) {
+                            cloned.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let _ = ingest_to_file_cas(&file_cas_root, &algo, &hex, &src_dir);
+                            progress.inc_extract();
+                            return;
+                        }
+                        let _ = ingest_to_file_cas(&file_cas_root, &algo, &hex, &src_dir);
+                        if let Ok(result) = materialize_from_file_cas(&file_cas_root, &algo, &hex, &dest_path, link_strategy) {
+                            if result.ok && result.files > 0 {
+                                total_files.fetch_add(result.files, std::sync::atomic::Ordering::Relaxed);
+                                cas_linked.fetch_add(result.linked, std::sync::atomic::Ordering::Relaxed);
+                                cas_copied.fetch_add(result.copied, std::sync::atomic::Ordering::Relaxed);
+                                total_symlinks.fetch_add(result.symlinks, std::sync::atomic::Ordering::Relaxed);
+                                progress.inc_extract();
+                                return;
+                            }
+                        }
+                    }
+
+                    match materialize_tree(&src_dir, &dest_path, link_strategy, 4, MaterializeProfile::Auto) {
+                        Ok(report) => {
+                            total_files.fetch_add(report.stats.files, std::sync::atomic::Ordering::Relaxed);
+                            total_dirs.fetch_add(report.stats.directories, std::sync::atomic::Ordering::Relaxed);
+                            total_symlinks.fetch_add(report.stats.symlinks, std::sync::atomic::Ordering::Relaxed);
+                            fallback_materialized.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        Err(reason) => {
+                            if let Ok(mut guard) = materialize_error.lock() {
+                                if guard.is_none() { *guard = Some(format!("Failed to materialize {}: {}", pkg.name, reason)); }
+                            }
+                        }
+                    }
+                    progress.inc_extract();
+                });
+                progress.finish_extract();
+
+                if let Some(reason) = materialize_error.lock().ok().and_then(|g| g.clone()) {
+                    let mut w = JsonWriter::new();
+                    w.begin_object();
+                    w.key("ok"); w.value_bool(false);
+                    w.key("kind"); w.value_string("better.install.report");
+                    w.key("reason"); w.value_string(&reason);
+                    w.end_object(); w.out.push('\n');
+                    print!("{}", w.finish());
+                    std::process::exit(1);
+                }
             }
             let phase_materialize_ms = t_mat.elapsed().as_millis() as u64;
 
@@ -1250,6 +1286,7 @@ fn main() {
             w.key("projectRoot"); w.value_string(&project_root.to_string_lossy());
             w.key("cacheRoot"); w.value_string(&cache_root.to_string_lossy());
             w.key("durationMs"); w.value_u64(duration_ms);
+            w.key("nodeLayout"); w.value_string(node_layout.as_str());
             w.key("stats"); w.begin_object();
             w.key("packagesResolved"); w.value_u64(resolve_result.packages.len() as u64);
             w.key("packagesFetched"); w.value_u64(fetch_result.packages_fetched);
@@ -1263,6 +1300,16 @@ fn main() {
             w.key("casCopied"); w.value_u64(cas_copied);
             w.key("fallbackMaterialized"); w.value_u64(fallback_materialized);
             w.end_object();
+            if let Some(ref ss) = strict_stats {
+                w.key("strict"); w.begin_object();
+                w.key("packages"); w.value_u64(ss.packages);
+                w.key("filesLinked"); w.value_u64(ss.files_linked);
+                w.key("filesCopied"); w.value_u64(ss.files_copied);
+                w.key("internalSymlinks"); w.value_u64(ss.internal_symlinks);
+                w.key("rootSymlinks"); w.value_u64(ss.root_symlinks);
+                w.key("directories"); w.value_u64(ss.directories);
+                w.end_object();
+            }
             w.key("binLinks"); w.begin_object();
             w.key("created"); w.value_u64(bin_result.links_created);
             w.key("failed"); w.value_u64(bin_result.links_failed);
