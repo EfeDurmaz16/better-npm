@@ -20,6 +20,7 @@ Commands:
   merge-driver       Git merge driver for better.lock.json (install/uninstall/status)
   risk [pkg...]      Dependency risk scoring (A–F grade, staleness, CVEs, bus factor)
   update [pkg...]    Auto-update intelligence — patch/minor/major with changelog snippets
+  size [pkg...]      Install size impact — own + subtree disk footprint, % of total
   policy <subcmd>    Dependency policy enforcement (check, init)
   workspace <subcmd> Workspace management (list, info, graph, changed, run)
   audit              Scan dependencies for known vulnerabilities (OSV.dev)
@@ -121,6 +122,9 @@ export async function runCli(argv) {
       case "update":
       case "up":
         await (await import("./commands/update.js")).cmdUpdate(rest);
+        break;
+      case "size":
+        await (await import("./commands/size.js")).cmdSize(rest);
         break;
       case "policy":
         await (await import("./commands/policy.js")).cmdPolicy(rest);
