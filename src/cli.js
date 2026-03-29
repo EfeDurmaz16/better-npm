@@ -17,6 +17,7 @@ Commands:
   serve              Start web UI server for dependency visualization
   benchmark          Run comparative cold/warm install benchmark
   lock               Generate/verify Better lock metadata
+  merge-driver       Git merge driver for better.lock.json (install/uninstall/status)
   policy <subcmd>    Dependency policy enforcement (check, init)
   workspace <subcmd> Workspace management (list, info, graph, changed, run)
   audit              Scan dependencies for known vulnerabilities (OSV.dev)
@@ -108,6 +109,9 @@ export async function runCli(argv) {
         break;
       case "lock":
         await (await import("./commands/lock.js")).cmdLock(rest);
+        break;
+      case "merge-driver":
+        await (await import("./commands/mergeDriver.js")).runMergeDriver(rest);
         break;
       case "policy":
         await (await import("./commands/policy.js")).cmdPolicy(rest);
