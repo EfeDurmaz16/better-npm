@@ -209,6 +209,62 @@ enum Command {
         project_root: PathBuf,
         json: bool,
     },
+    // v0.8 OSP + Sardis
+    Provision {
+        provider_offering: String,
+        tier: String,
+        payment: Option<String>,
+        project_root: PathBuf,
+    },
+    Discover {
+        query: String,
+        category: Option<String>,
+    },
+    Services {
+        subcommand: String,   // list, status
+        resource_id: Option<String>,
+    },
+    Credentials {
+        subcommand: String,   // rotate
+        resource_id: Option<String>,
+        project_root: PathBuf,
+    },
+    Deprovision {
+        resource_id: String,
+        project_root: PathBuf,
+    },
+    EnvGenerate {
+        project_root: PathBuf,
+    },
+    Login {
+        sardis: bool,
+    },
+    Logout {
+        sardis: bool,
+    },
+    Wallet,
+    Pay {
+        package: Option<String>,
+        amount: Option<String>,
+        all: bool,
+        budget: Option<String>,
+        recurring: Option<String>,
+    },
+    Publish {
+        project_root: PathBuf,
+        monetize: bool,
+        pricing: Option<String>,
+    },
+    Earnings {
+        breakdown: bool,
+        period: u32,
+    },
+    Sponsor {
+        package: Option<String>,
+        amount: Option<String>,
+        schedule: Option<String>,
+        list: bool,
+    },
     Version,
     Help { error: Option<String> },
 }
@@ -352,6 +408,19 @@ fn parse_args() -> (Command, GlobalFlags) {
     let mut ecosystem_opt: Option<String> = None;
     let mut limit_opt: usize = 10;
     let mut transport_opt = "stdio".to_string();
+    let mut sardis_flag = false;
+    let mut monetize_flag = false;
+    let mut budget_opt: Option<String> = None;
+    let mut amount_opt: Option<String> = None;
+    let mut recurring_opt: Option<String> = None;
+    let mut pricing_opt: Option<String> = None;
+    let mut breakdown_flag = false;
+    let mut period_opt: u32 = 30;
+    let mut list_flag = false;
+    let mut schedule_opt: Option<String> = None;
+    let mut tier_opt: Option<String> = None;
+    let mut pay_opt: Option<String> = None;
+    let mut category_opt: Option<String> = None;
 
     let mut i = 1usize;
     while i < args.len() {
@@ -564,6 +633,53 @@ fn parse_args() -> (Command, GlobalFlags) {
                 transport_opt = args[i + 1].clone();
                 i += 2;
             }
+            "--sardis" => { sardis_flag = true; i += 1; }
+            "--monetize" => { monetize_flag = true; i += 1; }
+            "--budget" => {
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--budget requires a value".into()) }, global_flags); }
+                budget_opt = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--amount" => {
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--amount requires a value".into()) }, global_flags); }
+                amount_opt = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--recurring" => {
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--recurring requires a value".into()) }, global_flags); }
+                recurring_opt = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--pricing" => {
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--pricing requires a value".into()) }, global_flags); }
+                pricing_opt = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--breakdown" => { breakdown_flag = true; i += 1; }
+            "--period" => {
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--period requires a value".into()) }, global_flags); }
+                period_opt = args[i + 1].parse().unwrap_or(30);
+                i += 2;
+            }
+            "--list" => { list_flag = true; i += 1; }
+            "--tier" => {
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--tier requires a value".into()) }, global_flags); }
+                tier_opt = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--pay" => {
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--pay requires a value".into()) }, global_flags); }
+                pay_opt = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--category" => {
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--category requires a value".into()) }, global_flags); }
+                category_opt = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--monthly" => { schedule_opt = Some("monthly".into()); i += 1; }
+            "--quarterly" => { schedule_opt = Some("quarterly".into()); i += 1; }
+            "--annual" => { schedule_opt = Some("annual".into()); i += 1; }
             other => {
                 if other.starts_with('-') {
                     return (Command::Help { error: Some(format!("unknown flag: {other}")) }, global_flags);
@@ -679,8 +795,12 @@ fn parse_args() -> (Command, GlobalFlags) {
         },
         "env" => {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
-            let check = positional.first().map(|s| s.as_str()) == Some("check");
-            Command::Env { project_root: pr, check }
+            if positional.first().map(|s| s.as_str()) == Some("generate") {
+                Command::EnvGenerate { project_root: pr }
+            } else {
+                let check = positional.first().map(|s| s.as_str()) == Some("check");
+                Command::Env { project_root: pr, check }
+            }
         },
         "init" => {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
@@ -775,6 +895,77 @@ fn parse_args() -> (Command, GlobalFlags) {
                 return (Command::Help { error: Some("search requires a query".into()) }, global_flags);
             }
             Command::Search { query, ecosystem: ecosystem_opt.clone(), limit: limit_opt }
+        },
+        "provision" => {
+            let provider_offering = positional.first().cloned().unwrap_or_default();
+            if provider_offering.is_empty() {
+                return (Command::Help { error: Some("provision requires <provider/offering>".into()) }, global_flags);
+            }
+            let tier = tier_opt.clone().unwrap_or_else(|| "free".into());
+            let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
+            Command::Provision { provider_offering, tier, payment: pay_opt.clone(), project_root: pr }
+        },
+        "discover" => {
+            let query = positional.join(" ");
+            if query.is_empty() {
+                return (Command::Help { error: Some("discover requires a domain or category".into()) }, global_flags);
+            }
+            Command::Discover { query, category: category_opt.clone() }
+        },
+        "services" => {
+            let subcmd = positional.first().cloned().unwrap_or_else(|| "list".into());
+            let rid = positional.get(1).cloned();
+            Command::Services { subcommand: subcmd, resource_id: rid }
+        },
+        "credentials" => {
+            let subcmd = positional.first().cloned().unwrap_or_else(|| "rotate".into());
+            let rid = positional.get(1).cloned();
+            let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
+            Command::Credentials { subcommand: subcmd, resource_id: rid, project_root: pr }
+        },
+        "deprovision" => {
+            let rid = positional.first().cloned()
+                .unwrap_or_else(|| "".into());
+            if rid.is_empty() {
+                return (Command::Help { error: Some("deprovision requires a resource_id".into()) }, global_flags);
+            }
+            let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
+            Command::Deprovision { resource_id: rid, project_root: pr }
+        },
+        "login" => {
+            Command::Login { sardis: sardis_flag }
+        },
+        "logout" => {
+            Command::Logout { sardis: sardis_flag }
+        },
+        "wallet" => {
+            Command::Wallet
+        },
+        "pay" => {
+            let pkg = positional.first().cloned();
+            Command::Pay {
+                package: pkg,
+                amount: amount_opt,
+                all: all_flag,
+                budget: budget_opt,
+                recurring: recurring_opt,
+            }
+        },
+        "publish" => {
+            let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
+            Command::Publish { project_root: pr, monetize: monetize_flag, pricing: pricing_opt }
+        },
+        "earnings" => {
+            Command::Earnings { breakdown: breakdown_flag, period: period_opt }
+        },
+        "sponsor" | "sponsors" => {
+            let pkg = positional.first().cloned();
+            Command::Sponsor {
+                package: pkg,
+                amount: amount_opt,
+                schedule: schedule_opt,
+                list: list_flag || sub == "sponsors",
+            }
         },
         _ => Command::Help { error: Some(format!("unknown command: {sub}")) },
     };
@@ -3593,6 +3784,475 @@ fn main() {
                     std::process::exit(1);
                 }
             }
+        }
+
+        // ── v0.8 OSP + Sardis commands ──
+
+        Command::Discover { query, category } => {
+            use better_core::osp;
+            match osp::discovery::discover(&query) {
+                Ok(manifest) => {
+                    let offerings = osp::discovery::search_offerings(&manifest, category.as_deref());
+                    if global_flags.json || global_flags.agent_mode {
+                        let mut w = JsonWriter::new();
+                        w.begin_object();
+                        w.key("ok"); w.value_bool(true);
+                        w.key("kind"); w.value_string("better.discover");
+                        w.key("provider"); w.value_string(&manifest.provider_id);
+                        w.key("displayName"); w.value_string(&manifest.display_name);
+                        w.key("offerings"); w.begin_array();
+                        for o in &offerings {
+                            w.begin_object();
+                            w.key("offeringId"); w.value_string(&o.offering_id);
+                            w.key("name"); w.value_string(&o.name);
+                            if let Some(ref desc) = o.description {
+                                w.key("description"); w.value_string(desc);
+                            }
+                            w.key("tiers"); w.begin_array();
+                            for t in &o.tiers {
+                                w.begin_object();
+                                w.key("tierId"); w.value_string(&t.tier_id);
+                                w.key("name"); w.value_string(&t.name);
+                                w.key("price"); w.value_string(&t.price.amount);
+                                w.key("currency"); w.value_string(&t.price.currency);
+                                w.end_object();
+                            }
+                            w.end_array();
+                            w.end_object();
+                        }
+                        w.end_array();
+                        w.end_object(); w.out.push('\n');
+                        print!("{}", w.finish());
+                    } else {
+                        println!("better -- discover {}\n", manifest.provider_id);
+                        println!("  provider: {} ({})", manifest.display_name, manifest.provider_id);
+                        println!("  spec:     v{}", manifest.osp_spec_version.as_deref().unwrap_or("1.0"));
+                        println!("  verified: signature OK\n");
+                        if offerings.is_empty() {
+                            println!("  No offerings found.");
+                        } else {
+                            println!("  {} offerings:\n", offerings.len());
+                            for o in &offerings {
+                                println!("    {} — {}", o.offering_id, o.name);
+                                if let Some(ref desc) = o.description {
+                                    println!("      {}", desc);
+                                }
+                                for t in &o.tiers {
+                                    let price_str = if t.price.amount == "0.00" || t.price.amount == "0" {
+                                        "free".to_string()
+                                    } else {
+                                        format!("{} {}", t.price.amount, t.price.currency)
+                                    };
+                                    println!("      tier: {} — {}", t.tier_id, price_str);
+                                }
+                                println!();
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    if global_flags.json || global_flags.agent_mode {
+                        let mut w = JsonWriter::new();
+                        w.begin_object();
+                        w.key("ok"); w.value_bool(false);
+                        w.key("kind"); w.value_string("better.discover");
+                        w.key("reason"); w.value_string(&e.to_string());
+                        w.end_object(); w.out.push('\n');
+                        print!("{}", w.finish());
+                    } else {
+                        eprintln!("error: {}", e);
+                    }
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        Command::Provision { provider_offering, tier, payment, project_root: _pr } => {
+            use better_core::osp;
+            // Parse provider/offering format (e.g., "supabase.com/postgres")
+            let parts: Vec<&str> = provider_offering.splitn(2, '/').collect();
+            if parts.len() < 2 {
+                eprintln!("error: provision requires format <domain>/<offering>, got: {}", provider_offering);
+                std::process::exit(2);
+            }
+            let domain = parts[0];
+            let offering_id_suffix = parts[1];
+
+            // Discover the provider
+            let manifest = match osp::discovery::discover(domain) {
+                Ok(m) => m,
+                Err(e) => {
+                    if global_flags.json || global_flags.agent_mode {
+                        let mut w = JsonWriter::new();
+                        w.begin_object();
+                        w.key("ok"); w.value_bool(false);
+                        w.key("kind"); w.value_string("better.provision");
+                        w.key("reason"); w.value_string(&e.to_string());
+                        w.end_object(); w.out.push('\n');
+                        print!("{}", w.finish());
+                    } else {
+                        eprintln!("error: {}", e);
+                    }
+                    std::process::exit(1);
+                }
+            };
+
+            // Find offering
+            let offering = match manifest.offerings.iter().find(|o| {
+                o.offering_id == provider_offering || o.offering_id.ends_with(&format!("/{}", offering_id_suffix))
+            }) {
+                Some(o) => o.clone(),
+                None => {
+                    eprintln!("error: offering '{}' not found in {}", offering_id_suffix, domain);
+                    std::process::exit(1);
+                }
+            };
+
+            // Find tier
+            let tier_obj = match offering.tiers.iter().find(|t| t.tier_id == tier) {
+                Some(t) => t.clone(),
+                None => {
+                    eprintln!("error: tier '{}' not found for {}", tier, offering.offering_id);
+                    std::process::exit(1);
+                }
+            };
+
+            // Open vault and get agent key
+            let mut vault = match osp::vault::Vault::open() {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("error: {}", e);
+                    std::process::exit(1);
+                }
+            };
+            let agent_pub = match vault.agent_public_key_b64() {
+                Ok(k) => k,
+                Err(e) => {
+                    eprintln!("error: {}", e);
+                    std::process::exit(1);
+                }
+            };
+
+            // Build provision request
+            let mut builder = osp::provision::ProvisionRequestBuilder::new(
+                offering.clone(),
+                tier_obj.clone(),
+                "better-project".into(),
+                agent_pub,
+            );
+            if let Some(ref pay) = payment {
+                builder = builder.payment(pay.clone(), "".to_string());
+            }
+
+            let request = match builder.build() {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("error: {}", e);
+                    std::process::exit(1);
+                }
+            };
+
+            if !global_flags.json && !global_flags.agent_mode {
+                println!("better -- provisioning {}/{} (tier: {})\n", domain, offering_id_suffix, tier);
+            }
+
+            match osp::provision::send_provision_request(&manifest, &request) {
+                Ok(response) => {
+                    // Store in vault
+                    let entry = osp::vault::VaultEntry {
+                        provider_id: manifest.provider_id.clone(),
+                        offering_id: offering.offering_id.clone(),
+                        resource_id: response.resource_id.clone().unwrap_or_default(),
+                        tier_id: tier_obj.tier_id.clone(),
+                        credential_bundle: response.credentials.clone().unwrap_or_else(|| {
+                            osp::credentials::CredentialBundle {
+                                bundle_id: None, resource_id: None, offering_id: None,
+                                encrypted_payload: None, encryption_method: None,
+                                ephemeral_public_key: None, nonce: None, provider_signature: None,
+                                agent_public_key_fingerprint: None, issued_at: None, expires_at: None,
+                                rotation_available_at: None, credential_type: None, version: None,
+                                previous_bundle_id: None, osp_uri: None, fields: None,
+                            }
+                        }),
+                        provisioned_at: response.created_at.clone(),
+                        status: if response.status == osp::provision::ProvisionStatus::Active {
+                            osp::vault::ServiceStatus::Active
+                        } else {
+                            osp::vault::ServiceStatus::Provisioning
+                        },
+                        dashboard_url: response.dashboard_url.clone(),
+                        osp_uris: vec![],
+                        cost_estimate: response.cost_estimate.clone(),
+                        last_rotated_at: None,
+                    };
+                    let _ = vault.store_entry(entry);
+
+                    if global_flags.json || global_flags.agent_mode {
+                        let mut w = JsonWriter::new();
+                        w.begin_object();
+                        w.key("ok"); w.value_bool(true);
+                        w.key("kind"); w.value_string("better.provision");
+                        w.key("status"); w.value_string(&format!("{:?}", response.status).to_lowercase());
+                        if let Some(ref rid) = response.resource_id {
+                            w.key("resourceId"); w.value_string(rid);
+                        }
+                        if let Some(ref dash) = response.dashboard_url {
+                            w.key("dashboardUrl"); w.value_string(dash);
+                        }
+                        w.end_object(); w.out.push('\n');
+                        print!("{}", w.finish());
+                    } else {
+                        println!("  status:      {:?}", response.status);
+                        if let Some(ref rid) = response.resource_id {
+                            println!("  resource_id: {}", rid);
+                        }
+                        if let Some(ref dash) = response.dashboard_url {
+                            println!("  dashboard:   {}", dash);
+                        }
+                        println!("\n  Credentials stored in ~/.better/vault/");
+                    }
+                }
+                Err(e) => {
+                    if global_flags.json || global_flags.agent_mode {
+                        let mut w = JsonWriter::new();
+                        w.begin_object();
+                        w.key("ok"); w.value_bool(false);
+                        w.key("kind"); w.value_string("better.provision");
+                        w.key("reason"); w.value_string(&e.to_string());
+                        w.end_object(); w.out.push('\n');
+                        print!("{}", w.finish());
+                    } else {
+                        eprintln!("error: {}", e);
+                    }
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        Command::Services { subcommand, resource_id } => {
+            use better_core::osp;
+            let vault = match osp::vault::Vault::open() {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("error: {}", e);
+                    std::process::exit(1);
+                }
+            };
+            match subcommand.as_str() {
+                "list" => {
+                    let entries = osp::services::list_services(&vault);
+                    if global_flags.json || global_flags.agent_mode {
+                        let mut w = JsonWriter::new();
+                        w.begin_object();
+                        w.key("ok"); w.value_bool(true);
+                        w.key("kind"); w.value_string("better.services.list");
+                        w.key("services"); w.begin_array();
+                        for e in &entries {
+                            w.begin_object();
+                            w.key("providerId"); w.value_string(&e.provider_id);
+                            w.key("offeringId"); w.value_string(&e.offering_id);
+                            w.key("resourceId"); w.value_string(&e.resource_id);
+                            w.key("tierId"); w.value_string(&e.tier_id);
+                            w.key("status"); w.value_string(&format!("{:?}", e.status));
+                            w.key("provisionedAt"); w.value_string(&e.provisioned_at);
+                            w.end_object();
+                        }
+                        w.end_array();
+                        w.end_object(); w.out.push('\n');
+                        print!("{}", w.finish());
+                    } else {
+                        println!("better -- provisioned services\n");
+                        if entries.is_empty() {
+                            println!("  No services provisioned. Use: better provision <provider/offering>");
+                        } else {
+                            for e in &entries {
+                                println!("  {} — {} (tier: {}, status: {:?})",
+                                    e.provider_id, e.offering_id, e.tier_id, e.status);
+                                println!("    resource_id: {}", e.resource_id);
+                                if let Some(ref url) = e.dashboard_url {
+                                    println!("    dashboard:   {}", url);
+                                }
+                                println!();
+                            }
+                        }
+                    }
+                }
+                "status" => {
+                    if let Some(rid) = resource_id {
+                        let parts: Vec<&str> = rid.splitn(2, '/').collect();
+                        if parts.len() == 2 {
+                            match osp::services::service_status(&vault, parts[0], parts[1]) {
+                                Ok(entry) => {
+                                    println!("  {} — {:?}", entry.offering_id, entry.status);
+                                }
+                                Err(e) => {
+                                    eprintln!("error: {}", e);
+                                    std::process::exit(1);
+                                }
+                            }
+                        } else {
+                            eprintln!("error: status requires format <provider>/<offering>");
+                            std::process::exit(2);
+                        }
+                    } else {
+                        eprintln!("error: status requires a service identifier");
+                        std::process::exit(2);
+                    }
+                }
+                other => {
+                    eprintln!("error: unknown services subcommand: {}", other);
+                    std::process::exit(2);
+                }
+            }
+        }
+
+        Command::Credentials { subcommand, resource_id, project_root: _pr } => {
+            use better_core::osp;
+            match subcommand.as_str() {
+                "rotate" => {
+                    if let Some(rid) = resource_id {
+                        let parts: Vec<&str> = rid.splitn(2, '/').collect();
+                        if parts.len() == 2 {
+                            let mut vault = match osp::vault::Vault::open() {
+                                Ok(v) => v,
+                                Err(e) => { eprintln!("error: {}", e); std::process::exit(1); }
+                            };
+                            let manifest = match osp::discovery::discover(parts[0]) {
+                                Ok(m) => m,
+                                Err(e) => { eprintln!("error: {}", e); std::process::exit(1); }
+                            };
+                            match osp::rotate::rotate_credentials(&mut vault, &manifest, parts[0], parts[1]) {
+                                Ok(()) => println!("Credentials rotated for {}", rid),
+                                Err(e) => { eprintln!("error: {}", e); std::process::exit(1); }
+                            }
+                        } else {
+                            eprintln!("error: rotate requires format <provider>/<offering>");
+                            std::process::exit(2);
+                        }
+                    } else {
+                        eprintln!("error: credentials rotate requires a resource identifier");
+                        std::process::exit(2);
+                    }
+                }
+                other => {
+                    eprintln!("error: unknown credentials subcommand: {}", other);
+                    std::process::exit(2);
+                }
+            }
+        }
+
+        Command::Deprovision { resource_id, project_root: _pr } => {
+            use better_core::osp;
+            let parts: Vec<&str> = resource_id.splitn(2, '/').collect();
+            if parts.len() != 2 {
+                eprintln!("error: deprovision requires format <provider>/<offering>");
+                std::process::exit(2);
+            }
+            let mut vault = match osp::vault::Vault::open() {
+                Ok(v) => v,
+                Err(e) => { eprintln!("error: {}", e); std::process::exit(1); }
+            };
+            let manifest = match osp::discovery::discover(parts[0]) {
+                Ok(m) => m,
+                Err(e) => { eprintln!("error: {}", e); std::process::exit(1); }
+            };
+            match osp::deprovision::deprovision(&mut vault, &manifest, parts[0], parts[1]) {
+                Ok(()) => {
+                    if global_flags.json || global_flags.agent_mode {
+                        let mut w = JsonWriter::new();
+                        w.begin_object();
+                        w.key("ok"); w.value_bool(true);
+                        w.key("kind"); w.value_string("better.deprovision");
+                        w.end_object(); w.out.push('\n');
+                        print!("{}", w.finish());
+                    } else {
+                        println!("Deprovisioned {}", resource_id);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        Command::EnvGenerate { project_root } => {
+            use better_core::osp;
+            let template = project_root.join(".env.osp");
+            if !template.exists() {
+                eprintln!("error: no .env.osp template found in {}", project_root.display());
+                std::process::exit(1);
+            }
+            let mut vault = match osp::vault::Vault::open() {
+                Ok(v) => v,
+                Err(e) => { eprintln!("error: {}", e); std::process::exit(1); }
+            };
+            let secret_key = match vault.agent_secret_key() {
+                Ok(k) => k,
+                Err(e) => { eprintln!("error: {}", e); std::process::exit(1); }
+            };
+            match osp::env_gen::generate_env(&template, &vault, &secret_key) {
+                Ok(pairs) => {
+                    let output = project_root.join(".env");
+                    match osp::env_gen::write_env_file(&output, &pairs) {
+                        Ok(()) => {
+                            if global_flags.json || global_flags.agent_mode {
+                                let mut w = JsonWriter::new();
+                                w.begin_object();
+                                w.key("ok"); w.value_bool(true);
+                                w.key("kind"); w.value_string("better.env.generate");
+                                w.key("variables"); w.value_u64(pairs.len() as u64);
+                                w.end_object(); w.out.push('\n');
+                                print!("{}", w.finish());
+                            } else {
+                                println!("Generated .env with {} variables from .env.osp", pairs.len());
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("error: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        Command::Login { sardis: _ } => {
+            println!("better -- login\n");
+            println!("  Sardis login not yet available. Set SARDIS_TOKEN env var for CI usage.");
+        }
+
+        Command::Logout { sardis: _ } => {
+            println!("Logged out.");
+        }
+
+        Command::Wallet => {
+            println!("better -- wallet\n");
+            println!("  Connect your Sardis wallet: better login --sardis");
+        }
+
+        Command::Pay { package: _, amount: _, all: _, budget: _, recurring: _ } => {
+            println!("better -- pay\n");
+            println!("  Payment via Sardis wallet. Not yet connected.");
+        }
+
+        Command::Publish { project_root: _, monetize: _, pricing: _ } => {
+            println!("better -- publish\n");
+            println!("  Publishing with monetization coming soon.");
+        }
+
+        Command::Earnings { breakdown: _, period: _ } => {
+            println!("better -- earnings\n");
+            println!("  Connect your Sardis wallet to view earnings.");
+        }
+
+        Command::Sponsor { package: _, amount: _, schedule: _, list: _ } => {
+            println!("better -- sponsor\n");
+            println!("  Sponsoring via Sardis wallet coming soon.");
         }
     }
 }
