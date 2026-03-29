@@ -186,6 +186,87 @@ export function runBetterCoreFetchAndExtractNapi(lockfilePath, cacheDir, opts = 
   return result;
 }
 
+// --- NAPI: audit ---
+export function runAuditNapi(projectRoot, opts = {}) {
+  const addon = tryLoadNapiAddon();
+  if (!addon || typeof addon.audit !== "function") return null;
+  const result = addon.audit(projectRoot, opts.minSeverity || undefined);
+  if (!result || typeof result !== "object") throw new Error("napi audit returned invalid result");
+  return result;
+}
+
+// --- NAPI: license ---
+export function runLicenseNapi(projectRoot, opts = {}) {
+  const addon = tryLoadNapiAddon();
+  if (!addon || typeof addon.license !== "function") return null;
+  const result = addon.license(projectRoot, opts.allow || undefined, opts.deny || undefined);
+  if (!result || typeof result !== "object") throw new Error("napi license returned invalid result");
+  return result;
+}
+
+// --- NAPI: outdated ---
+export function runOutdatedNapi(projectRoot) {
+  const addon = tryLoadNapiAddon();
+  if (!addon || typeof addon.outdated !== "function") return null;
+  const result = addon.outdated(projectRoot);
+  if (!result || typeof result !== "object") throw new Error("napi outdated returned invalid result");
+  return result;
+}
+
+// --- NAPI: doctor ---
+export function runDoctorNapi(projectRoot, opts = {}) {
+  const addon = tryLoadNapiAddon();
+  if (!addon || typeof addon.doctor !== "function") return null;
+  const result = addon.doctor(projectRoot, opts.threshold || undefined);
+  if (!result || typeof result !== "object") throw new Error("napi doctor returned invalid result");
+  return result;
+}
+
+// --- NAPI: why ---
+export function runWhyNapi(projectRoot, target) {
+  const addon = tryLoadNapiAddon();
+  if (!addon || typeof addon.why !== "function") return null;
+  const result = addon.why(projectRoot, target);
+  if (!result || typeof result !== "object") throw new Error("napi why returned invalid result");
+  return result;
+}
+
+// --- NAPI: dedupe ---
+export function runDedupeNapi(projectRoot) {
+  const addon = tryLoadNapiAddon();
+  if (!addon || typeof addon.dedupe !== "function") return null;
+  const result = addon.dedupe(projectRoot);
+  if (!result || typeof result !== "object") throw new Error("napi dedupe returned invalid result");
+  return result;
+}
+
+// --- NAPI: workspace list ---
+export function runWorkspaceListNapi(projectRoot) {
+  const addon = tryLoadNapiAddon();
+  if (!addon || typeof addon.workspaceList !== "function") return null;
+  const result = addon.workspaceList(projectRoot);
+  if (!result || typeof result !== "object") throw new Error("napi workspaceList returned invalid result");
+  return result;
+}
+
+// --- NAPI: workspace graph ---
+export function runWorkspaceGraphNapi(projectRoot) {
+  const addon = tryLoadNapiAddon();
+  if (!addon || typeof addon.workspaceGraph !== "function") return null;
+  const result = addon.workspaceGraph(projectRoot);
+  if (!result || typeof result !== "object") throw new Error("napi workspaceGraph returned invalid result");
+  return result;
+}
+
+// --- NAPI: policy check ---
+export function runPolicyCheckNapi(projectRoot) {
+  const addon = tryLoadNapiAddon();
+  if (!addon || typeof addon.policyCheck !== "function") return null;
+  const result = addon.policyCheck(projectRoot);
+  if (!result || typeof result !== "object") throw new Error("napi policyCheck returned invalid result");
+  return result;
+}
+
 export async function runBetterCoreInstall(corePath, projectRoot, opts = {}) {
   const args = ["install", "--project-root", projectRoot];
   if (opts.lockfile) args.push("--lockfile", String(opts.lockfile));

@@ -7,6 +7,9 @@ use rayon::prelude::*;
 use better_core::{
     analyze, materialize_tree, scan_tree, resolve_from_lockfile, fetch_packages,
     LinkStrategy, MaterializeProfile,
+    run_audit, scan_licenses, check_outdated, run_doctor,
+    trace_dependency, check_dedupe, detect_workspaces, workspace_graph,
+    policy_check,
 };
 
 // --- Scan ---
@@ -552,5 +555,478 @@ pub fn materialize_batch(
         total_dirs: total_dirs as f64,
         cloned: cloned as f64,
         failed: failed as f64,
+    }
+}
+
+// --- Audit ---
+
+#[napi(object)]
+pub struct NapiAuditVulnerability {
+    pub id: String,
+    pub summary: String,
+    pub severity: String,
+    pub package: String,
+    pub version: String,
+    pub fixed: String,
+}
+
+#[napi(object)]
+pub struct NapiAuditResult {
+    pub ok: bool,
+    pub reason: Option<String>,
+    #[napi(js_name = "scannedPackages")]
+    pub scanned_packages: f64,
+    pub vulnerabilities: Vec<NapiAuditVulnerability>,
+    pub total: f64,
+    pub critical: f64,
+    pub high: f64,
+    pub medium: f64,
+    pub low: f64,
+    #[napi(js_name = "riskLevel")]
+    pub risk_level: String,
+}
+
+#[napi(js_name = "audit")]
+pub fn napi_audit(project_root: String, min_severity: Option<String>) -> NapiAuditResult {
+    let root = Path::new(&project_root);
+    let lockfile = root.join("package-lock.json");
+    let severity = min_severity.unwrap_or_else(|| "low".to_string());
+
+    match run_audit(&lockfile, root, &severity) {
+        Ok(report) => NapiAuditResult {
+            ok: true,
+            reason: None,
+            scanned_packages: report.scanned_packages as f64,
+            vulnerabilities: report.vulnerabilities.iter().map(|v| NapiAuditVulnerability {
+                id: v.id.clone(),
+                summary: v.summary.clone(),
+                severity: v.severity.clone(),
+                package: v.package.clone(),
+                version: v.version.clone(),
+                fixed: v.fixed.clone(),
+            }).collect(),
+            total: report.total as f64,
+            critical: report.critical as f64,
+            high: report.high as f64,
+            medium: report.medium as f64,
+            low: report.low as f64,
+            risk_level: report.risk_level,
+        },
+        Err(reason) => NapiAuditResult {
+            ok: false,
+            reason: Some(reason),
+            scanned_packages: 0.0,
+            vulnerabilities: vec![],
+            total: 0.0, critical: 0.0, high: 0.0, medium: 0.0, low: 0.0,
+            risk_level: "unknown".to_string(),
+        },
+    }
+}
+
+// --- License ---
+
+#[napi(object)]
+pub struct NapiLicenseInfo {
+    pub name: String,
+    pub version: String,
+    pub license: String,
+}
+
+#[napi(object)]
+pub struct NapiLicenseCount {
+    pub license: String,
+    pub count: f64,
+}
+
+#[napi(object)]
+pub struct NapiLicenseResult {
+    pub ok: bool,
+    pub reason: Option<String>,
+    pub packages: Vec<NapiLicenseInfo>,
+    #[napi(js_name = "byLicense")]
+    pub by_license: Vec<NapiLicenseCount>,
+    #[napi(js_name = "totalPackages")]
+    pub total_packages: f64,
+    pub violations: Vec<NapiLicenseInfo>,
+}
+
+#[napi(js_name = "license")]
+pub fn napi_license(
+    project_root: String,
+    allow: Option<Vec<String>>,
+    deny: Option<Vec<String>>,
+) -> NapiLicenseResult {
+    let root = Path::new(&project_root);
+    let nm = root.join("node_modules");
+    let allow_list = allow.unwrap_or_default();
+    let deny_list = deny.unwrap_or_default();
+
+    match scan_licenses(&nm, &allow_list, &deny_list) {
+        Ok(report) => NapiLicenseResult {
+            ok: true,
+            reason: None,
+            packages: report.packages.iter().map(|p| NapiLicenseInfo {
+                name: p.name.clone(), version: p.version.clone(), license: p.license.clone(),
+            }).collect(),
+            by_license: report.by_license.iter().map(|(k, v)| NapiLicenseCount {
+                license: k.clone(), count: *v as f64,
+            }).collect(),
+            total_packages: report.total_packages as f64,
+            violations: report.violations.iter().map(|p| NapiLicenseInfo {
+                name: p.name.clone(), version: p.version.clone(), license: p.license.clone(),
+            }).collect(),
+        },
+        Err(reason) => NapiLicenseResult {
+            ok: false,
+            reason: Some(reason),
+            packages: vec![], by_license: vec![],
+            total_packages: 0.0, violations: vec![],
+        },
+    }
+}
+
+// --- Outdated ---
+
+#[napi(object)]
+pub struct NapiOutdatedEntry {
+    pub name: String,
+    pub current: String,
+    pub latest: String,
+    #[napi(js_name = "updateType")]
+    pub update_type: String,
+}
+
+#[napi(object)]
+pub struct NapiOutdatedResult {
+    pub ok: bool,
+    pub reason: Option<String>,
+    pub packages: Vec<NapiOutdatedEntry>,
+    #[napi(js_name = "totalChecked")]
+    pub total_checked: f64,
+    pub outdated: f64,
+    pub major: f64,
+    pub minor: f64,
+    pub patch: f64,
+}
+
+#[napi(js_name = "outdated")]
+pub fn napi_outdated(project_root: String) -> NapiOutdatedResult {
+    let root = Path::new(&project_root);
+    let lockfile = root.join("package-lock.json");
+
+    match check_outdated(root, &lockfile) {
+        Ok(report) => NapiOutdatedResult {
+            ok: true,
+            reason: None,
+            packages: report.packages.iter().map(|p| NapiOutdatedEntry {
+                name: p.name.clone(), current: p.current.clone(),
+                latest: p.latest.clone(), update_type: p.update_type.clone(),
+            }).collect(),
+            total_checked: report.total_checked as f64,
+            outdated: report.outdated as f64,
+            major: report.major as f64,
+            minor: report.minor as f64,
+            patch: report.patch as f64,
+        },
+        Err(reason) => NapiOutdatedResult {
+            ok: false,
+            reason: Some(reason),
+            packages: vec![],
+            total_checked: 0.0, outdated: 0.0,
+            major: 0.0, minor: 0.0, patch: 0.0,
+        },
+    }
+}
+
+// --- Doctor ---
+
+#[napi(object)]
+pub struct NapiDoctorFinding {
+    pub id: String,
+    pub title: String,
+    pub severity: String,
+    pub impact: f64,
+    pub recommendation: String,
+}
+
+#[napi(object)]
+pub struct NapiDoctorResult {
+    pub ok: bool,
+    pub reason: Option<String>,
+    pub score: f64,
+    pub threshold: f64,
+    pub findings: Vec<NapiDoctorFinding>,
+}
+
+#[napi(js_name = "doctor")]
+pub fn napi_doctor(project_root: String, threshold: Option<f64>) -> NapiDoctorResult {
+    let root = Path::new(&project_root);
+    let thresh = threshold.map(|t| t as i32).unwrap_or(70);
+
+    match run_doctor(root, thresh) {
+        Ok(report) => NapiDoctorResult {
+            ok: true,
+            reason: None,
+            score: report.score as f64,
+            threshold: report.threshold as f64,
+            findings: report.findings.iter().map(|f| NapiDoctorFinding {
+                id: f.id.clone(), title: f.title.clone(),
+                severity: f.severity.clone(), impact: f.impact as f64,
+                recommendation: f.recommendation.clone(),
+            }).collect(),
+        },
+        Err(reason) => NapiDoctorResult {
+            ok: false,
+            reason: Some(reason),
+            score: 0.0, threshold: thresh as f64,
+            findings: vec![],
+        },
+    }
+}
+
+// --- Why ---
+
+#[napi(object)]
+pub struct NapiWhyDependedBy {
+    pub name: String,
+    pub version: String,
+}
+
+#[napi(object)]
+pub struct NapiWhyResult {
+    pub ok: bool,
+    pub reason: Option<String>,
+    pub package: String,
+    pub version: Option<String>,
+    #[napi(js_name = "isDirect")]
+    pub is_direct: bool,
+    #[napi(js_name = "dependencyPaths")]
+    pub dependency_paths: Vec<Vec<String>>,
+    #[napi(js_name = "dependedOnBy")]
+    pub depended_on_by: Vec<NapiWhyDependedBy>,
+    #[napi(js_name = "totalPaths")]
+    pub total_paths: f64,
+}
+
+#[napi(js_name = "why")]
+pub fn napi_why(project_root: String, target: String) -> NapiWhyResult {
+    let root = Path::new(&project_root);
+    let lockfile = root.join("package-lock.json");
+
+    match trace_dependency(root, &lockfile, &target) {
+        Ok(report) => NapiWhyResult {
+            ok: true,
+            reason: None,
+            package: report.package,
+            version: report.version,
+            is_direct: report.is_direct,
+            dependency_paths: report.dependency_paths,
+            depended_on_by: report.depended_on_by.iter().map(|(n, v)| NapiWhyDependedBy {
+                name: n.clone(), version: v.clone(),
+            }).collect(),
+            total_paths: report.total_paths as f64,
+        },
+        Err(reason) => NapiWhyResult {
+            ok: false,
+            reason: Some(reason),
+            package: target,
+            version: None,
+            is_direct: false,
+            dependency_paths: vec![],
+            depended_on_by: vec![],
+            total_paths: 0.0,
+        },
+    }
+}
+
+// --- Dedupe ---
+
+#[napi(object)]
+pub struct NapiDedupeEntry {
+    pub name: String,
+    pub versions: Vec<String>,
+    pub instances: f64,
+    #[napi(js_name = "canDedupe")]
+    pub can_dedupe: bool,
+    #[napi(js_name = "savedInstances")]
+    pub saved_instances: f64,
+}
+
+#[napi(object)]
+pub struct NapiDedupeResult {
+    pub ok: bool,
+    pub reason: Option<String>,
+    pub duplicates: Vec<NapiDedupeEntry>,
+    #[napi(js_name = "totalDuplicates")]
+    pub total_duplicates: f64,
+    pub deduplicatable: f64,
+    #[napi(js_name = "estimatedSaved")]
+    pub estimated_saved: f64,
+}
+
+#[napi(js_name = "dedupe")]
+pub fn napi_dedupe(project_root: String) -> NapiDedupeResult {
+    let root = Path::new(&project_root);
+
+    match check_dedupe(root) {
+        Ok(report) => NapiDedupeResult {
+            ok: true,
+            reason: None,
+            duplicates: report.duplicates.iter().map(|d| NapiDedupeEntry {
+                name: d.name.clone(), versions: d.versions.clone(),
+                instances: d.instances as f64, can_dedupe: d.can_dedupe,
+                saved_instances: d.saved_instances as f64,
+            }).collect(),
+            total_duplicates: report.total_duplicates as f64,
+            deduplicatable: report.deduplicatable as f64,
+            estimated_saved: report.estimated_saved as f64,
+        },
+        Err(reason) => NapiDedupeResult {
+            ok: false,
+            reason: Some(reason),
+            duplicates: vec![],
+            total_duplicates: 0.0, deduplicatable: 0.0, estimated_saved: 0.0,
+        },
+    }
+}
+
+// --- Workspace List ---
+
+#[napi(object)]
+pub struct NapiWorkspaceScript {
+    pub name: String,
+    pub command: String,
+}
+
+#[napi(object)]
+pub struct NapiWorkspacePackage {
+    pub name: String,
+    pub version: String,
+    #[napi(js_name = "relativeDir")]
+    pub relative_dir: String,
+    #[napi(js_name = "workspaceDeps")]
+    pub workspace_deps: Vec<String>,
+    pub scripts: Vec<NapiWorkspaceScript>,
+}
+
+#[napi(object)]
+pub struct NapiWorkspaceListResult {
+    pub ok: bool,
+    pub reason: Option<String>,
+    #[napi(js_name = "workspaceType")]
+    pub workspace_type: String,
+    pub packages: Vec<NapiWorkspacePackage>,
+}
+
+#[napi(js_name = "workspaceList")]
+pub fn napi_workspace_list(project_root: String) -> NapiWorkspaceListResult {
+    let root = Path::new(&project_root);
+
+    match detect_workspaces(root) {
+        Ok(info) => NapiWorkspaceListResult {
+            ok: true,
+            reason: None,
+            workspace_type: info.workspace_type,
+            packages: info.packages.iter().map(|p| NapiWorkspacePackage {
+                name: p.name.clone(), version: p.version.clone(),
+                relative_dir: p.relative_dir.clone(),
+                workspace_deps: p.workspace_deps.clone(),
+                scripts: p.scripts.iter().map(|(n, c)| NapiWorkspaceScript {
+                    name: n.clone(), command: c.clone(),
+                }).collect(),
+            }).collect(),
+        },
+        Err(reason) => NapiWorkspaceListResult {
+            ok: false,
+            reason: Some(reason),
+            workspace_type: String::new(),
+            packages: vec![],
+        },
+    }
+}
+
+// --- Workspace Graph ---
+
+#[napi(object)]
+pub struct NapiWorkspaceGraphResult {
+    pub ok: bool,
+    pub reason: Option<String>,
+    pub sorted: Vec<String>,
+    pub levels: Vec<Vec<String>>,
+    pub cycles: Vec<Vec<String>>,
+}
+
+#[napi(js_name = "workspaceGraph")]
+pub fn napi_workspace_graph(project_root: String) -> NapiWorkspaceGraphResult {
+    let root = Path::new(&project_root);
+
+    match detect_workspaces(root) {
+        Ok(info) => {
+            let graph = workspace_graph(&info);
+            NapiWorkspaceGraphResult {
+                ok: true,
+                reason: None,
+                sorted: graph.sorted,
+                levels: graph.levels,
+                cycles: graph.cycles,
+            }
+        }
+        Err(reason) => NapiWorkspaceGraphResult {
+            ok: false,
+            reason: Some(reason),
+            sorted: vec![], levels: vec![], cycles: vec![],
+        },
+    }
+}
+
+// --- Policy Check ---
+
+#[napi(object)]
+pub struct NapiPolicyViolation {
+    pub rule: String,
+    pub severity: String,
+    pub package: String,
+    pub reason: String,
+}
+
+#[napi(object)]
+pub struct NapiPolicyCheckResult {
+    pub ok: bool,
+    #[napi(js_name = "errorReason")]
+    pub error_reason: Option<String>,
+    pub score: f64,
+    pub threshold: f64,
+    pub pass: bool,
+    pub violations: Vec<NapiPolicyViolation>,
+    pub errors: f64,
+    pub warnings: f64,
+    pub waived: f64,
+}
+
+#[napi(js_name = "policyCheck")]
+pub fn napi_policy_check(project_root: String) -> NapiPolicyCheckResult {
+    let root = Path::new(&project_root);
+
+    match policy_check(root) {
+        Ok(result) => NapiPolicyCheckResult {
+            ok: true,
+            error_reason: None,
+            score: result.score as f64,
+            threshold: result.threshold as f64,
+            pass: result.pass,
+            violations: result.violations.iter().map(|v| NapiPolicyViolation {
+                rule: v.rule.clone(), severity: v.severity.clone(),
+                package: v.package.clone(), reason: v.reason.clone(),
+            }).collect(),
+            errors: result.errors as f64,
+            warnings: result.warnings as f64,
+            waived: result.waived as f64,
+        },
+        Err(reason) => NapiPolicyCheckResult {
+            ok: false,
+            error_reason: Some(reason),
+            score: 0.0, threshold: 0.0, pass: false,
+            violations: vec![], errors: 0.0, warnings: 0.0, waived: 0.0,
+        },
     }
 }
