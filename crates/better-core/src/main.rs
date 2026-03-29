@@ -39,6 +39,8 @@ use better_core::{
     // v0.5 sandbox
     load_sandbox_policy, permissions_for_package, execute_sandboxed,
     sandbox_scan, write_sandbox_scan_json,
+    // v0.7 output
+    GlobalFlags,
 };
 use better_core::engine::EngineRegistry;
 
@@ -208,16 +210,66 @@ fn default_cache_root() -> PathBuf {
     }
 }
 
-fn parse_args() -> Command {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+/// Parse global flags (--json, --no-color, --no-interactive, --verbose, agent prefix)
+/// Returns (GlobalFlags, remaining args with global flags stripped)
+fn parse_global_flags(args: &[String]) -> (GlobalFlags, Vec<String>) {
+    let mut flags = GlobalFlags::default();
+    let mut remaining = Vec::new();
+    let mut skip_next = false;
+
+    for (i, arg) in args.iter().enumerate() {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        match arg.as_str() {
+            "--no-color" => flags.no_color = true,
+            "--no-interactive" => flags.no_interactive = true,
+            "--verbose" | "-v" if i > 0 || args.first().map(|s| s.as_str()) != Some("version") => {
+                flags.verbose = true;
+            }
+            _ => remaining.push(arg.clone()),
+        }
+    }
+
+    // Check for "agent" prefix command
+    if remaining.first().map(|s| s.as_str()) == Some("agent") {
+        flags.agent_mode = true;
+        flags.json = true;
+        flags.no_color = true;
+        flags.no_interactive = true;
+        remaining.remove(0);
+    }
+
+    // Check --json in remaining (after agent prefix stripped)
+    let mut final_remaining = Vec::new();
+    for arg in &remaining {
+        if arg == "--json" {
+            flags.json = true;
+        } else {
+            final_remaining.push(arg.clone());
+        }
+    }
+
+    (flags, final_remaining)
+}
+
+fn parse_args() -> (Command, GlobalFlags) {
+    let raw_args: Vec<String> = std::env::args().skip(1).collect();
+    if raw_args.is_empty() {
+        return (Command::Help { error: None }, GlobalFlags::default());
+    }
+
+    let (global_flags, args) = parse_global_flags(&raw_args);
+
     if args.is_empty() {
-        return Command::Help { error: None };
+        return (Command::Help { error: None }, global_flags);
     }
     if args[0] == "version" || args[0] == "--version" || args[0] == "-V" {
-        return Command::Version;
+        return (Command::Version, global_flags);
     }
     if args[0] == "--help" || args[0] == "-h" || args[0] == "help" {
-        return Command::Help { error: None };
+        return (Command::Help { error: None }, global_flags);
     }
 
     let sub = args[0].as_str();
@@ -284,63 +336,63 @@ fn parse_args() -> Command {
                 i += 1;
             }
             "--root" => {
-                if i + 1 >= args.len() { return Command::Help { error: Some("--root requires a value".into()) }; }
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--root requires a value".into()) }, global_flags); }
                 root = Some(PathBuf::from(&args[i + 1]));
                 i += 2;
             }
             "--graph" => { graph = true; i += 1; }
             "--no-graph" => { graph = false; i += 1; }
             "--src" => {
-                if i + 1 >= args.len() { return Command::Help { error: Some("--src requires a value".into()) }; }
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--src requires a value".into()) }, global_flags); }
                 src = Some(PathBuf::from(&args[i + 1]));
                 i += 2;
             }
             "--dest" => {
-                if i + 1 >= args.len() { return Command::Help { error: Some("--dest requires a value".into()) }; }
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--dest requires a value".into()) }, global_flags); }
                 dest = Some(PathBuf::from(&args[i + 1]));
                 i += 2;
             }
             "--link-strategy" => {
-                if i + 1 >= args.len() { return Command::Help { error: Some("--link-strategy requires a value".into()) }; }
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--link-strategy requires a value".into()) }, global_flags); }
                 match LinkStrategy::from_arg(&args[i + 1]) {
                     Some(s) => link_strategy = s,
-                    None => return Command::Help { error: Some(format!("unknown --link-strategy '{}'", args[i + 1])) },
+                    None => return (Command::Help { error: Some(format!("unknown --link-strategy '{}'", args[i + 1])) }, global_flags),
                 }
                 i += 2;
             }
             "--jobs" => {
-                if i + 1 >= args.len() { return Command::Help { error: Some("--jobs requires a value".into()) }; }
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--jobs requires a value".into()) }, global_flags); }
                 match args[i + 1].parse::<usize>() {
                     Ok(n) if n > 0 => jobs = n.clamp(1, 256),
-                    _ => return Command::Help { error: Some(format!("invalid --jobs '{}'", args[i + 1])) },
+                    _ => return (Command::Help { error: Some(format!("invalid --jobs '{}'", args[i + 1])) }, global_flags),
                 }
                 i += 2;
             }
             "--profile" => {
-                if i + 1 >= args.len() { return Command::Help { error: Some("--profile requires a value".into()) }; }
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--profile requires a value".into()) }, global_flags); }
                 match MaterializeProfile::from_arg(&args[i + 1]) {
                     Some(p) => profile = p,
-                    None => return Command::Help { error: Some(format!("unknown --profile '{}'", args[i + 1])) },
+                    None => return (Command::Help { error: Some(format!("unknown --profile '{}'", args[i + 1])) }, global_flags),
                 }
                 i += 2;
             }
             "--lockfile" => {
-                if i + 1 >= args.len() { return Command::Help { error: Some("--lockfile requires a value".into()) }; }
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--lockfile requires a value".into()) }, global_flags); }
                 lockfile = Some(PathBuf::from(&args[i + 1]));
                 i += 2;
             }
             "--project-root" => {
-                if i + 1 >= args.len() { return Command::Help { error: Some("--project-root requires a value".into()) }; }
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--project-root requires a value".into()) }, global_flags); }
                 project_root = Some(PathBuf::from(&args[i + 1]));
                 i += 2;
             }
             "--cache-root" => {
-                if i + 1 >= args.len() { return Command::Help { error: Some("--cache-root requires a value".into()) }; }
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--cache-root requires a value".into()) }, global_flags); }
                 cache_root = Some(PathBuf::from(&args[i + 1]));
                 i += 2;
             }
             "--store-root" => {
-                if i + 1 >= args.len() { return Command::Help { error: Some("--store-root requires a value".into()) }; }
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--store-root requires a value".into()) }, global_flags); }
                 store_root = Some(PathBuf::from(&args[i + 1]));
                 i += 2;
             }
@@ -355,116 +407,116 @@ fn parse_args() -> Command {
             "--no-dedup" => { dedup = false; i += 1; }
             "--frozen" | "--frozen-lockfile" => { frozen = true; i += 1; }
             "--allow" => {
-                if i + 1 >= args.len() { return Command::Help { error: Some("--allow requires a value".into()) }; }
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--allow requires a value".into()) }, global_flags); }
                 allow = args[i + 1].split(',').map(|s| s.trim().to_string()).collect();
                 i += 2;
             }
             "--deny" => {
-                if i + 1 >= args.len() { return Command::Help { error: Some("--deny requires a value".into()) }; }
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--deny requires a value".into()) }, global_flags); }
                 deny = args[i + 1].split(',').map(|s| s.trim().to_string()).collect();
                 i += 2;
             }
             "--threshold" => {
-                if i + 1 >= args.len() { return Command::Help { error: Some("--threshold requires a value".into()) }; }
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--threshold requires a value".into()) }, global_flags); }
                 threshold = args[i + 1].parse().unwrap_or(70);
                 i += 2;
             }
             "--max-age" => {
-                if i + 1 >= args.len() { return Command::Help { error: Some("--max-age requires a value".into()) }; }
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--max-age requires a value".into()) }, global_flags); }
                 max_age = args[i + 1].parse().unwrap_or(30);
                 i += 2;
             }
             "--dry-run" => { dry_run = true; i += 1; }
             "--min-severity" => {
-                if i + 1 >= args.len() { return Command::Help { error: Some("--min-severity requires a value".into()) }; }
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--min-severity requires a value".into()) }, global_flags); }
                 min_severity = args[i + 1].clone();
                 i += 2;
             }
             "--rounds" => {
-                if i + 1 >= args.len() { return Command::Help { error: Some("--rounds requires a value".into()) }; }
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--rounds requires a value".into()) }, global_flags); }
                 rounds = args[i + 1].parse().unwrap_or(3);
                 i += 2;
             }
             "--pm" => {
-                if i + 1 >= args.len() { return Command::Help { error: Some("--pm requires a value".into()) }; }
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--pm requires a value".into()) }, global_flags); }
                 pms = args[i + 1].split(',').map(|s| s.trim().to_string()).collect();
                 i += 2;
             }
             "--name" => {
-                if i + 1 >= args.len() { return Command::Help { error: Some("--name requires a value".into()) }; }
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--name requires a value".into()) }, global_flags); }
                 name_opt = Some(args[i + 1].clone());
                 i += 2;
             }
             "--template" | "-t" => {
-                if i + 1 >= args.len() { return Command::Help { error: Some("--template requires a value".into()) }; }
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--template requires a value".into()) }, global_flags); }
                 template_opt = Some(args[i + 1].clone());
                 i += 2;
             }
             "--strict" => { node_layout = NodeLayout::Strict; strict = true; i += 1; }
             "--hoist" | "--hoisted" => { node_layout = NodeLayout::Hoist; i += 1; }
             "--add-ignore" => {
-                if i + 1 >= args.len() { return Command::Help { error: Some("--add-ignore requires a CVE ID".into()) }; }
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--add-ignore requires a CVE ID".into()) }, global_flags); }
                 add_ignore = Some(args[i + 1].clone());
                 i += 2;
             }
             "--reason" => {
-                if i + 1 >= args.len() { return Command::Help { error: Some("--reason requires a value".into()) }; }
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--reason requires a value".into()) }, global_flags); }
                 ignore_reason = Some(args[i + 1].clone());
                 i += 2;
             }
             "--approved-by" => {
-                if i + 1 >= args.len() { return Command::Help { error: Some("--approved-by requires a value".into()) }; }
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--approved-by requires a value".into()) }, global_flags); }
                 approved_by = Some(args[i + 1].clone());
                 i += 2;
             }
             "--node-layout" => {
-                if i + 1 >= args.len() { return Command::Help { error: Some("--node-layout requires a value".into()) }; }
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--node-layout requires a value".into()) }, global_flags); }
                 match NodeLayout::from_arg(&args[i + 1]) {
                     Some(l) => node_layout = l,
-                    None => return Command::Help { error: Some(format!("unknown --node-layout '{}'", args[i + 1])) },
+                    None => return (Command::Help { error: Some(format!("unknown --node-layout '{}'", args[i + 1])) }, global_flags),
                 }
                 i += 2;
             }
-            "--json" => { json_progress = true; i += 1; }
+            "--json" => { json_progress = true; i += 1; } // also handled by global_flags
             "--watch" | "-w" => { watch = true; i += 1; }
             "--unused" => { unused_flag = true; i += 1; }
             "--policy" => { policy_flag = true; i += 1; }
             "--scope" => {
-                if i + 1 >= args.len() { return Command::Help { error: Some("--scope requires a value".into()) }; }
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--scope requires a value".into()) }, global_flags); }
                 scope_opt = Some(args[i + 1].clone());
                 i += 2;
             }
             "--token" | "--token-env" => {
-                if i + 1 >= args.len() { return Command::Help { error: Some("--token-env requires a value".into()) }; }
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--token-env requires a value".into()) }, global_flags); }
                 token_env_opt = Some(args[i + 1].clone());
                 i += 2;
             }
             "--priority" => {
-                if i + 1 >= args.len() { return Command::Help { error: Some("--priority requires a value".into()) }; }
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--priority requires a value".into()) }, global_flags); }
                 match args[i + 1].parse::<u64>() {
                     Ok(p) => priority_opt = Some(p),
-                    Err(_) => return Command::Help { error: Some(format!("invalid --priority '{}'", args[i + 1])) },
+                    Err(_) => return (Command::Help { error: Some(format!("invalid --priority '{}'", args[i + 1])) }, global_flags),
                 }
                 i += 2;
             }
             "--format" => {
-                if i + 1 >= args.len() { return Command::Help { error: Some("--format requires a value".into()) }; }
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--format requires a value".into()) }, global_flags); }
                 format_opt = args[i + 1].clone();
                 i += 2;
             }
             "--from" => {
-                if i + 1 >= args.len() { return Command::Help { error: Some("--from requires a value (pip, pipenv, poetry)".into()) }; }
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--from requires a value (pip, pipenv, poetry)".into()) }, global_flags); }
                 from_opt = Some(args[i + 1].clone());
                 i += 2;
             }
             "--since" => {
-                if i + 1 >= args.len() { return Command::Help { error: Some("--since requires a value".into()) }; }
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--since requires a value".into()) }, global_flags); }
                 since_opt = Some(args[i + 1].clone());
                 i += 2;
             }
             other => {
                 if other.starts_with('-') {
-                    return Command::Help { error: Some(format!("unknown flag: {other}")) };
+                    return (Command::Help { error: Some(format!("unknown flag: {other}")) }, global_flags);
                 }
                 positional.push(other.to_string());
                 i += 1;
@@ -472,7 +524,7 @@ fn parse_args() -> Command {
         }
     }
 
-    match sub {
+    let cmd = match sub {
         "analyze" => match root {
             Some(r) => Command::Analyze { root: r, graph },
             None => Command::Help { error: Some("analyze requires --root".into()) },
@@ -494,7 +546,7 @@ fn parse_args() -> Command {
         "run" => {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
             if positional.is_empty() {
-                return Command::Help { error: Some("run requires a script name".into()) };
+                return (Command::Help { error: Some("run requires a script name".into()) }, global_flags);
             }
             Command::Run { project_root: pr, script_names: positional, extra_args, watch }
         },
@@ -531,7 +583,7 @@ fn parse_args() -> Command {
         },
         "why" => {
             if positional.is_empty() {
-                return Command::Help { error: Some("why requires a package name".into()) };
+                return (Command::Help { error: Some("why requires a package name".into()) }, global_flags);
             }
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
             let lf = lockfile.unwrap_or_else(|| pr.join("package-lock.json"));
@@ -570,7 +622,7 @@ fn parse_args() -> Command {
         },
         "exec" | "x" => {
             if positional.is_empty() {
-                return Command::Help { error: Some("exec requires a script path".into()) };
+                return (Command::Help { error: Some("exec requires a script path".into()) }, global_flags);
             }
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
             Command::Exec { project_root: pr, script: positional[0].clone(), extra_args }
@@ -648,7 +700,9 @@ fn parse_args() -> Command {
             Command::Completions { shell }
         },
         _ => Command::Help { error: Some(format!("unknown command: {sub}")) },
-    }
+    };
+
+    (cmd, global_flags)
 }
 
 fn print_help(error: Option<String>) {
@@ -691,6 +745,13 @@ Usage:
   better-core analyze --root <path> [--graph]
   better-core scan --root <path>
   better-core version
+
+Agent mode (structured output for AI agents):
+  better-core agent <command> [options]    (= --json --no-color --no-interactive)
+  better-core --json <command>             (machine-readable JSON output)
+
+Semantic exit codes (agent mode):
+  0 = success, 1 = dependency-error, 2 = security-blocked, 3 = policy-failure, 4 = network-error
 "
     );
 }
@@ -702,7 +763,7 @@ fn generate_bash_completions() -> &'static str {
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-    commands="install analyze cache doctor serve benchmark lock policy workspace audit dashboard run why dedupe license outdated scripts lint test dev build start exec env init hooks sbom registry completions scan materialize version help"
+    commands="install analyze cache doctor serve benchmark lock policy workspace audit dashboard run why dedupe license outdated scripts lint test dev build start exec env init hooks sbom registry completions scan materialize agent version help"
 
     case "${prev}" in
         better|better-core)
@@ -1053,7 +1114,11 @@ fn generate_powershell_completions() -> &'static str {
 }
 
 fn main() {
-    match parse_args() {
+    let (command, global_flags) = parse_args();
+    let json_mode = global_flags.json || global_flags.agent_mode;
+    let _agent_mode = global_flags.agent_mode;
+
+    match command {
         Command::Registry { subcommand, registry_url, scope, token_env, priority } => {
             match subcommand.as_str() {
                 "add" => {
@@ -1465,8 +1530,8 @@ fn main() {
             let _ = engine_name; // Will be used for multi-engine dispatch in future
 
             let npmrc = parse_npmrc(&project_root);
-            let is_tty = std::io::stderr().is_terminal();
-            let progress = InstallProgress::new(is_tty, json_progress);
+            let is_tty = std::io::stderr().is_terminal() && !json_mode;
+            let progress = InstallProgress::new(is_tty, json_progress || json_mode);
 
             // Step 1: Resolve
             let t_resolve = Instant::now();

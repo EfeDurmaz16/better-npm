@@ -116,6 +116,9 @@ pub use venv::*;
 pub mod migrate;
 pub use migrate::*;
 
+pub mod output;
+pub use output::{OutputMode, GlobalFlags, CommandOutput, BetterError, ErrorCode};
+
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 

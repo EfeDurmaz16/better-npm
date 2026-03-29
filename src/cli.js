@@ -29,6 +29,7 @@ Commands:
   scripts            Manage install script sandboxing (list, allow, block)
   completions <shell> Generate shell completions (bash, zsh, fish, powershell)
   lint|test|dev|build  Script aliases for better run
+  agent <command>    Agent mode: --json --no-color, semantic exit codes
 
 Global options:
   --json             Machine-readable output (JSON)
@@ -65,8 +66,23 @@ export async function runCli(argv) {
     return;
   }
 
-  const command = first;
-  const rest = argv.slice(1);
+  // Agent mode: `better agent <command>` = `better <command> --json --no-color`
+  let agentMode = false;
+  let command;
+  let rest;
+  if (first === "agent") {
+    agentMode = true;
+    command = argv[1];
+    if (!command) {
+      printJson({ error: true, code: "command_not_found", message: "agent mode requires a command (e.g., better agent install)" });
+      process.exitCode = 1;
+      return;
+    }
+    rest = ["--json", "--no-color", ...argv.slice(2)];
+  } else {
+    command = first;
+    rest = argv.slice(1);
+  }
 
   const globals = parseArgs({
     args: rest,
