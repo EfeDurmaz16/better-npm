@@ -19,6 +19,7 @@ Commands:
   lock               Generate/verify Better lock metadata
   merge-driver       Git merge driver for better.lock.json (install/uninstall/status)
   risk [pkg...]      Dependency risk scoring (A–F grade, staleness, CVEs, bus factor)
+  update [pkg...]    Auto-update intelligence — patch/minor/major with changelog snippets
   policy <subcmd>    Dependency policy enforcement (check, init)
   workspace <subcmd> Workspace management (list, info, graph, changed, run)
   audit              Scan dependencies for known vulnerabilities (OSV.dev)
@@ -116,6 +117,10 @@ export async function runCli(argv) {
         break;
       case "risk":
         await (await import("./commands/risk.js")).cmdRisk(rest);
+        break;
+      case "update":
+      case "up":
+        await (await import("./commands/update.js")).cmdUpdate(rest);
         break;
       case "policy":
         await (await import("./commands/policy.js")).cmdPolicy(rest);
