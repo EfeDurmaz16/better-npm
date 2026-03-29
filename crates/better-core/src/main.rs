@@ -176,6 +176,11 @@ enum Command {
         project_root: PathBuf,
         subcommand: String,
     },
+    Shell { project_root: PathBuf },
+    Migrate {
+        project_root: PathBuf,
+        from: String,
+    },
     Completions { shell: String },
     Version,
     Help { error: Option<String> },
@@ -264,6 +269,7 @@ fn parse_args() -> Command {
     let mut vex_flag = false;
     let mut verify_provenance_flag = false;
     let mut require_provenance_flag = false;
+    let mut from_opt: Option<String> = None;
 
     let mut i = 1usize;
     while i < args.len() {
@@ -446,6 +452,11 @@ fn parse_args() -> Command {
                 format_opt = args[i + 1].clone();
                 i += 2;
             }
+            "--from" => {
+                if i + 1 >= args.len() { return Command::Help { error: Some("--from requires a value (pip, pipenv, poetry)".into()) }; }
+                from_opt = Some(args[i + 1].clone());
+                i += 2;
+            }
             "--since" => {
                 if i + 1 >= args.len() { return Command::Help { error: Some("--since requires a value".into()) }; }
                 since_opt = Some(args[i + 1].clone());
@@ -622,6 +633,16 @@ fn parse_args() -> Command {
             let subcmd = positional.first().cloned().unwrap_or_else(|| "rules".into());
             Command::Firewall { project_root: pr, subcommand: subcmd }
         },
+        "shell" => {
+            let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
+            Command::Shell { project_root: pr }
+        },
+        "migrate" => {
+            let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
+            let from = from_opt.or_else(|| positional.first().cloned())
+                .unwrap_or_else(|| "pip".to_string());
+            Command::Migrate { project_root: pr, from }
+        },
         "completions" => {
             let shell = positional.first().cloned().unwrap_or_else(|| "bash".into());
             Command::Completions { shell }
@@ -664,6 +685,8 @@ Usage:
   better-core provenance [--project-root <path>] [--lockfile <path>] [--require-provenance]
   better-core receipts [list|verify] [--project-root <path>]
   better-core firewall [enable|disable|rules|scan] [--project-root <path>]
+  better-core shell [--project-root <path>]                  (spawn venv-activated subshell)
+  better-core migrate [--from pip|pipenv|poetry] [--project-root <path>]
   better-core completions <bash|zsh|fish|powershell>
   better-core analyze --root <path> [--graph]
   better-core scan --root <path>
@@ -1303,6 +1326,58 @@ fn main() {
                     eprintln!("error: unknown firewall subcommand: {other}");
                     eprintln!("usage: better firewall [enable|disable|rules|scan]");
                     std::process::exit(2);
+                }
+            }
+        }
+
+        Command::Shell { project_root } => {
+            if !better_core::is_python_project(&project_root) {
+                eprintln!("error: not a Python project (no pyproject.toml / requirements.txt)");
+                std::process::exit(2);
+            }
+            // Ensure venv exists
+            match better_core::create_venv(&project_root) {
+                Ok(result) => {
+                    if result.created {
+                        eprintln!("Created venv at {} (Python {})", result.venv_path.display(), result.python_version);
+                    }
+                }
+                Err(reason) => {
+                    eprintln!("error: {reason}");
+                    std::process::exit(1);
+                }
+            }
+            match better_core::spawn_shell(&project_root) {
+                Ok(code) => std::process::exit(code),
+                Err(reason) => {
+                    eprintln!("error: {reason}");
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        Command::Migrate { project_root, from } => {
+            match better_core::migrate_lockfile(&project_root, &from) {
+                Ok(result) => {
+                    let mut w = JsonWriter::new();
+                    w.begin_object();
+                    w.key("ok"); w.value_bool(true);
+                    w.key("kind"); w.value_string("better.migrate");
+                    w.key("from"); w.value_string(&result.source);
+                    w.key("packages"); w.value_u64(result.package_count as u64);
+                    w.key("lockfile"); w.value_string(&result.lockfile_path);
+                    w.end_object(); w.out.push('\n');
+                    print!("{}", w.finish());
+                }
+                Err(reason) => {
+                    let mut w = JsonWriter::new();
+                    w.begin_object();
+                    w.key("ok"); w.value_bool(false);
+                    w.key("kind"); w.value_string("better.migrate");
+                    w.key("reason"); w.value_string(&reason);
+                    w.end_object(); w.out.push('\n');
+                    print!("{}", w.finish());
+                    std::process::exit(1);
                 }
             }
         }
