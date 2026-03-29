@@ -8,6 +8,7 @@ import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
 import { queryBatch, summarizeVuln, parseSeverity } from "../lib/osv.js";
 import { buildVulnGraph, suggestUpgrades, graphToJson, formatExposurePath } from "../lib/vulnGraph.js";
 import { resolveWorkspacePackages } from "../lib/workspaces.js";
+import { runSmartAuditNapi } from "../lib/core.js";
 
 async function readJsonFile(filePath) {
   try {
@@ -175,6 +176,53 @@ async function resolvePackagesFromLockfile(projectRoot) {
   return { ok: false, reason: "no_lockfile_found", packages: [], depTree: {} };
 }
 
+/**
+ * Load .betterauditrc.json ignore list from project root.
+ */
+async function loadAuditConfig(projectRoot) {
+  try {
+    const raw = await fs.readFile(path.join(projectRoot, ".betterauditrc.json"), "utf8");
+    const config = JSON.parse(raw);
+    return { ignore: Array.isArray(config.ignore) ? config.ignore : [] };
+  } catch {
+    return { ignore: [] };
+  }
+}
+
+/**
+ * Check if a waiver has expired.
+ */
+function isWaiverExpired(expires) {
+  if (!expires) return false;
+  const expDate = new Date(expires + "T00:00:00Z");
+  return Date.now() > expDate.getTime();
+}
+
+/**
+ * Filter vulnerabilities based on audit config ignore list.
+ */
+function filterIgnoredVulns(vulns, config) {
+  const ignored = [];
+  const expiredWarnings = [];
+  const filtered = [];
+
+  for (const vuln of vulns) {
+    const entry = config.ignore.find(e => e.id === vuln.id);
+    if (entry) {
+      if (entry.expires && isWaiverExpired(entry.expires)) {
+        expiredWarnings.push(`Waiver for ${entry.id} expired on ${entry.expires} (reason: ${entry.reason})`);
+        filtered.push(vuln);
+      } else {
+        ignored.push(vuln);
+      }
+    } else {
+      filtered.push(vuln);
+    }
+  }
+
+  return { filtered, ignoredCount: ignored.length, expiredWarnings };
+}
+
 export async function cmdAudit(argv) {
   if (argv.includes("--help") || argv.includes("-h")) {
     printText(`Usage:
@@ -188,6 +236,14 @@ Options:
   --fail-on LEVEL       Exit with code 1 if vulns at this severity or above [default: none]
   --timeout MS          API timeout in milliseconds [default: 15000]
   --workspace           Scan all workspace packages
+  --strict              Fail on any non-ignored vulnerability (for CI)
+  --add-ignore ID       Add a CVE/GHSA ID to the ignore list
+  --reason TEXT         Reason for ignoring (used with --add-ignore)
+  --prod-only           Only report vulnerabilities in production deps
+  --min-score N         Minimum effective score to report (0.0-10.0) [default: 0]
+  --ignore-dev          Exclude dev dependencies from results
+  --fixable-only        Only show vulnerabilities with available fixes
+  --no-smart            Disable context-aware scoring (use raw severity only)
 `);
     return;
   }
@@ -203,7 +259,10 @@ Options:
       fix: { type: "boolean", default: false },
       "fail-on": { type: "string", default: "none" },
       timeout: { type: "string", default: "15000" },
-      workspace: { type: "boolean", default: false }
+      workspace: { type: "boolean", default: false },
+      strict: { type: "boolean", default: false },
+      "add-ignore": { type: "string" },
+      reason: { type: "string", default: "No reason provided" }
     },
     allowPositionals: true,
     strict: false
@@ -227,6 +286,31 @@ Options:
   const projectRoot = resolvedRoot.root;
 
   logger.info("audit.start", { projectRoot });
+
+  // Handle --add-ignore: add a CVE to the ignore list
+  if (values["add-ignore"]) {
+    const cveId = values["add-ignore"];
+    const reason = values.reason;
+    const configPath = path.join(projectRoot, ".betterauditrc.json");
+    const config = await loadAuditConfig(projectRoot);
+
+    if (config.ignore.some(e => e.id === cveId)) {
+      throw new Error(`${cveId} is already in the ignore list`);
+    }
+
+    config.ignore.push({ id: cveId, reason });
+    await fs.writeFile(configPath, JSON.stringify(config, null, 2) + "\n");
+
+    if (jsonOutput) {
+      printJson({ ok: true, kind: "better.audit.addIgnore", id: cveId, reason, path: configPath });
+    } else {
+      printText(`Added ${cveId} to ${configPath}`);
+    }
+    return;
+  }
+
+  // Load audit allow-list config
+  const auditConfig = await loadAuditConfig(projectRoot);
 
   // Workspace mode: scan all workspace packages
   if (values.workspace) {
@@ -275,7 +359,7 @@ Options:
     if (!scanResult.ok) throw new Error(`OSV API error: ${scanResult.reason}`);
 
     const graph = buildVulnGraph(scanResult.results, mergedDepTree);
-    return finalizeAudit({ graph, uniquePackages, projectRoot, lockfile: "workspace", jsonOutput, minSeverity, severityOrder, failOn, values, logger });
+    return finalizeAudit({ graph, uniquePackages, projectRoot, lockfile: "workspace", jsonOutput, minSeverity, severityOrder, failOn, values, logger, auditConfig });
   }
 
   // Step 1: Resolve packages from lockfile
@@ -309,10 +393,10 @@ Options:
   // Step 3: Build vulnerability graph
   const graph = buildVulnGraph(scanResult.results, depTree);
 
-  return finalizeAudit({ graph, uniquePackages, projectRoot, lockfile, jsonOutput, minSeverity, severityOrder, failOn, values, logger });
+  return finalizeAudit({ graph, uniquePackages, projectRoot, lockfile, jsonOutput, minSeverity, severityOrder, failOn, values, logger, auditConfig });
 }
 
-function finalizeAudit({ graph, uniquePackages, projectRoot, lockfile, jsonOutput, minSeverity, severityOrder, failOn, values, logger }) {
+function finalizeAudit({ graph, uniquePackages, projectRoot, lockfile, jsonOutput, minSeverity, severityOrder, failOn, values, logger, auditConfig }) {
   // Filter by severity
   const minIdx = severityOrder[minSeverity];
   const filteredVulns = [];
@@ -323,7 +407,21 @@ function finalizeAudit({ graph, uniquePackages, projectRoot, lockfile, jsonOutpu
     }
   }
 
+  // Apply audit allow-list: filter out ignored CVEs from each node's vulns
+  let ignoredCount = 0;
+  const expiredWarnings = [];
+  if (auditConfig && auditConfig.ignore.length > 0) {
+    for (const node of filteredVulns) {
+      const before = node.vulns.length;
+      const result = filterIgnoredVulns(node.vulns, auditConfig);
+      node.vulns = result.filtered;
+      ignoredCount += result.ignoredCount;
+      expiredWarnings.push(...result.expiredWarnings);
+    }
+  }
+
   // Generate report
+  const graphJson = graphToJson(graph);
   const report = {
     ok: true,
     kind: "better.audit.report",
@@ -331,8 +429,11 @@ function finalizeAudit({ graph, uniquePackages, projectRoot, lockfile, jsonOutpu
     projectRoot,
     lockfile,
     scannedPackages: uniquePackages.length,
-    ...graphToJson(graph),
-    minSeverity
+    ...graphJson,
+    minSeverity,
+    ignoredCount,
+    expiredWaivers: expiredWarnings.length > 0 ? expiredWarnings : undefined,
+    strictFail: values.strict && filteredVulns.some(n => n.vulns.length > 0) ? true : undefined
   };
 
   if (jsonOutput) {
@@ -401,8 +502,28 @@ function finalizeAudit({ graph, uniquePackages, projectRoot, lockfile, jsonOutpu
     }
   }
 
+  // --strict mode: fail on any non-ignored vulnerability
+  if (values.strict && filteredVulns.some(n => n.vulns.length > 0)) {
+    process.exitCode = 1;
+  }
+
+  // Print expired waiver warnings
+  if (expiredWarnings.length > 0 && !jsonOutput) {
+    printText("");
+    printText("Expired waivers:");
+    for (const w of expiredWarnings) {
+      printText(`  ${w}`);
+    }
+  }
+
+  // Print ignored count
+  if (ignoredCount > 0 && !jsonOutput) {
+    printText(`\n${ignoredCount} vulnerabilities ignored via .betterauditrc.json`);
+  }
+
   logger.info("audit.end", {
     totalVulnerabilities: graph.summary.totalVulnerabilities,
-    riskScore: graph.summary.overallRiskScore
+    riskScore: graph.summary.overallRiskScore,
+    ignoredCount
   });
 }
