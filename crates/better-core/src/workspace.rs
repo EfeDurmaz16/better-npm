@@ -200,6 +200,7 @@ pub fn workspace_run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audit::{OsvBatchResponse};
 
     #[test]
     fn test_osv_batch_response_deserialization() {
@@ -256,8 +257,8 @@ mod tests {
         let affected = vulns[0].affected.as_ref().unwrap();
         let ranges = affected[0].ranges.as_ref().unwrap();
         let events = ranges[0].events.as_ref().unwrap();
-        let fixed = events.iter().find_map(|ev| {
-            ev.get("fixed").and_then(|f| f.as_str()).map(|s| s.to_string())
+        let fixed = events.iter().find_map(|ev: &serde_json::Value| {
+            ev.get("fixed").and_then(|f: &serde_json::Value| f.as_str()).map(|s: &str| s.to_string())
         });
         assert_eq!(fixed.as_deref(), Some("4.17.21"));
 

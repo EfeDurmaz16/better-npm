@@ -8,52 +8,52 @@ use crate::{resolve_from_lockfile, JsonWriter};
 
 // OSV API response types for serde deserialization
 #[derive(serde::Deserialize, Debug)]
-struct OsvBatchResponse {
-    results: Option<Vec<OsvBatchResult>>,
+pub(crate) struct OsvBatchResponse {
+    pub(crate) results: Option<Vec<OsvBatchResult>>,
 }
 
 #[derive(serde::Deserialize, Debug)]
-struct OsvBatchResult {
-    vulns: Option<Vec<OsvVuln>>,
+pub(crate) struct OsvBatchResult {
+    pub(crate) vulns: Option<Vec<OsvVuln>>,
 }
 
 #[derive(serde::Deserialize, Debug)]
-struct OsvVuln {
-    id: Option<String>,
-    summary: Option<String>,
-    details: Option<String>,
-    severity: Option<Vec<OsvSeverity>>,
-    affected: Option<Vec<OsvAffected>>,
+pub(crate) struct OsvVuln {
+    pub(crate) id: Option<String>,
+    pub(crate) summary: Option<String>,
+    pub(crate) details: Option<String>,
+    pub(crate) severity: Option<Vec<OsvSeverity>>,
+    pub(crate) affected: Option<Vec<OsvAffected>>,
 }
 
 #[derive(serde::Deserialize, Debug)]
 #[allow(dead_code)]
-struct OsvSeverity {
+pub(crate) struct OsvSeverity {
     #[serde(rename = "type")]
-    severity_type: Option<String>,
-    score: Option<String>,
+    pub(crate) severity_type: Option<String>,
+    pub(crate) score: Option<String>,
 }
 
 #[derive(serde::Deserialize, Debug)]
 #[allow(dead_code)]
-struct OsvAffected {
-    package: Option<OsvPackage>,
-    ranges: Option<Vec<OsvRange>>,
+pub(crate) struct OsvAffected {
+    pub(crate) package: Option<OsvPackage>,
+    pub(crate) ranges: Option<Vec<OsvRange>>,
 }
 
 #[derive(serde::Deserialize, Debug)]
 #[allow(dead_code)]
-struct OsvPackage {
-    name: Option<String>,
-    ecosystem: Option<String>,
+pub(crate) struct OsvPackage {
+    pub(crate) name: Option<String>,
+    pub(crate) ecosystem: Option<String>,
 }
 
 #[derive(serde::Deserialize, Debug)]
 #[allow(dead_code)]
-struct OsvRange {
+pub(crate) struct OsvRange {
     #[serde(rename = "type")]
-    range_type: Option<String>,
-    events: Option<Vec<serde_json::Value>>,
+    pub(crate) range_type: Option<String>,
+    pub(crate) events: Option<Vec<serde_json::Value>>,
 }
 
 pub fn run_audit(lockfile: &Path, _project_root: &Path, min_severity: &str) -> Result<AuditReport, String> {
