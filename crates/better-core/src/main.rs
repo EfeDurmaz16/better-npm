@@ -41,8 +41,12 @@ use better_core::{
     sandbox_scan, write_sandbox_scan_json,
     // v0.7 output
     GlobalFlags,
+    // v0.7 suggest
+    suggest_deps, write_suggest_json,
 };
 use better_core::engine::EngineRegistry;
+use better_core::context;
+use better_core::search;
 
 #[derive(Debug)]
 enum Command {
@@ -184,6 +188,27 @@ enum Command {
         from: String,
     },
     Completions { shell: String },
+    // v0.7 agentic
+    Context {
+        project_root: PathBuf,
+        package: Option<String>,
+        all: bool,
+        gc: bool,
+        force: bool,
+        ecosystem: Option<String>,
+    },
+    Mcp {
+        transport: String,
+    },
+    Search {
+        query: String,
+        ecosystem: Option<String>,
+        limit: usize,
+    },
+    Suggest {
+        project_root: PathBuf,
+        json: bool,
+    },
     Version,
     Help { error: Option<String> },
 }
@@ -322,6 +347,11 @@ fn parse_args() -> (Command, GlobalFlags) {
     let mut verify_provenance_flag = false;
     let mut require_provenance_flag = false;
     let mut from_opt: Option<String> = None;
+    let mut all_flag = false;
+    let mut force_flag = false;
+    let mut ecosystem_opt: Option<String> = None;
+    let mut limit_opt: usize = 10;
+    let mut transport_opt = "stdio".to_string();
 
     let mut i = 1usize;
     while i < args.len() {
@@ -514,6 +544,26 @@ fn parse_args() -> (Command, GlobalFlags) {
                 since_opt = Some(args[i + 1].clone());
                 i += 2;
             }
+            "--all" => { all_flag = true; i += 1; }
+            "--force" => { force_flag = true; i += 1; }
+            "--ecosystem" => {
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--ecosystem requires a value".into()) }, global_flags); }
+                ecosystem_opt = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--limit" => {
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--limit requires a value".into()) }, global_flags); }
+                match args[i + 1].parse::<usize>() {
+                    Ok(l) => limit_opt = l,
+                    Err(_) => return (Command::Help { error: Some(format!("invalid --limit '{}'", args[i + 1])) }, global_flags),
+                }
+                i += 2;
+            }
+            "--transport" => {
+                if i + 1 >= args.len() { return (Command::Help { error: Some("--transport requires a value".into()) }, global_flags); }
+                transport_opt = args[i + 1].clone();
+                i += 2;
+            }
             other => {
                 if other.starts_with('-') {
                     return (Command::Help { error: Some(format!("unknown flag: {other}")) }, global_flags);
@@ -695,9 +745,36 @@ fn parse_args() -> (Command, GlobalFlags) {
                 .unwrap_or_else(|| "pip".to_string());
             Command::Migrate { project_root: pr, from }
         },
+        "suggest" => {
+            let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
+            Command::Suggest { project_root: pr, json: json_progress }
+        },
         "completions" => {
             let shell = positional.first().cloned().unwrap_or_else(|| "bash".into());
             Command::Completions { shell }
+        },
+        "context" => {
+            let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
+            let gc = positional.first().map(|s| s == "gc").unwrap_or(false);
+            let package = if gc { None } else { positional.first().cloned() };
+            Command::Context {
+                project_root: pr,
+                package,
+                all: all_flag,
+                gc,
+                force: force_flag,
+                ecosystem: ecosystem_opt.clone(),
+            }
+        },
+        "mcp" => {
+            Command::Mcp { transport: transport_opt.clone() }
+        },
+        "search" => {
+            let query = positional.join(" ");
+            if query.is_empty() {
+                return (Command::Help { error: Some("search requires a query".into()) }, global_flags);
+            }
+            Command::Search { query, ecosystem: ecosystem_opt.clone(), limit: limit_opt }
         },
         _ => Command::Help { error: Some(format!("unknown command: {sub}")) },
     };
@@ -740,7 +817,13 @@ Usage:
   better-core receipts [list|verify] [--project-root <path>]
   better-core firewall [enable|disable|rules|scan] [--project-root <path>]
   better-core shell [--project-root <path>]                  (spawn venv-activated subshell)
+  better-core suggest [--project-root <path>] [--json]            (suggest missing/unused deps)
   better-core migrate [--from pip|pipenv|poetry] [--project-root <path>]
+  better-core context <package> [--ecosystem npm|python]   (generate LLM context for a package)
+  better-core context --all [--force]                      (generate context for all deps)
+  better-core context gc                                   (clean stale context cache)
+  better-core mcp [--transport stdio]                      (start MCP server for AI agents)
+  better-core search <query> [--ecosystem npm|python] [--limit 10]
   better-core completions <bash|zsh|fish|powershell>
   better-core analyze --root <path> [--graph]
   better-core scan --root <path>
@@ -1113,10 +1196,24 @@ fn generate_powershell_completions() -> &'static str {
 "#
 }
 
+/// Semantic exit codes for agent mode
+/// 0=success, 1=dependency-error, 2=security-blocked, 3=policy-failure, 4=network-error
+fn agent_exit(kind: &str, raw_code: i32, agent_mode: bool) -> i32 {
+    if !agent_mode {
+        return raw_code;
+    }
+    match kind {
+        "security" | "audit" => 2,
+        "policy" => 3,
+        "network" => 4,
+        _ => if raw_code == 0 { 0 } else { 1 },
+    }
+}
+
 fn main() {
     let (command, global_flags) = parse_args();
     let json_mode = global_flags.json || global_flags.agent_mode;
-    let _agent_mode = global_flags.agent_mode;
+    let agent_mode = global_flags.agent_mode;
 
     match command {
         Command::Registry { subcommand, registry_url, scope, token_env, priority } => {
@@ -1384,7 +1481,7 @@ fn main() {
                     let json = write_firewall_json(&report);
                     println!("{json}");
                     if report.blocked > 0 {
-                        std::process::exit(1);
+                        std::process::exit(agent_exit("security", 1, agent_mode));
                     }
                 }
                 other => {
@@ -1460,6 +1557,165 @@ fn main() {
                 }
             }
         }
+        Command::Context { project_root, package, all, gc, force, ecosystem } => {
+            if gc {
+                // better context gc
+                match context::cache::gc(30, false) {
+                    Ok(result) => {
+                        let mut w = JsonWriter::new();
+                        w.begin_object();
+                        w.key("ok"); w.value_bool(true);
+                        w.key("kind"); w.value_string("better.context.gc");
+                        w.key("removed"); w.value_u64(result.removed);
+                        w.key("freedBytes"); w.value_u64(result.freed_bytes);
+                        w.key("kept"); w.value_u64(result.kept);
+                        w.end_object(); w.out.push('
+');
+                        print!("{}", w.finish());
+                    }
+                    Err(reason) => {
+                        eprintln!("error: {reason}");
+                        std::process::exit(1);
+                    }
+                }
+            } else if all {
+                // better context --all
+                let cache_root = default_cache_root();
+                match context::generate_all_context(&project_root, &cache_root, force) {
+                    Ok(result) => {
+                        let mut w = JsonWriter::new();
+                        w.begin_object();
+                        w.key("ok"); w.value_bool(true);
+                        w.key("kind"); w.value_string("better.context.all");
+                        w.key("generated"); w.value_u64(result.generated as u64);
+                        w.key("cached"); w.value_u64(result.cached as u64);
+                        w.key("failed"); w.value_u64(result.failed.len() as u64);
+                        w.key("totalMs"); w.value_u64(result.total_ms);
+                        w.key("outputDir"); w.value_string(&result.output_dir);
+                        w.end_object(); w.out.push('
+');
+                        print!("{}", w.finish());
+                        eprintln!("  context: generated {} (cached: {}, failed: {}) in {}ms",
+                            result.generated, result.cached, result.failed.len(), result.total_ms);
+                    }
+                    Err(reason) => {
+                        eprintln!("error: {reason}");
+                        std::process::exit(1);
+                    }
+                }
+            } else if let Some(pkg_name) = package {
+                // better context <package>
+                // Check cache first
+                let eco = ecosystem.as_deref().unwrap_or("npm");
+                let nm_path = project_root.join("node_modules").join(&pkg_name).join("package.json");
+                let version = if nm_path.exists() {
+                    let content = std::fs::read_to_string(&nm_path).unwrap_or_default();
+                    better_core::extract_json_field(&content, "version").unwrap_or_else(|| "0.0.0".to_string())
+                } else {
+                    "0.0.0".to_string()
+                };
+
+                if let Some(cached) = context::cache::read_cached(eco, &pkg_name, &version) {
+                    println!("{}", cached);
+                } else {
+                    match context::generate_context(&project_root, &pkg_name, ecosystem.as_deref()) {
+                        Ok(ctx) => {
+                            // Cache it
+                            context::cache::write_cached(eco, &pkg_name, &version, &ctx.markdown, false).ok();
+                            println!("{}", ctx.markdown);
+                        }
+                        Err(reason) => {
+                            eprintln!("error: {reason}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            } else {
+                // Show context cache stats
+                match context::cache::stats() {
+                    Ok(stats) => {
+                        let mut w = JsonWriter::new();
+                        w.begin_object();
+                        w.key("ok"); w.value_bool(true);
+                        w.key("kind"); w.value_string("better.context.stats");
+                        w.key("totalEntries"); w.value_u64(stats.total_entries as u64);
+                        w.key("totalSizeBytes"); w.value_u64(stats.total_size_bytes);
+                        w.key("npmEntries"); w.value_u64(stats.npm_entries as u64);
+                        w.key("pythonEntries"); w.value_u64(stats.python_entries as u64);
+                        w.end_object(); w.out.push('
+');
+                        print!("{}", w.finish());
+                    }
+                    Err(reason) => {
+                        eprintln!("error: {reason}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+        }
+
+        Command::Mcp { transport } => {
+            match transport.as_str() {
+                "stdio" | "" => {
+                    let transport = better_core::mcp::transport::StdioTransport::new();
+                    let mut server = better_core::mcp::server::McpServer::new(transport);
+                    server.run().unwrap_or_else(|e| {
+                        eprintln!("MCP server error: {}", e);
+                        std::process::exit(1);
+                    });
+                }
+                _ => {
+                    eprintln!("unknown transport: {} (use 'stdio')", transport);
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        Command::Search { query, ecosystem, limit } => {
+            match search::search(&query, ecosystem.as_deref(), limit) {
+                Ok(result) => {
+                    let mut w = JsonWriter::new();
+                    w.begin_object();
+                    w.key("ok"); w.value_bool(true);
+                    w.key("kind"); w.value_string("better.search");
+                    w.key("query"); w.value_string(&query);
+                    w.key("total"); w.value_u64(result.total as u64);
+                    w.key("searchMs"); w.value_u64(result.search_ms);
+                    w.key("packages"); w.begin_array();
+                    for pkg in &result.packages {
+                        w.begin_object();
+                        w.key("name"); w.value_string(&pkg.name);
+                        w.key("ecosystem"); w.value_string(&pkg.ecosystem);
+                        w.key("version"); w.value_string(&pkg.version);
+                        w.key("description"); w.value_string(&pkg.description);
+                        w.key("score"); w.value_f64(pkg.score);
+                        w.key("downloadsWeekly"); w.value_u64(pkg.downloads_weekly);
+                        w.key("hasTypes"); w.value_bool(pkg.has_types);
+                        match &pkg.license {
+                            Some(l) => { w.key("license"); w.value_string(l); }
+                            None => { w.key("license"); w.value_null(); }
+                        }
+                        w.end_object();
+                    }
+                    w.end_array();
+                    w.end_object(); w.out.push('
+');
+                    print!("{}", w.finish());
+                }
+                Err(reason) => {
+                    let mut w = JsonWriter::new();
+                    w.begin_object();
+                    w.key("ok"); w.value_bool(false);
+                    w.key("kind"); w.value_string("better.search");
+                    w.key("reason"); w.value_string(&reason);
+                    w.end_object(); w.out.push('
+');
+                    print!("{}", w.finish());
+                    std::process::exit(1);
+                }
+            }
+        }
+
         Command::Version => {
             println!("{VERSION}");
         }
@@ -1838,7 +2094,7 @@ fn main() {
                             w.key("reason"); w.value_string(&reason);
                             w.end_object(); w.out.push('\n');
                             print!("{}", w.finish());
-                            std::process::exit(1);
+                            std::process::exit(agent_exit("security", 1, agent_mode));
                         } else {
                             eprintln!("warning: provenance check failed: {}", reason);
                         }
@@ -2099,7 +2355,7 @@ fn main() {
                                 w.end_array();
                                 w.end_object(); w.out.push('\n');
                                 print!("{}", w.finish());
-                                if !result.violations.is_empty() { std::process::exit(1); }
+                                if !result.violations.is_empty() { std::process::exit(agent_exit("policy", 1, agent_mode)); }
                             }
                             Err(reason) => {
                                 let mut w = JsonWriter::new();
@@ -2412,7 +2668,7 @@ fn main() {
                         w.key("reason"); w.value_string(&err);
                         w.end_object(); w.out.push('\n');
                         print!("{}", w.finish());
-                        std::process::exit(1);
+                        std::process::exit(agent_exit("security", 1, agent_mode));
                     }
                 }
                 return;
@@ -2459,7 +2715,7 @@ fn main() {
                     }
                     w.end_object(); w.out.push('\n');
                     print!("{}", w.finish());
-                    if report.total > 0 || report.strict_fail { std::process::exit(1); }
+                    if report.total > 0 || report.strict_fail { std::process::exit(agent_exit("security", 1, agent_mode)); }
                 }
                 Err(reason) => {
                     let mut w = JsonWriter::new();
@@ -2826,7 +3082,7 @@ fn main() {
                             w.end_object();
                             w.end_object(); w.out.push('\n');
                             print!("{}", w.finish());
-                            if !result.pass { std::process::exit(1); }
+                            if !result.pass { std::process::exit(agent_exit("policy", 1, agent_mode)); }
                         }
                         Err(reason) => {
                             let mut w = JsonWriter::new();
@@ -2836,7 +3092,7 @@ fn main() {
                             w.key("reason"); w.value_string(&reason);
                             w.end_object(); w.out.push('\n');
                             print!("{}", w.finish());
-                            std::process::exit(1);
+                            std::process::exit(agent_exit("policy", 1, agent_mode));
                         }
                     }
                 }
