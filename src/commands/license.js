@@ -5,6 +5,8 @@ import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
 import { childLogger } from "../lib/log.js";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
+import { findBetterCore } from "../lib/core.js";
+import { runCommand } from "../lib/spawn.js";
 
 const HELP = `
 Usage: better license [options]
@@ -17,12 +19,14 @@ Options:
   --project-root PATH Override project root directory
   --allow LIST        Comma-separated list of allowed licenses (exit 1 if others found)
   --deny LIST         Comma-separated list of denied licenses (exit 1 if found)
+  --policy            Enforce license policy from .betterlicenserc.json
 
 Examples:
   better license
   better license --json
   better license --allow "MIT,ISC,Apache-2.0"
   better license --deny "GPL-3.0,AGPL-3.0"
+  better license --policy
 `;
 
 async function exists(p) {
@@ -277,7 +281,8 @@ export async function cmdLicense(argv) {
       json: { type: "boolean" },
       "project-root": { type: "string" },
       allow: { type: "string" },
-      deny: { type: "string" }
+      deny: { type: "string" },
+      policy: { type: "boolean" }
     },
     allowPositionals: true
   });
@@ -330,5 +335,52 @@ export async function cmdLicense(argv) {
 
   if (summary.violations.length > 0) {
     process.exitCode = 1;
+  }
+
+  // License policy enforcement via .betterlicenserc.json
+  if (parsed.values.policy) {
+    const corePath = await findBetterCore();
+    if (!corePath) {
+      printText("better license --policy: better-core binary not found");
+      process.exitCode = 1;
+      return;
+    }
+
+    const args = ["license", "--root", nodeModulesPath, "--policy"];
+    const res = await runCommand(corePath, args, {
+      cwd: projectRoot,
+      passthroughStdio: false,
+      captureLimitBytes: 10 * 1024 * 1024,
+      timeoutMs: 30_000
+    });
+
+    try {
+      const policyResult = JSON.parse(res.stdout);
+      if (isJson) {
+        printJson(policyResult);
+      } else {
+        if (policyResult.violations?.length > 0) {
+          printText(`\nLicense policy violations (${policyResult.violations.length}):`);
+          for (const v of policyResult.violations) {
+            printText(`  x ${v.package}@${v.version}: ${v.license} -- ${v.reason}`);
+          }
+        }
+        if (policyResult.warnings?.length > 0) {
+          printText(`\nLicense policy warnings (${policyResult.warnings.length}):`);
+          for (const w of policyResult.warnings) {
+            printText(`  ? ${w.package}@${w.version}: ${w.license} -- ${w.reason}`);
+          }
+        }
+        if (!policyResult.violations?.length && !policyResult.warnings?.length) {
+          printText(`\nLicense policy: all ${policyResult.totalChecked} packages compliant.`);
+        }
+      }
+      if (policyResult.violations?.length > 0) {
+        process.exitCode = 1;
+      }
+    } catch {
+      printText("better license --policy: failed to parse policy check output");
+      process.exitCode = 1;
+    }
   }
 }
