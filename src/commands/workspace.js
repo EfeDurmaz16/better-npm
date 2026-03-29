@@ -7,6 +7,8 @@ import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
 import { runCommand } from "../lib/spawn.js";
 import { childLogger } from "../lib/log.js";
+import { getCacheRoot } from "../lib/cache.js";
+import { loadTopoCache, saveTopoCache, buildTopoGraph } from "../lib/workspaceTopoCache.js";
 
 /**
  * Format a table row with aligned columns.
@@ -357,6 +359,27 @@ export async function cmdWorkspace(argv) {
       else printText(`better workspace graph: ${resolved.reason}`);
       process.exitCode = 1;
       return;
+    }
+
+    // Try topology cache first
+    const cacheRoot = await getCacheRoot().catch(() => null);
+    const packageDirs = resolved.packages.map(p => p.dir ?? p.path ?? projectRoot).filter(Boolean);
+    let cachedTopo = null;
+    if (cacheRoot) {
+      cachedTopo = await loadTopoCache(cacheRoot, projectRoot, packageDirs).catch(() => null);
+    }
+
+    let topoData;
+    if (cachedTopo) {
+      topoData = cachedTopo;
+      if (!values.json) process.stderr.write("\x1b[90m(topology from cache)\x1b[0m\n");
+    } else {
+      topoData = await buildTopoGraph(
+        resolved.packages.map(p => ({ name: p.name, dir: p.dir ?? p.path ?? projectRoot }))
+      );
+      if (cacheRoot) {
+        saveTopoCache(cacheRoot, projectRoot, packageDirs, topoData).catch(() => {});
+      }
     }
 
     const sorted = topoSort(resolved.packages);
