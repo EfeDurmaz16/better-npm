@@ -409,7 +409,7 @@ pub fn fetch_and_extract(
     };
 
     // Fetch packages
-    match fetch_packages(&packages, cache) {
+    match fetch_packages(&packages, cache, None) {
         Ok(fetch_result) => NapiFetchResult {
             ok: true,
             reason: None,
