@@ -846,7 +846,7 @@ fn generate_bash_completions() -> &'static str {
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-    commands="install analyze cache doctor serve benchmark lock policy workspace audit dashboard run why dedupe license outdated scripts lint test dev build start exec env init hooks sbom registry completions scan materialize agent version help"
+    commands="install analyze cache doctor serve benchmark lock policy workspace audit dashboard run why dedupe license outdated scripts lint test dev build start exec env init hooks sbom registry completions scan materialize suggest agent version help"
 
     case "${prev}" in
         better|better-core)
@@ -1569,8 +1569,7 @@ fn main() {
                         w.key("removed"); w.value_u64(result.removed);
                         w.key("freedBytes"); w.value_u64(result.freed_bytes);
                         w.key("kept"); w.value_u64(result.kept);
-                        w.end_object(); w.out.push('
-');
+                        w.end_object(); w.out.push('\n');
                         print!("{}", w.finish());
                     }
                     Err(reason) => {
@@ -1592,8 +1591,7 @@ fn main() {
                         w.key("failed"); w.value_u64(result.failed.len() as u64);
                         w.key("totalMs"); w.value_u64(result.total_ms);
                         w.key("outputDir"); w.value_string(&result.output_dir);
-                        w.end_object(); w.out.push('
-');
+                        w.end_object(); w.out.push('\n');
                         print!("{}", w.finish());
                         eprintln!("  context: generated {} (cached: {}, failed: {}) in {}ms",
                             result.generated, result.cached, result.failed.len(), result.total_ms);
@@ -1642,8 +1640,7 @@ fn main() {
                         w.key("totalSizeBytes"); w.value_u64(stats.total_size_bytes);
                         w.key("npmEntries"); w.value_u64(stats.npm_entries as u64);
                         w.key("pythonEntries"); w.value_u64(stats.python_entries as u64);
-                        w.end_object(); w.out.push('
-');
+                        w.end_object(); w.out.push('\n');
                         print!("{}", w.finish());
                     }
                     Err(reason) => {
@@ -1698,8 +1695,7 @@ fn main() {
                         w.end_object();
                     }
                     w.end_array();
-                    w.end_object(); w.out.push('
-');
+                    w.end_object(); w.out.push('\n');
                     print!("{}", w.finish());
                 }
                 Err(reason) => {
@@ -1708,14 +1704,59 @@ fn main() {
                     w.key("ok"); w.value_bool(false);
                     w.key("kind"); w.value_string("better.search");
                     w.key("reason"); w.value_string(&reason);
-                    w.end_object(); w.out.push('
-');
+                    w.end_object(); w.out.push('\n');
                     print!("{}", w.finish());
                     std::process::exit(1);
                 }
             }
         }
 
+        Command::Suggest { project_root, json } => {
+            match suggest_deps(&project_root) {
+                Ok(report) => {
+                    if json {
+                        print!("{}", write_suggest_json(&report));
+                    } else {
+                        println!("better -- dependency suggestions\n");
+                        println!("  ecosystem: {}", report.ecosystem);
+                        println!("  scanned {} files in {}ms\n", report.files_scanned, report.scan_ms);
+                        if report.missing.is_empty() {
+                            println!("  MISSING: none");
+                        } else {
+                            println!("  MISSING ({} packages not in manifest but imported in source):", report.missing.len());
+                            for dep in &report.missing {
+                                let files = dep.imported_in.join(", ");
+                                println!("    + {:<24} imported in {}", dep.name, files);
+                            }
+                        }
+                        println!();
+                        if report.unused.is_empty() {
+                            println!("  UNUSED: none");
+                        } else {
+                            println!("  UNUSED ({} packages in manifest but not imported):", report.unused.len());
+                            for dep in &report.unused {
+                                let version_str = if dep.version.is_empty() { String::new() } else { format!("@{}", dep.version) };
+                                println!("    - {}{:<20} declared in {} (confidence: {:.0}%)", dep.name, version_str, dep.declared_in, dep.confidence * 100.0);
+                            }
+                        }
+                    }
+                }
+                Err(reason) => {
+                    if json {
+                        let mut w = JsonWriter::new();
+                        w.begin_object();
+                        w.key("ok"); w.value_bool(false);
+                        w.key("kind"); w.value_string("better.suggest");
+                        w.key("reason"); w.value_string(&reason);
+                        w.end_object(); w.out.push('\n');
+                        print!("{}", w.finish());
+                    } else {
+                        eprintln!("error: {reason}");
+                    }
+                    std::process::exit(1);
+                }
+            }
+        }
         Command::Version => {
             println!("{VERSION}");
         }

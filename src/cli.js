@@ -27,9 +27,14 @@ Commands:
   license            Scan node_modules for package licenses
   outdated           Check for newer versions of installed packages
   scripts            Manage install script sandboxing (list, allow, block)
-  completions <shell> Generate shell completions (bash, zsh, fish, powershell)
+  context <package>   Generate LLM-friendly context for a package
+  context --all        Generate context for all installed dependencies
+  context gc           Clean stale context cache entries
+  mcp                  Start MCP server for AI agent integration
+  search <query>       Search packages across npm and PyPI
+  completions <shell>  Generate shell completions (bash, zsh, fish, powershell)
   lint|test|dev|build  Script aliases for better run
-  agent <command>    Agent mode: --json --no-color, semantic exit codes
+  agent <command>      Agent mode: --json --no-color, semantic exit codes
 
 Global options:
   --json             Machine-readable output (JSON)
@@ -168,6 +173,25 @@ export async function runCli(argv) {
         const shell = rest[0] || "bash";
         const { spawnSync } = await import("node:child_process");
         const result = spawnSync("better-core", ["completions", shell], { stdio: "inherit" });
+        process.exitCode = result.status;
+        break;
+      }
+      case "context": {
+        const { spawnSync } = await import("node:child_process");
+        const result = spawnSync("better-core", ["context", ...rest], { stdio: "inherit" });
+        process.exitCode = result.status;
+        break;
+      }
+      case "mcp": {
+        const { spawnSync } = await import("node:child_process");
+        const result = spawnSync("better-core", ["mcp", ...rest], { stdio: ["pipe", "pipe", "inherit"] });
+        if (result.stdout) process.stdout.write(result.stdout);
+        process.exitCode = result.status;
+        break;
+      }
+      case "search": {
+        const { spawnSync } = await import("node:child_process");
+        const result = spawnSync("better-core", ["search", ...rest], { stdio: "inherit" });
         process.exitCode = result.status;
         break;
       }
