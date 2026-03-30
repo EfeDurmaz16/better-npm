@@ -71,6 +71,7 @@ Commands:
   compat               Check Node.js version compatibility of packages
   fix                  Auto-fix common project issues
   deprecations         Scan for deprecated packages with alternatives
+  security             Comprehensive security check (audit+supply+licenses)
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -393,6 +394,9 @@ export async function runCli(argv) {
         break;
       case "deprecations":
         await (await import("./commands/deprecations.js")).cmdDeprecations(rest);
+        break;
+      case "security":
+        await (await import("./commands/security.js")).cmdSecurity(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
