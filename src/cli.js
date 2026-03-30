@@ -176,6 +176,9 @@ Commands:
   perf-budget          Enforce performance budgets for dependency footprint
   alias <subcmd>       Manage custom command aliases (add/list/remove/run)
   peer-check           Comprehensive peer dependency conflict analysis
+  source-map-check     Validate source map files in build output
+  link-check           Verify npm-linked packages and their targets
+  script-env           Show npm environment variables injected during scripts
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -813,6 +816,15 @@ export async function runCli(argv) {
         break;
       case "peer-check":
         await (await import("./commands/peer-check.js")).cmdPeerCheck(rest);
+        break;
+      case "source-map-check":
+        await (await import("./commands/source-map-check.js")).cmdSourceMapCheck(rest);
+        break;
+      case "link-check":
+        await (await import("./commands/link-check.js")).cmdLinkCheck(rest);
+        break;
+      case "script-env":
+        await (await import("./commands/script-env.js")).cmdScriptEnv(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
