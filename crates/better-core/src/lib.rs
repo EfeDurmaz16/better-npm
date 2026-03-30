@@ -150,6 +150,8 @@ pub mod doctor_v2;
 pub mod services;
 pub mod cross_ecosystem;
 pub mod graph;
+pub mod pin;
+pub mod compat;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
