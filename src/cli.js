@@ -198,6 +198,9 @@ Commands:
   deprecation-check    Find deprecated packages and suggest modern alternatives
   optional-deps        Show optional dependency installation status
   pkg-alternatives <p> Find modern alternatives to a package
+  ci-config-gen        Generate CI/CD config (GitHub Actions/GitLab CI/CircleCI)
+  env-doctor           Diagnose Node.js/npm environment health
+  duplicate-files      Find duplicate files across node_modules packages
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -901,6 +904,15 @@ export async function runCli(argv) {
         break;
       case "pkg-alternatives":
         await (await import("./commands/pkg-alternatives.js")).cmdPkgAlternatives(rest);
+        break;
+      case "ci-config-gen":
+        await (await import("./commands/ci-config-gen.js")).cmdCiConfigGen(rest);
+        break;
+      case "env-doctor":
+        await (await import("./commands/env-doctor.js")).cmdEnvDoctor(rest);
+        break;
+      case "duplicate-files":
+        await (await import("./commands/duplicate-files.js")).cmdDuplicateFiles(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
