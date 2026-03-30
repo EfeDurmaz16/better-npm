@@ -302,6 +302,12 @@ export async function runCli(argv) {
       case "config":
         await (await import("./commands/config.js")).cmdConfig(rest);
         break;
+      case "watch":
+        await (await import("./commands/watch.js")).cmdWatch(rest);
+        break;
+      case "changelog":
+        await (await import("./commands/changelog.js")).cmdChangelog(rest);
+        break;
       case "completions": {
         const shell = rest[0] || "bash";
         const { spawnSync } = await import("node:child_process");
