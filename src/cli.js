@@ -238,6 +238,12 @@ export async function runCli(argv) {
       case "deploy":
         await (await import("./commands/deploy.js")).cmdDeploy(rest);
         break;
+      case "env":
+        await (await import("./commands/env.js")).cmdEnv(rest);
+        break;
+      case "cost":
+        await (await import("./commands/cost.js")).cmdCost(rest);
+        break;
       case "completions": {
         const shell = rest[0] || "bash";
         const { spawnSync } = await import("node:child_process");
@@ -261,6 +267,12 @@ export async function runCli(argv) {
       case "search": {
         const { spawnSync } = await import("node:child_process");
         const result = spawnSync("better-core", ["search", ...rest], { stdio: "inherit" });
+        process.exitCode = result.status;
+        break;
+      }
+      case "reputation": {
+        const { spawnSync } = await import("node:child_process");
+        const result = spawnSync("better-core", ["reputation", ...rest], { stdio: "inherit" });
         process.exitCode = result.status;
         break;
       }
