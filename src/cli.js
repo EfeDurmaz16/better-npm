@@ -78,6 +78,7 @@ Commands:
   score                Overall project health score (0-100, grade A-F)
   types-check          Check TypeScript type definitions availability
   exports-check        Validate package.json exports field paths
+  publish-check        Pre-publish checklist for npm publishing
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -421,6 +422,9 @@ export async function runCli(argv) {
         break;
       case "exports-check":
         await (await import("./commands/exports-check.js")).cmdExportsCheck(rest);
+        break;
+      case "publish-check":
+        await (await import("./commands/publish-check.js")).cmdPublishCheck(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
