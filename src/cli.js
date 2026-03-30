@@ -201,6 +201,9 @@ Commands:
   ci-config-gen        Generate CI/CD config (GitHub Actions/GitLab CI/CircleCI)
   env-doctor           Diagnose Node.js/npm environment health
   duplicate-files      Find duplicate files across node_modules packages
+  patch-package-check  Audit patch-package patches for version drift
+  registry-health      Check npm registry connectivity and latency
+  node-compat          Check Node.js version compatibility across packages
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -913,6 +916,15 @@ export async function runCli(argv) {
         break;
       case "duplicate-files":
         await (await import("./commands/duplicate-files.js")).cmdDuplicateFiles(rest);
+        break;
+      case "patch-package-check":
+        await (await import("./commands/patch-package-check.js")).cmdPatchPackageCheck(rest);
+        break;
+      case "registry-health":
+        await (await import("./commands/registry-health.js")).cmdRegistryHealth(rest);
+        break;
+      case "node-compat":
+        await (await import("./commands/node-compat.js")).cmdNodeCompat(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
