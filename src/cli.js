@@ -210,6 +210,9 @@ Commands:
   resolutions-check    Validate resolutions/overrides entries
   postinstall-audit    Audit postinstall scripts for risky patterns
   scope-check          Validate scoped package registry configuration
+  phantom-deps         Detect undeclared imports missing from package.json
+  version-bumper <t>   Bump version (patch/minor/major) with git tag
+  pkg-trust <p>        Assess trustworthiness of an npm package
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -949,6 +952,15 @@ export async function runCli(argv) {
         break;
       case "scope-check":
         await (await import("./commands/scope-check.js")).cmdScopeCheck(rest);
+        break;
+      case "phantom-deps":
+        await (await import("./commands/phantom-deps.js")).cmdPhantomDeps(rest);
+        break;
+      case "version-bumper":
+        await (await import("./commands/version-bumper.js")).cmdVersionBumper(rest);
+        break;
+      case "pkg-trust":
+        await (await import("./commands/pkg-trust.js")).cmdPkgTrust(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
