@@ -47,6 +47,7 @@ use better_core::{
 use better_core::engine::EngineRegistry;
 use better_core::context;
 use better_core::search;
+use better_core::audit;
 
 #[derive(Debug)]
 enum Command {
@@ -108,6 +109,9 @@ enum Command {
         max_age: u64,
         dry_run: bool,
     },
+    OsvCacheStats,
+    OsvCacheClear,
+    OsvCacheRefresh,
     Audit {
         project_root: PathBuf,
         lockfile: PathBuf,
@@ -766,7 +770,14 @@ fn parse_args() -> (Command, GlobalFlags) {
         },
         "cache" => {
             let cr = cache_root.unwrap_or_else(default_cache_root);
-            if positional.first().map(|s| s.as_str()) == Some("gc") {
+            if positional.first().map(|s| s.as_str()) == Some("osv") {
+                let sub = positional.get(1).map(|s| s.as_str()).unwrap_or("stats");
+                match sub {
+                    "clear" => Command::OsvCacheClear,
+                    "refresh" => Command::OsvCacheRefresh,
+                    _ => Command::OsvCacheStats,
+                }
+            } else if positional.first().map(|s| s.as_str()) == Some("gc") {
                 Command::CacheGc { cache_root: cr, max_age, dry_run }
             } else {
                 Command::CacheStats { cache_root: cr }
@@ -2805,6 +2816,51 @@ fn main() {
                     w.key("ok"); w.value_bool(false);
                     w.key("kind"); w.value_string("better.doctor");
                     w.key("reason"); w.value_string(&reason);
+                    w.end_object(); w.out.push('\n');
+                    print!("{}", w.finish());
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        Command::OsvCacheStats => {
+            let osv_cache = audit::cache::OsvCache::new();
+            let stats = osv_cache.stats();
+            let mut w = JsonWriter::new();
+            w.begin_object();
+            w.key("ok"); w.value_bool(true);
+            w.key("kind"); w.value_string("better.osv.cache.stats");
+            w.key("cacheDir"); w.value_string(&stats.cache_dir);
+            w.key("entries"); w.value_u64(stats.entries);
+            w.key("totalBytes"); w.value_u64(stats.total_bytes);
+            if let Some(ts) = stats.oldest_ts {
+                w.key("oldestTs"); w.value_u64(ts);
+            }
+            if let Some(ts) = stats.newest_ts {
+                w.key("newestTs"); w.value_u64(ts);
+            }
+            w.end_object(); w.out.push('\n');
+            print!("{}", w.finish());
+        }
+
+        Command::OsvCacheClear | Command::OsvCacheRefresh => {
+            let osv_cache = audit::cache::OsvCache::new();
+            match osv_cache.clear() {
+                Ok(count) => {
+                    let mut w = JsonWriter::new();
+                    w.begin_object();
+                    w.key("ok"); w.value_bool(true);
+                    w.key("kind"); w.value_string("better.osv.cache.clear");
+                    w.key("removed"); w.value_u64(count);
+                    w.end_object(); w.out.push('\n');
+                    print!("{}", w.finish());
+                }
+                Err(e) => {
+                    let mut w = JsonWriter::new();
+                    w.begin_object();
+                    w.key("ok"); w.value_bool(false);
+                    w.key("kind"); w.value_string("better.osv.cache.clear");
+                    w.key("reason"); w.value_string(&e.to_string());
                     w.end_object(); w.out.push('\n');
                     print!("{}", w.finish());
                     std::process::exit(1);
