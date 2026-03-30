@@ -115,6 +115,8 @@ Commands:
   diff-deps <ref>      Compare dependencies between git refs
   explain <pkg>        Explain what a package does
   fix-versions         Normalize version range formats
+  verify               Comprehensive package verification (audit + integrity)
+  migrate [pkg...]     Migration guidance for major version updates
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -569,6 +571,12 @@ export async function runCli(argv) {
         break;
       case "fix-versions":
         await (await import("./commands/fix-versions.js")).cmdFixVersions(rest);
+        break;
+      case "verify":
+        await (await import("./commands/verify.js")).cmdVerify(rest);
+        break;
+      case "migrate":
+        await (await import("./commands/migrate.js")).cmdMigrate(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
