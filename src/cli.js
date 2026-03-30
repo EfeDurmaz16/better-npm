@@ -213,6 +213,9 @@ Commands:
   phantom-deps         Detect undeclared imports missing from package.json
   version-bumper <t>   Bump version (patch/minor/major) with git tag
   pkg-trust <p>        Assess trustworthiness of an npm package
+  monorepo-version-sync Check cross-package version consistency in monorepos
+  pkg-provenance <p>   Check npm package provenance attestations
+  dev-deps-check       Find production code importing devDependencies
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -961,6 +964,15 @@ export async function runCli(argv) {
         break;
       case "pkg-trust":
         await (await import("./commands/pkg-trust.js")).cmdPkgTrust(rest);
+        break;
+      case "monorepo-version-sync":
+        await (await import("./commands/monorepo-version-sync.js")).cmdMonorepoVersionSync(rest);
+        break;
+      case "pkg-provenance":
+        await (await import("./commands/pkg-provenance.js")).cmdPkgProvenance(rest);
+        break;
+      case "dev-deps-check":
+        await (await import("./commands/dev-deps-check.js")).cmdDevDepsCheck(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
