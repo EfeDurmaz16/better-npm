@@ -222,6 +222,9 @@ Commands:
   sbom-gen             Generate SBOM in CycloneDX or SPDX format
   dep-graph            Visualize dependency graph as ASCII tree or DOT
   build-diff           Compare build output sizes before/after changes
+  npm-cache-info       Inspect npm cache location, size, and integrity
+  module-type          Detect and validate module system (CJS vs ESM)
+  migration-guide <p>  Get migration notes for major version upgrades
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -997,6 +1000,15 @@ export async function runCli(argv) {
         break;
       case "build-diff":
         await (await import("./commands/build-diff.js")).cmdBuildDiff(rest);
+        break;
+      case "npm-cache-info":
+        await (await import("./commands/npm-cache-info.js")).cmdNpmCacheInfo(rest);
+        break;
+      case "module-type":
+        await (await import("./commands/module-type.js")).cmdModuleType(rest);
+        break;
+      case "migration-guide":
+        await (await import("./commands/migration-guide.js")).cmdMigrationGuide(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
