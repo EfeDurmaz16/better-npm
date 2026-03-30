@@ -8,6 +8,7 @@ pub mod review;
 pub mod migrate;
 pub mod provision;
 pub mod pipeline;
+pub mod heal;
 
 pub use engine::{AiEngine, AiProvider, AiRequest, AiPlan, AiStep, ProjectContext, DepSummary, AiTool};
 pub use self_healing::{SelfHealingEngine, HealingAction};
