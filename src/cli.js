@@ -156,6 +156,9 @@ Commands:
   cve-check            Check packages against OSV.dev CVE database
   list-scripts         List all npm scripts with descriptions
   install-time         Benchmark npm install time (fresh and cached)
+  pkg-publish-info     Show pre-publish info and validate publish readiness
+  git-check            Validate git repository state before operations
+  npm-scripts-run      Run multiple npm scripts in sequence or parallel
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -733,6 +736,15 @@ export async function runCli(argv) {
         break;
       case "install-time":
         await (await import("./commands/install-time.js")).cmdInstallTime(rest);
+        break;
+      case "pkg-publish-info":
+        await (await import("./commands/pkg-publish-info.js")).cmdPkgPublishInfo(rest);
+        break;
+      case "git-check":
+        await (await import("./commands/git-check.js")).cmdGitCheck(rest);
+        break;
+      case "npm-scripts-run":
+        await (await import("./commands/npm-scripts-run.js")).cmdNpmScriptsRun(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
