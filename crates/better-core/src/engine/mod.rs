@@ -1,7 +1,10 @@
 pub mod cargo;
+pub mod dotnet;
 pub mod go;
 pub mod npm;
 pub mod python;
+pub mod ruby;
+pub mod php;
 
 use std::fmt;
 use std::path::Path;
@@ -169,6 +172,9 @@ impl EngineRegistry {
         registry.register(Box::new(python::PythonEngine::new()));
         registry.register(Box::new(cargo::CargoEngine));
         registry.register(Box::new(go::GoEngine));
+        registry.register(Box::new(dotnet::DotNetEngine));
+        registry.register(Box::new(ruby::RubyEngine));
+        registry.register(Box::new(php::PhpEngine));
         registry
     }
 
