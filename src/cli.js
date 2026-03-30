@@ -109,6 +109,9 @@ Commands:
   install-check        Verify npm installation health and integrity
   patch <subcmd>       Create and apply node_modules patches
   workspace-run <s>    Run scripts across all workspace packages
+  fund                 Show funding information for installed packages
+  provenance           Check package provenance attestations
+  interactive          Interactive TUI for dependency management
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -545,6 +548,15 @@ export async function runCli(argv) {
         break;
       case "workspace-run":
         await (await import("./commands/workspace-run.js")).cmdWorkspaceRun(rest);
+        break;
+      case "fund":
+        await (await import("./commands/fund.js")).cmdFund(rest);
+        break;
+      case "provenance":
+        await (await import("./commands/provenance.js")).cmdProvenance(rest);
+        break;
+      case "interactive":
+        await (await import("./commands/interactive.js")).cmdInteractive(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
