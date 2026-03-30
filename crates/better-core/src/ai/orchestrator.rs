@@ -61,7 +61,7 @@ impl AgentOrchestrator {
                 },
                 OrchestrationStep {
                     command: "better".to_string(),
-                    args: vec!["audit".to_string(), "--prod-only", "--min-score", "5"].iter().map(|s| s.to_string()).collect(),
+                    args: vec!["audit".to_string(), "--prod-only".to_string(), "--min-score".to_string(), "5".to_string()],
                     description: "Security audit (prod only, min score 5)".to_string(),
                     blocking: true,
                 },

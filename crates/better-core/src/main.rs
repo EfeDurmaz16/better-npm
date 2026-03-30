@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use better_core::{
-    analyze, cas_key_from_integrity, create_bin_links, detect_lifecycle_scripts, fetch_packages,
+    analyze, cas_key_from_integrity, create_bin_links, detect_lifecycle_scripts, fetch_packages, tarball_path, FetchResult,
     ingest_to_file_cas, materialize_from_file_cas, materialize_tree, resolve_from_lockfile,
     run_lifecycle_scripts, scan_tree, try_clonefile_dir, unpacked_path, write_analyze_json,
     write_materialize_json, write_scan_json, CasLayout, JsonWriter, LifecycleRunResult,

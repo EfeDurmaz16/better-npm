@@ -132,6 +132,13 @@ pub mod plugin;
 pub mod reputation;
 pub use reputation::run_reputation;
 
+pub mod signing;
+pub mod reproducible;
+pub mod decentralized_registry;
+pub mod content_publish;
+pub mod cross_project;
+pub mod ai;
+
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
