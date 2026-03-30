@@ -1,10 +1,12 @@
 pub mod cargo;
+pub mod cocoapods;
 pub mod dotnet;
 pub mod go;
 pub mod npm;
+pub mod php;
 pub mod python;
 pub mod ruby;
-pub mod php;
+pub mod swift;
 
 use std::fmt;
 use std::path::Path;
@@ -66,6 +68,7 @@ pub enum Ecosystem {
     Cargo,
     Go,
     Swift,
+    CocoaPods,
     Ruby,
     Php,
     DotNet,
@@ -79,6 +82,7 @@ impl fmt::Display for Ecosystem {
             Self::Cargo => write!(f, "cargo"),
             Self::Go => write!(f, "go"),
             Self::Swift => write!(f, "swift"),
+            Self::CocoaPods => write!(f, "cocoapods"),
             Self::Ruby => write!(f, "ruby"),
             Self::Php => write!(f, "php"),
             Self::DotNet => write!(f, "dotnet"),
@@ -175,6 +179,8 @@ impl EngineRegistry {
         registry.register(Box::new(dotnet::DotNetEngine));
         registry.register(Box::new(ruby::RubyEngine));
         registry.register(Box::new(php::PhpEngine));
+        registry.register(Box::new(swift::SwiftEngine));
+        registry.register(Box::new(cocoapods::CocoaPodsEngine));
         registry
     }
 
