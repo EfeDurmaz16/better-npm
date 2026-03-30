@@ -193,6 +193,9 @@ Commands:
   impact <pkg>         Show impact of adding a dependency (size, deps, health)
   tarball-inspect <p>  Inspect npm package tarball contents without installing
   supply-chain-audit   Analyze supply chain risks (install scripts, bus factor)
+  global-packages      List and analyze globally installed npm packages
+  package-size-map     Visualize node_modules size as ASCII treemap
+  deprecation-check    Find deprecated packages and suggest modern alternatives
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -881,6 +884,15 @@ export async function runCli(argv) {
         break;
       case "supply-chain-audit":
         await (await import("./commands/supply-chain-audit.js")).cmdSupplyChainAudit(rest);
+        break;
+      case "global-packages":
+        await (await import("./commands/global-packages.js")).cmdGlobalPackages(rest);
+        break;
+      case "package-size-map":
+        await (await import("./commands/package-size-map.js")).cmdPackageSizeMap(rest);
+        break;
+      case "deprecation-check":
+        await (await import("./commands/deprecation-check.js")).cmdDeprecationCheck(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
