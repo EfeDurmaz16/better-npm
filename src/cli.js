@@ -123,6 +123,9 @@ Commands:
   why-size <pkg>       Explain the disk size cost of a package tree
   preinstall-check     Scan install scripts for suspicious patterns
   update-interactive   Interactively choose which packages to update
+  check-updates        Show all available updates grouped by patch/minor/major
+  test-coverage        Check test coverage thresholds from existing reports
+  env-validate         Validate environment variables against a schema
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -601,6 +604,15 @@ export async function runCli(argv) {
         break;
       case "update-interactive":
         await (await import("./commands/update-interactive.js")).cmdUpdateInteractive(rest);
+        break;
+      case "check-updates":
+        await (await import("./commands/check-updates.js")).cmdCheckUpdates(rest);
+        break;
+      case "test-coverage":
+        await (await import("./commands/test-coverage.js")).cmdTestCoverage(rest);
+        break;
+      case "env-validate":
+        await (await import("./commands/env-validate.js")).cmdEnvValidate(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
