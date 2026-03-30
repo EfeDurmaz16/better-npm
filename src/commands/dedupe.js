@@ -339,15 +339,20 @@ async function analyzeDuplicates(projectRoot, packageLock) {
 export async function cmdDedupe(argv) {
   if (argv.includes("--help") || argv.includes("-h")) {
     printText(`Usage:
-  better dedupe [--json] [--dry-run] [--project-root PATH]
+  better dedupe [--json] [--dry-run] [--apply] [--project-root PATH]
 
 Detects duplicate packages in the dependency tree that could be deduplicated.
 
 Options:
   --json              Output machine-readable JSON
   --dry-run          Report mode only (default: true)
+  --apply            Write resolutions overrides to package.json
   --project-root PATH Override project root directory
   -h, --help         Show this help message
+
+Notes:
+  --apply takes precedence over --dry-run when both are set.
+  After applying, run 'better install' to update node_modules.
 `);
     return;
   }
@@ -360,6 +365,7 @@ Options:
     options: {
       json: { type: "boolean", default: runtime.json === true },
       "dry-run": { type: "boolean", default: true },
+      apply: { type: "boolean", default: false },
       "project-root": { type: "string" }
     },
     allowPositionals: true,
@@ -436,6 +442,25 @@ Options:
     }
   };
 
+  // --apply mode: write resolutions to package.json (takes precedence over --dry-run)
+  if (values.apply && deduplicatable.length > 0) {
+    const pkgJsonPath = path.join(projectRoot, "package.json");
+    const pkgJsonRaw = await fs.readFile(pkgJsonPath, "utf8");
+    const pkgJson = JSON.parse(pkgJsonRaw);
+
+    const newResolutions = {};
+    for (const d of deduplicatable) {
+      newResolutions[d.name] = d.targetVersion;
+    }
+
+    pkgJson.resolutions = Object.assign({}, pkgJson.resolutions || {}, newResolutions);
+
+    await fs.writeFile(pkgJsonPath, JSON.stringify(pkgJson, null, 2) + "\n", "utf8");
+
+    result.applied = true;
+    result.resolutionsWritten = deduplicatable.length;
+  }
+
   if (values.json) {
     printJson(result);
   } else {
@@ -463,6 +488,11 @@ Options:
       lines.push(`  Total duplicates: ${result.summary.totalDuplicates}`);
       lines.push(`  Deduplicatable: ${result.summary.deduplicatable}`);
       lines.push(`  Estimated saved packages: ${result.summary.estimatedSavedPackages}`);
+
+      if (result.applied) {
+        lines.push("");
+        lines.push(`Applied ${result.resolutionsWritten} resolutions to package.json. Run 'better install' to update node_modules.`);
+      }
 
       printText(lines.join("\n"));
     }
