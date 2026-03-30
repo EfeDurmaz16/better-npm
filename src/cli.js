@@ -216,6 +216,9 @@ Commands:
   monorepo-version-sync Check cross-package version consistency in monorepos
   pkg-provenance <p>   Check npm package provenance attestations
   dev-deps-check       Find production code importing devDependencies
+  lock-health          Comprehensive lockfile health analysis
+  typings-check        Check TypeScript type definition coverage
+  publish-checklist    Run pre-publish validation checklist
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -973,6 +976,15 @@ export async function runCli(argv) {
         break;
       case "dev-deps-check":
         await (await import("./commands/dev-deps-check.js")).cmdDevDepsCheck(rest);
+        break;
+      case "lock-health":
+        await (await import("./commands/lock-health.js")).cmdLockHealth(rest);
+        break;
+      case "typings-check":
+        await (await import("./commands/typings-check.js")).cmdTypingsCheck(rest);
+        break;
+      case "publish-checklist":
+        await (await import("./commands/publish-checklist.js")).cmdPublishChecklist(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
