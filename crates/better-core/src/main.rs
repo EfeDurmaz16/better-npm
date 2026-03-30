@@ -70,6 +70,7 @@ enum Command {
         scripts: bool,
         dedup: bool,
         frozen: bool,
+        offline: bool,
         json_progress: bool,
         node_layout: NodeLayout,
         sandbox: bool,
@@ -375,6 +376,7 @@ fn parse_args() -> (Command, GlobalFlags) {
     let mut scripts_flag = true;
     let mut dedup = false;
     let mut frozen = false;
+    let mut offline_flag = false;
     let mut allow: Vec<String> = Vec::new();
     let mut deny: Vec<String> = Vec::new();
     let mut threshold = 70i32;
@@ -509,6 +511,7 @@ fn parse_args() -> (Command, GlobalFlags) {
             "--dedup" => { dedup = true; i += 1; }
             "--no-dedup" => { dedup = false; i += 1; }
             "--frozen" | "--frozen-lockfile" => { frozen = true; i += 1; }
+            "--offline" => { offline_flag = true; i += 1; }
             "--allow" => {
                 if i + 1 >= args.len() { return (Command::Help { error: Some("--allow requires a value".into()) }, global_flags); }
                 allow = args[i + 1].split(',').map(|s| s.trim().to_string()).collect();
@@ -711,7 +714,7 @@ fn parse_args() -> (Command, GlobalFlags) {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
             let lf = lockfile.unwrap_or_else(|| pr.join("package-lock.json"));
             let cr = cache_root.unwrap_or_else(default_cache_root);
-            Command::Install { lockfile: lf, project_root: pr, cache_root: cr, store_root, link_strategy, jobs, scripts: scripts_flag, dedup, frozen, json_progress, node_layout, sandbox: sandbox_flag, verify_provenance: verify_provenance_flag, require_provenance: require_provenance_flag }
+            Command::Install { lockfile: lf, project_root: pr, cache_root: cr, store_root, link_strategy, jobs, scripts: scripts_flag, dedup, frozen, offline: offline_flag, json_progress, node_layout, sandbox: sandbox_flag, verify_provenance: verify_provenance_flag, require_provenance: require_provenance_flag }
         },
         "run" => {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
@@ -1012,7 +1015,7 @@ Usage:
   better-core scripts [list|scan|allow|block|sandbox-scan] [package] [--project-root <path>]
   better-core policy [check|init] [--project-root <path>]
   better-core lock [generate|verify] [--project-root <path>]
-  better-core workspace [list|graph|changed|run] [--project-root <path>] [--since <ref>]
+  better-core workspace [list|graph|changed|run|ecosystems] [--project-root <path>] [--since <ref>]
   better-core sbom [--project-root <path>] [--lockfile <path>] [--format cyclonedx|spdx] [--vex]
   better-core registry [add|list|remove|rotate] [url] [--scope @org] [--token-env VAR] [--priority N]
   better-core provenance [--project-root <path>] [--lockfile <path>] [--require-provenance]
@@ -1072,7 +1075,7 @@ fn generate_bash_completions() -> &'static str {
             return 0
             ;;
         workspace|ws)
-            COMPREPLY=( $(compgen -W "list graph changed run" -- "${cur}") )
+            COMPREPLY=( $(compgen -W "list graph changed run ecosystems" -- "${cur}") )
             return 0
             ;;
         env)
@@ -1189,7 +1192,7 @@ _better() {
                     _values 'subcommand' 'generate[Generate lock metadata]' 'verify[Verify lock metadata]'
                     ;;
                 workspace|ws)
-                    _values 'subcommand' 'list[List workspaces]' 'graph[Show dependency graph]' 'changed[Show changed packages]' 'run[Run command in workspaces]'
+                    _values 'subcommand' 'list[List workspaces]' 'graph[Show dependency graph]' 'changed[Show changed packages]' 'run[Run command in workspaces]' 'ecosystems[Detect cross-ecosystem monorepo members]'
                     ;;
                 env)
                     _values 'subcommand' 'check[Check environment]'
@@ -1296,7 +1299,7 @@ complete -c better -n "__fish_seen_subcommand_from cache" -a "stats gc"
 complete -c better -n "__fish_seen_subcommand_from scripts" -a "list scan allow block"
 complete -c better -n "__fish_seen_subcommand_from policy" -a "check init"
 complete -c better -n "__fish_seen_subcommand_from lock" -a "generate verify"
-complete -c better -n "__fish_seen_subcommand_from workspace" -a "list graph changed run"
+complete -c better -n "__fish_seen_subcommand_from workspace" -a "list graph changed run ecosystems"
 complete -c better -n "__fish_seen_subcommand_from env" -a "check"
 complete -c better -n "__fish_seen_subcommand_from hooks" -a "install"
 complete -c better -n "__fish_seen_subcommand_from completions" -a "bash zsh fish powershell"
@@ -1305,7 +1308,7 @@ complete -c better-core -n "__fish_seen_subcommand_from cache" -a "stats gc"
 complete -c better-core -n "__fish_seen_subcommand_from scripts" -a "list scan allow block"
 complete -c better-core -n "__fish_seen_subcommand_from policy" -a "check init"
 complete -c better-core -n "__fish_seen_subcommand_from lock" -a "generate verify"
-complete -c better-core -n "__fish_seen_subcommand_from workspace" -a "list graph changed run"
+complete -c better-core -n "__fish_seen_subcommand_from workspace" -a "list graph changed run ecosystems"
 complete -c better-core -n "__fish_seen_subcommand_from env" -a "check"
 complete -c better-core -n "__fish_seen_subcommand_from hooks" -a "install"
 complete -c better-core -n "__fish_seen_subcommand_from completions" -a "bash zsh fish powershell"
@@ -1374,7 +1377,7 @@ fn generate_powershell_completions() -> &'static str {
         'scripts'     = @('list', 'scan', 'allow', 'block')
         'policy'      = @('check', 'init')
         'lock'        = @('generate', 'verify')
-        'workspace'   = @('list', 'graph', 'changed', 'run')
+        'workspace'   = @('list', 'graph', 'changed', 'run', 'ecosystems')
         'env'         = @('check')
         'hooks'       = @('install')
         'completions' = @('bash', 'zsh', 'fish', 'powershell')
@@ -2019,7 +2022,7 @@ fn main() {
                 std::process::exit(1);
             }
         },
-        Command::Install { lockfile, project_root, cache_root, store_root, link_strategy, jobs: _, scripts, dedup, frozen, json_progress, node_layout, sandbox, verify_provenance: vp, require_provenance: rp } => {
+        Command::Install { lockfile, project_root, cache_root, store_root, link_strategy, jobs: _, scripts, dedup, frozen, offline, json_progress, node_layout, sandbox, verify_provenance: vp, require_provenance: rp } => {
             let started = Instant::now();
 
             // Engine detection: identify which ecosystem this project uses
@@ -2079,15 +2082,27 @@ fn main() {
                 }
             }
 
-            // Step 2: Fetch
+            // Step 2: Fetch (skip network in --offline mode, only use CAS)
             let t_fetch = Instant::now();
             progress.set_fetch_total(resolve_result.packages.len() as u64);
-            let fetch_result = match fetch_packages(&resolve_result.packages, &cache_root, Some(&npmrc)) {
-                Ok(r) => {
-                    progress.finish_fetch();
-                    r
+            let fetch_result = if offline {
+                // Offline mode: verify all packages are already in CAS; fail fast if any are missing
+                let layout = CasLayout::new(&cache_root);
+                let mut missing: Option<String> = None;
+                for pkg in &resolve_result.packages {
+                    if let Some((algo, hex)) = cas_key_from_integrity(&pkg.integrity) {
+                        let verified_marker = tarball_path(&layout, &algo, &hex).with_extension("tgz.verified");
+                        let extracted_marker = unpacked_path(&layout, &algo, &hex).join(".better_extracted");
+                        if !verified_marker.exists() || !extracted_marker.exists() {
+                            missing = Some(format!(
+                                "package not in cache: {}@{} — run without --offline to fetch",
+                                pkg.name, pkg.version
+                            ));
+                            break;
+                        }
+                    }
                 }
-                Err(reason) => {
+                if let Some(reason) = missing {
                     let mut w = JsonWriter::new();
                     w.begin_object();
                     w.key("ok"); w.value_bool(false);
@@ -2096,6 +2111,29 @@ fn main() {
                     w.end_object(); w.out.push('\n');
                     print!("{}", w.finish());
                     std::process::exit(1);
+                }
+                progress.finish_fetch();
+                FetchResult {
+                    packages_fetched: 0,
+                    packages_cached: resolve_result.packages.len() as u64,
+                    bytes_downloaded: 0,
+                }
+            } else {
+                match fetch_packages(&resolve_result.packages, &cache_root, Some(&npmrc)) {
+                    Ok(r) => {
+                        progress.finish_fetch();
+                        r
+                    }
+                    Err(reason) => {
+                        let mut w = JsonWriter::new();
+                        w.begin_object();
+                        w.key("ok"); w.value_bool(false);
+                        w.key("kind"); w.value_string("better.install.report");
+                        w.key("reason"); w.value_string(&reason);
+                        w.end_object(); w.out.push('\n');
+                        print!("{}", w.finish());
+                        std::process::exit(1);
+                    }
                 }
             };
             let phase_fetch_ms = t_fetch.elapsed().as_millis() as u64;
@@ -3816,6 +3854,29 @@ fn main() {
                             std::process::exit(1);
                         }
                     }
+                }
+                "ecosystems" => {
+                    let registry = EngineRegistry::new();
+                    let members = registry.detect_workspace_ecosystems(&project_root);
+                    let mut w = JsonWriter::new();
+                    w.begin_object();
+                    w.key("ok"); w.value_bool(true);
+                    w.key("kind"); w.value_string("better.workspace.ecosystems");
+                    w.key("projectRoot"); w.value_string(&project_root.display().to_string());
+                    w.key("members"); w.begin_array();
+                    for m in &members {
+                        w.begin_object();
+                        w.key("path"); w.value_string(&m.path.display().to_string());
+                        w.key("ecosystem"); w.value_string(&m.ecosystem);
+                        if let Some(ref manifest) = m.manifest {
+                            w.key("manifest"); w.value_string(&manifest.display().to_string());
+                        }
+                        w.end_object();
+                    }
+                    w.end_array();
+                    w.key("total"); w.value_u64(members.len() as u64);
+                    w.end_object(); w.out.push('\n');
+                    print!("{}", w.finish());
                 }
                 other => {
                     eprintln!("error: unknown workspace subcommand: {other}");

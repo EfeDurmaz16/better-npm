@@ -204,3 +204,68 @@ impl Default for EngineRegistry {
         Self::new()
     }
 }
+
+// ---------------------------------------------------------------------------
+// Cross-ecosystem workspace detection
+// ---------------------------------------------------------------------------
+
+/// A workspace member with its detected ecosystem and manifest path.
+pub struct WorkspaceMember {
+    pub path: std::path::PathBuf,
+    pub ecosystem: String,
+    pub manifest: Option<std::path::PathBuf>,
+}
+
+/// Find the first existing manifest file for an engine in a directory.
+fn find_manifest(dir: &Path, files: &[&str]) -> Option<std::path::PathBuf> {
+    for f in files {
+        let p = dir.join(f);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+impl EngineRegistry {
+    /// Detect all ecosystems in a monorepo by scanning subdirectories.
+    pub fn detect_workspace_ecosystems(&self, root: &Path) -> Vec<WorkspaceMember> {
+        let mut members = Vec::new();
+
+        // Check root first
+        let root_engines = self.detect(root);
+        if !root_engines.is_empty() {
+            for engine in &root_engines {
+                members.push(WorkspaceMember {
+                    path: root.to_path_buf(),
+                    ecosystem: engine.name().to_string(),
+                    manifest: find_manifest(root, engine.manifest_files()),
+                });
+            }
+        }
+
+        // Scan one level deep for workspace members
+        if let Ok(entries) = std::fs::read_dir(root) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if name.starts_with('.') || name == "node_modules" || name == "target" || name == "vendor" {
+                    continue;
+                }
+                let engines = self.detect(&path);
+                for engine in &engines {
+                    members.push(WorkspaceMember {
+                        path: path.clone(),
+                        ecosystem: engine.name().to_string(),
+                        manifest: find_manifest(&path, engine.manifest_files()),
+                    });
+                }
+            }
+        }
+
+        members
+    }
+}

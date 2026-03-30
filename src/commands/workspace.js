@@ -199,6 +199,7 @@ export async function cmdWorkspace(argv) {
   better workspace graph [--json] [--project-root PATH]
   better workspace changed [--since <ref>] [--json] [--project-root PATH]
   better workspace run <command> [--concurrency N] [--json] [--project-root PATH]
+  better workspace ecosystems [--json] [--project-root PATH]
 `);
     return;
   }
@@ -530,5 +531,90 @@ export async function cmdWorkspace(argv) {
     return;
   }
 
-  throw new Error(`Unknown workspace subcommand '${sub}'. Expected list|info|graph|changed|run.`);
+  if (sub === "ecosystems") {
+    const MANIFEST_FILES = {
+      npm: ["package.json"],
+      python: ["pyproject.toml", "setup.py", "requirements.txt", "Pipfile"],
+      cargo: ["Cargo.toml"],
+      go: ["go.mod"],
+    };
+
+    const SKIP_DIRS = new Set(["node_modules", "target", "vendor", ".git"]);
+
+    const { readdirSync, statSync } = await import("node:fs");
+
+    /**
+     * Synchronously detect ecosystems in a directory.
+     */
+    function detectEcosystemsSync(dir) {
+      const found = [];
+      for (const [ecosystem, manifests] of Object.entries(MANIFEST_FILES)) {
+        for (const manifest of manifests) {
+          const manifestPath = path.join(dir, manifest);
+          try {
+            statSync(manifestPath);
+            found.push({ ecosystem, manifest: manifestPath });
+            break;
+          } catch {
+            // not found
+          }
+        }
+      }
+      return found;
+    }
+
+    const members = [];
+
+    // Check root
+    const rootDetected = detectEcosystemsSync(projectRoot);
+    for (const { ecosystem, manifest } of rootDetected) {
+      members.push({ path: projectRoot, ecosystem, manifest, relPath: "." });
+    }
+
+    // Scan one level deep
+    let entries = [];
+    try {
+      entries = readdirSync(projectRoot, { withFileTypes: true });
+    } catch {
+      // ignore unreadable directories
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (entry.name.startsWith(".") || SKIP_DIRS.has(entry.name)) continue;
+      const subDir = path.join(projectRoot, entry.name);
+      const detected = detectEcosystemsSync(subDir);
+      for (const { ecosystem, manifest } of detected) {
+        members.push({ path: subDir, ecosystem, manifest, relPath: entry.name });
+      }
+    }
+
+    if (values.json) {
+      const out = {
+        ok: true,
+        kind: "better.workspace.ecosystems",
+        schemaVersion: 1,
+        projectRoot,
+        members: members.map(m => ({
+          path: m.path,
+          relPath: m.relPath,
+          ecosystem: m.ecosystem,
+          manifest: m.manifest
+        })),
+        total: members.length
+      };
+      printJson(out);
+    } else {
+      if (members.length === 0) {
+        printText("better workspace ecosystems: no ecosystem members found");
+      } else {
+        const rows = members.map(m => [m.relPath, m.ecosystem, m.manifest]);
+        const table = formatTable(rows, ["Path", "Ecosystem", "Manifest"]);
+        printText(`better workspace ecosystems\n\n${table}\n\nTotal: ${members.length} member(s)`);
+      }
+    }
+    return;
+  }
+
+  throw new Error(`Unknown workspace subcommand '${sub}'. Expected list|info|graph|changed|run|ecosystems.`);
 }
