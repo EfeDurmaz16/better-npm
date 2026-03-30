@@ -252,6 +252,9 @@ Commands:
   config-audit         Audit npm configuration for issues
   workspace-deps       Visualize workspace inter-package dependencies
   install-order        Show topological install order of dependencies
+  node-modules-doctor  Diagnose node_modules health issues
+  update-interactive   Show available updates with changelogs
+  dep-why <package>    Explain why a package is installed
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -1117,6 +1120,15 @@ export async function runCli(argv) {
         break;
       case "install-order":
         await (await import("./commands/install-order.js")).cmdInstallOrder(rest);
+        break;
+      case "node-modules-doctor":
+        await (await import("./commands/node-modules-doctor.js")).cmdNodeModulesDoctor(rest);
+        break;
+      case "update-interactive":
+        await (await import("./commands/update-interactive.js")).cmdUpdateInteractive(rest);
+        break;
+      case "dep-why":
+        await (await import("./commands/dep-why.js")).cmdDepWhy(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
