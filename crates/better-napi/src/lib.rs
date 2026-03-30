@@ -1153,3 +1153,62 @@ pub fn napi_policy_check(project_root: String) -> NapiPolicyCheckResult {
         },
     }
 }
+
+// ── v0.9 ecosystem detection ─────────────────────────────────────────────────
+
+#[napi(js_name = "detectEcosystems")]
+pub fn napi_detect_ecosystems(project_root: String) -> Vec<String> {
+    let root = Path::new(&project_root);
+    let registry = better_core::engine::EngineRegistry::new();
+    registry.detect_workspace_ecosystems(root)
+        .iter()
+        .map(|m| m.ecosystem.clone())
+        .collect()
+}
+
+// ── v1.0 schema version ─────────────────────────────────────────────────────
+
+#[napi(js_name = "schemaVersion")]
+pub fn napi_schema_version() -> String {
+    better_core::schema::SCHEMA_VERSION.to_string()
+}
+
+// ── v1.5 supply chain ───────────────────────────────────────────────────────
+
+#[napi(object)]
+pub struct NapiSupplyChainReport {
+    pub ok: bool,
+    pub total_packages: u32,
+    pub anomaly_count: u32,
+    pub trust_score: f64,
+    pub error: Option<String>,
+}
+
+#[napi(js_name = "analyzeSupplyChain")]
+pub fn napi_analyze_supply_chain(project_root: String) -> NapiSupplyChainReport {
+    use better_core::intelligence::supply_chain::analyze_supply_chain;
+    let root = Path::new(&project_root);
+    match analyze_supply_chain(root) {
+        Ok(report) => NapiSupplyChainReport {
+            ok: true,
+            total_packages: report.total_packages as u32,
+            anomaly_count: report.anomalies.len() as u32,
+            trust_score: report.trust_score,
+            error: None,
+        },
+        Err(e) => NapiSupplyChainReport {
+            ok: false,
+            total_packages: 0,
+            anomaly_count: 0,
+            trust_score: 0.0,
+            error: Some(e),
+        },
+    }
+}
+
+// ── v1.5 intelligence ───────────────────────────────────────────────────────
+
+#[napi(js_name = "checkTyposquat")]
+pub fn napi_check_typosquat(name: String, known_packages: Vec<String>) -> f64 {
+    better_core::intelligence::check_typosquat(&name, &known_packages)
+}
