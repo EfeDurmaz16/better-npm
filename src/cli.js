@@ -153,6 +153,9 @@ Commands:
   typescript-check     Run TypeScript type checking (tsc --noEmit)
   package-stats        Aggregate statistics about installed packages
   dep-tree-size        Show cumulative size of each dependency's subtree
+  cve-check            Check packages against OSV.dev CVE database
+  list-scripts         List all npm scripts with descriptions
+  install-time         Benchmark npm install time (fresh and cached)
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -721,6 +724,15 @@ export async function runCli(argv) {
         break;
       case "dep-tree-size":
         await (await import("./commands/dep-tree-size.js")).cmdDepTreeSize(rest);
+        break;
+      case "cve-check":
+        await (await import("./commands/cve-check.js")).cmdCveCheck(rest);
+        break;
+      case "list-scripts":
+        await (await import("./commands/list-scripts.js")).cmdListScripts(rest);
+        break;
+      case "install-time":
+        await (await import("./commands/install-time.js")).cmdInstallTime(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
