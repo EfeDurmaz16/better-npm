@@ -191,6 +191,8 @@ Commands:
   update-readme        Auto-update README.md badges and stats from package.json
   npm-ci-check         Validate prerequisites for npm ci to succeed
   impact <pkg>         Show impact of adding a dependency (size, deps, health)
+  tarball-inspect <p>  Inspect npm package tarball contents without installing
+  supply-chain-audit   Analyze supply chain risks (install scripts, bus factor)
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -873,6 +875,12 @@ export async function runCli(argv) {
         break;
       case "impact":
         await (await import("./commands/impact.js")).cmdImpact(rest);
+        break;
+      case "tarball-inspect":
+        await (await import("./commands/tarball-inspect.js")).cmdTarballInspect(rest);
+        break;
+      case "supply-chain-audit":
+        await (await import("./commands/supply-chain-audit.js")).cmdSupplyChainAudit(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
