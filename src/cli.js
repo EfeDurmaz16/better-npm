@@ -70,6 +70,7 @@ Commands:
   release <type>       Full release workflow (test, bump, tag, publish)
   compat               Check Node.js version compatibility of packages
   fix                  Auto-fix common project issues
+  deprecations         Scan for deprecated packages with alternatives
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -389,6 +390,9 @@ export async function runCli(argv) {
         break;
       case "fix":
         await (await import("./commands/fix.js")).cmdFix(rest);
+        break;
+      case "deprecations":
+        await (await import("./commands/deprecations.js")).cmdDeprecations(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
