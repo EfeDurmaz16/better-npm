@@ -283,6 +283,9 @@ export async function runCli(argv) {
       case "orchestrate":
         await (await import("./commands/orchestrate.js")).cmdOrchestrate(rest);
         break;
+      case "cross-project":
+        await (await import("./commands/cross-project.js")).cmdCrossProject(rest);
+        break;
       case "completions": {
         const shell = rest[0] || "bash";
         const { spawnSync } = await import("node:child_process");
