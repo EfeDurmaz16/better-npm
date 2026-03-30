@@ -1,0 +1,50 @@
+{
+  "name": "better-vscode",
+  "displayName": "better — Universal Package Manager",
+  "description": "Dependency insights, audit warnings, and OSP integration for the better package manager",
+  "version": "1.0.0",
+  "publisher": "nicepkg",
+  "license": "MIT",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Other", "Linters"],
+  "activationEvents": [
+    "workspaceContains:package.json",
+    "workspaceContains:pyproject.toml",
+    "workspaceContains:Cargo.toml",
+    "workspaceContains:go.mod",
+    "workspaceContains:better.lock.json"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "languages": [{
+      "id": "betterlock",
+      "aliases": ["Better Lock", "betterlock"],
+      "filenames": ["better.lock.json"],
+      "configuration": "./language-configuration.json"
+    }],
+    "commands": [
+      { "command": "better.audit", "title": "Better: Run Audit" },
+      { "command": "better.outdated", "title": "Better: Check for Updates" },
+      { "command": "better.context", "title": "Better: Show Package Context" },
+      { "command": "better.install", "title": "Better: Install Dependencies" }
+    ],
+    "views": {
+      "explorer": [{
+        "id": "betterDeps",
+        "name": "Dependencies (better)",
+        "when": "better.projectDetected"
+      }]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p tsconfig.json",
+    "watch": "tsc -watch -p tsconfig.json",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0",
+    "@vscode/vsce": "^2.22.0"
+  }
+}

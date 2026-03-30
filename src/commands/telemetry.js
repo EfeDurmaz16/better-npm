@@ -4,108 +4,81 @@ import { getRuntimeConfig } from "../lib/config.js";
 import { join } from "node:path";
 import fs from "node:fs/promises";
 
+const telemetryPath = () => join(process.env.HOME || "/tmp", ".better", "telemetry.json");
+
 export async function cmdTelemetry(argv) {
   if (argv.includes("--help") || argv.includes("-h")) {
-    printText(`Usage:
-  better telemetry <subcommand>
+    printText(`Usage: better telemetry <on|off|status>
 
-Manage anonymous opt-in telemetry.
+Manage opt-in anonymous telemetry.
 
 Subcommands:
-  status    Show current telemetry state
-  on        Enable telemetry (opt-in)
-  off       Disable telemetry
+  on      Enable anonymous usage telemetry
+  off     Disable telemetry
+  status  Show current telemetry status
 
-What is collected (when enabled):
-  - Command name (e.g. "install", "audit")
-  - Duration in milliseconds
-  - Success/failure flag
-  - OS and CPU architecture
-  - better version number
+What is collected (anonymized):
+  - Command name, duration, success/failure
+  - OS and architecture
+  - better version
 
 What is NEVER collected:
-  - Package names, project names, file paths
-  - IP addresses, usernames, emails
-  - Any personally identifiable information
+  - Package names, project paths, file contents, IP addresses
 
 Options:
-  --json    Machine-readable JSON output
+  --json  Machine-readable output
   -h, --help  Show this help
 `);
     return;
   }
 
   const runtime = getRuntimeConfig();
-  const { values, positionals } = parseArgs({
+  const { positionals } = parseArgs({
     args: argv,
-    options: {
-      json: { type: "boolean", default: runtime.json === true },
-    },
+    options: {},
     allowPositionals: true,
     strict: false,
   });
 
   const sub = positionals[0] || "status";
-  const useJson = values.json || runtime.json === true;
+  const useJson = runtime.json === true;
+  const configPath = telemetryPath();
 
-  const configPath = join(process.env.HOME || "/tmp", ".better", "telemetry.json");
+  let config = { enabled: false, session_id: "" };
+  try {
+    config = JSON.parse(await fs.readFile(configPath, "utf8"));
+  } catch { /* not configured yet */ }
 
-  async function getEnabled() {
-    try {
-      const content = await fs.readFile(configPath, "utf8");
-      return JSON.parse(content)?.enabled === true;
-    } catch {
-      return false;
-    }
-  }
-
-  async function setEnabled(enabled) {
-    let existing = {};
-    try {
-      existing = JSON.parse(await fs.readFile(configPath, "utf8"));
-    } catch {}
-    existing.enabled = enabled;
-    if (enabled && !existing.install_id) {
-      existing.install_id = Math.random().toString(16).slice(2) + Math.random().toString(16).slice(2);
+  if (sub === "on") {
+    config.enabled = true;
+    if (!config.session_id) {
+      config.session_id = `tel-${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}`;
     }
     await fs.mkdir(join(process.env.HOME || "/tmp", ".better"), { recursive: true });
-    await fs.writeFile(configPath, JSON.stringify(existing, null, 2));
-  }
-
-  switch (sub) {
-    case "status": {
-      const enabled = await getEnabled();
-      if (useJson) {
-        printJson({ ok: true, kind: "better.telemetry.status", enabled });
-      } else {
-        printText(`Telemetry is currently: ${enabled ? "enabled" : "disabled"}`);
-        if (!enabled) {
-          printText("Run 'better telemetry on' to enable anonymous usage analytics.");
-        }
-      }
-      break;
+    await fs.writeFile(configPath, JSON.stringify(config, null, 2));
+    if (useJson) {
+      printJson({ ok: true, kind: "better.telemetry.set", enabled: true });
+    } else {
+      printText("Telemetry enabled. Thank you for helping improve better!");
     }
-    case "on": {
-      await setEnabled(true);
-      if (useJson) {
-        printJson({ ok: true, kind: "better.telemetry.enabled", enabled: true });
-      } else {
-        printText("Telemetry enabled. Thank you for helping improve better!");
-        printText("Run 'better telemetry off' to disable at any time.");
-      }
-      break;
+  } else if (sub === "off") {
+    config.enabled = false;
+    await fs.mkdir(join(process.env.HOME || "/tmp", ".better"), { recursive: true });
+    await fs.writeFile(configPath, JSON.stringify(config, null, 2));
+    if (useJson) {
+      printJson({ ok: true, kind: "better.telemetry.set", enabled: false });
+    } else {
+      printText("Telemetry disabled.");
     }
-    case "off": {
-      await setEnabled(false);
-      if (useJson) {
-        printJson({ ok: true, kind: "better.telemetry.enabled", enabled: false });
-      } else {
-        printText("Telemetry disabled.");
+  } else {
+    const status = config.enabled ? "enabled" : "disabled";
+    if (useJson) {
+      printJson({ ok: true, kind: "better.telemetry.status", enabled: config.enabled, status });
+    } else {
+      printText(`Telemetry is currently: ${status}`);
+      if (!config.enabled) {
+        printText("Run 'better telemetry on' to enable opt-in anonymous usage reporting.");
       }
-      break;
     }
-    default:
-      printText(`Unknown subcommand: ${sub}. Use 'status', 'on', or 'off'.`);
-      process.exitCode = 1;
   }
 }

@@ -1,12 +1,22 @@
 // crates/better-core/src/schema.rs
-// Versioned JSON envelope and schema constants for stable CLI API
+// Stable CLI API — versioned JSON schema + deprecation notices
+
+use serde::{Deserialize, Serialize};
 
 pub const SCHEMA_VERSION: &str = "1.0";
-pub const SCHEMA_MAJOR: u32 = 1;
-pub const SCHEMA_MINOR: u32 = 0;
 
-/// Deprecation notice embedded in JSON responses when a deprecated flag/command was used.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsonEnvelope {
+    pub schema_version: String,
+    pub command: String,
+    pub success: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub deprecations: Vec<DeprecationNotice>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeprecationNotice {
     pub feature: String,
     pub deprecated_in: String,
@@ -15,40 +25,53 @@ pub struct DeprecationNotice {
     pub message: String,
 }
 
-/// Check if given CLI args contain deprecated flags and return warnings.
-pub fn check_deprecated_flags(args: &[String]) -> Vec<DeprecationNotice> {
-    let deprecated: &[(&str, &str, &str, &str)] = &[
-        // flag, deprecated_in, removed_in, replacement
-        // Add entries here as features are deprecated
-        // ("--legacy-peer-deps", "1.0.0", "1.2.0", "--peer-deps=legacy"),
+impl JsonEnvelope {
+    pub fn ok(command: &str) -> Self {
+        Self {
+            schema_version: SCHEMA_VERSION.to_string(),
+            command: command.to_string(),
+            success: true,
+            warnings: vec![],
+            deprecations: vec![],
+        }
+    }
+
+    pub fn err(command: &str) -> Self {
+        let mut e = Self::ok(command);
+        e.success = false;
+        e
+    }
+
+    pub fn with_warning(mut self, w: impl Into<String>) -> Self {
+        self.warnings.push(w.into());
+        self
+    }
+
+    pub fn with_deprecation(mut self, notice: DeprecationNotice) -> Self {
+        self.deprecations.push(notice);
+        self
+    }
+}
+
+// Known deprecations registry — add entries here as CLI flags are retired
+pub fn check_deprecations(args: &[String]) -> Vec<DeprecationNotice> {
+    let known: &[(&str, &str, &str, &str, &str)] = &[
+        // ("--flag", "deprecated_in", "removed_in", "replacement", "message")
     ];
-    let mut notices = vec![];
+
+    let mut out = vec![];
     for arg in args {
-        for (flag, dep_in, rem_in, replacement) in deprecated {
+        for &(flag, dep_in, rem_in, replacement, message) in known {
             if arg == flag {
-                notices.push(DeprecationNotice {
+                out.push(DeprecationNotice {
                     feature: flag.to_string(),
                     deprecated_in: dep_in.to_string(),
                     removed_in: rem_in.to_string(),
                     replacement: replacement.to_string(),
-                    message: format!(
-                        "'{}' is deprecated since v{} and will be removed in v{}. Use '{}' instead.",
-                        flag, dep_in, rem_in, replacement
-                    ),
+                    message: message.to_string(),
                 });
             }
         }
     }
-    notices
-}
-
-/// Format a versioned JSON output header. Returned as a prefix object to be
-/// merged into any command's JSON output.
-pub fn json_header(command: &str, success: bool) -> String {
-    format!(
-        r#"{{"schema_version":"{}","command":"{}","success":{}"#,
-        SCHEMA_VERSION,
-        command,
-        success
-    )
+    out
 }

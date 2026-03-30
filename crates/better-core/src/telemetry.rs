@@ -1,117 +1,129 @@
 // crates/better-core/src/telemetry.rs
-// Anonymous opt-in telemetry — fire-and-forget, never blocks CLI
-// Data sent: command name, duration, success, OS/arch, version
-// Data NOT sent: project names, package names, paths, user info, IPs
+// Opt-in anonymous telemetry — never blocks CLI, never collects private data
 
-use std::time::Duration;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::time::Duration;
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct TelemetryEvent {
-    /// Random UUID per event.
     pub event_id: String,
-    /// Random UUID per CLI session (regenerated each run).
     pub session_id: String,
     pub command: String,
     pub duration_ms: u64,
     pub success: bool,
     pub ecosystems: Vec<String>,
     pub package_count: Option<usize>,
-    pub cas_hit_rate: Option<f64>,
     pub os: String,
     pub arch: String,
     pub better_version: String,
+    // Explicitly NOT included: project name, package names, file paths, IPs
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct TelemetryConfig {
-    enabled: bool,
-    /// Anonymous stable ID for this installation (opt-in only).
-    install_id: Option<String>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelemetryConfig {
+    pub enabled: bool,
+    pub endpoint: String,
+    pub session_id: String,
+    #[serde(skip)]
+    pub config_path: PathBuf,
 }
 
-fn config_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join(".better").join("telemetry.json")
-}
+impl TelemetryConfig {
+    pub fn load() -> Self {
+        let config_path = home_dir().join(".better").join("telemetry.json");
 
-pub fn is_enabled() -> bool {
-    let path = config_path();
-    if !path.exists() {
-        return false; // Opt-in: disabled by default
+        let (enabled, session_id) = if config_path.exists() {
+            let content = std::fs::read_to_string(&config_path).unwrap_or_default();
+            let v: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
+            let enabled = v["enabled"].as_bool().unwrap_or(false);
+            let sid = v["session_id"].as_str().unwrap_or("").to_string();
+            (enabled, sid)
+        } else {
+            (false, new_uuid())  // Opt-in: disabled by default
+        };
+
+        let session_id = if session_id.is_empty() { new_uuid() } else { session_id };
+
+        Self {
+            enabled,
+            endpoint: "https://telemetry.better.sh/v1/events".to_string(),
+            session_id,
+            config_path,
+        }
     }
-    let content = std::fs::read_to_string(&path).unwrap_or_default();
-    let val: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
-    val.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false)
-}
 
-pub fn set_enabled(enabled: bool) -> Result<(), String> {
-    let path = config_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    pub fn set_enabled(&self, enabled: bool) -> Result<(), String> {
+        let json = serde_json::json!({
+            "enabled": enabled,
+            "session_id": self.session_id,
+        });
+        if let Some(parent) = self.config_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&self.config_path, serde_json::to_string_pretty(&json).unwrap())
+            .map_err(|e| e.to_string())
     }
-    let existing: serde_json::Value = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or(serde_json::json!({}));
 
-    let mut config = existing;
-    config["enabled"] = serde_json::Value::Bool(enabled);
-    if enabled && config.get("install_id").is_none() {
-        // Generate a random install ID on first enable
-        let id = format!("{:x}{:x}", rand_u64(), rand_u64());
-        config["install_id"] = serde_json::Value::String(id);
-    }
-    std::fs::write(&path, serde_json::to_string_pretty(&config).unwrap_or_default())
-        .map_err(|e| e.to_string())
-}
-
-fn rand_u64() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-    t.subsec_nanos() as u64 ^ t.as_secs().wrapping_mul(0x9e3779b97f4a7c15)
-}
-
-pub fn new_event(command: &str, duration_ms: u64, success: bool) -> TelemetryEvent {
-    TelemetryEvent {
-        event_id: format!("{:x}{:x}", rand_u64(), rand_u64()),
-        session_id: format!("{:x}{:x}", rand_u64(), rand_u64()),
-        command: command.to_string(),
-        duration_ms,
-        success,
-        ecosystems: vec![],
-        package_count: None,
-        cas_hit_rate: None,
-        os: std::env::consts::OS.to_string(),
-        arch: std::env::consts::ARCH.to_string(),
-        better_version: env!("CARGO_PKG_VERSION").to_string(),
+    pub fn status(&self) -> &'static str {
+        if self.enabled { "enabled" } else { "disabled" }
     }
 }
 
-/// Send a telemetry event fire-and-forget in a background thread.
-/// Never blocks, never panics on failure.
-pub fn send(event: TelemetryEvent) {
-    if !is_enabled() {
+/// Send telemetry event in a background thread — never blocks the CLI.
+pub fn send_event(config: &TelemetryConfig, event: TelemetryEvent) {
+    if !config.enabled {
         return;
     }
-    let payload = match serde_json::to_vec(&event) {
-        Ok(v) => v,
+
+    let endpoint = config.endpoint.clone();
+    let body = match serde_json::to_string(&event) {
+        Ok(s) => s,
         Err(_) => return,
     };
-    // Background thread: try to POST, timeout 2s, completely ignore result
+
     std::thread::spawn(move || {
-        use std::io::Write;
-        use std::net::TcpStream;
-        // Minimal HTTP POST without reqwest (no extra deps)
-        if let Ok(mut stream) = TcpStream::connect("telemetry.better.sh:80") {
-            let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
-            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-            let body = String::from_utf8_lossy(&payload);
-            let req = format!(
-                "POST /v1/events HTTP/1.0\r\nHost: telemetry.better.sh\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                payload.len(), body
-            );
-            let _ = stream.write_all(req.as_bytes());
-        }
+        let _ = post_json_no_deps(&endpoint, &body, Duration::from_secs(2));
     });
+}
+
+/// Minimal HTTP POST using only std::net — no reqwest dependency.
+fn post_json_no_deps(url: &str, body: &str, timeout: Duration) -> Result<(), String> {
+    use std::io::Write;
+    use std::net::TcpStream;
+
+    // Parse URL: https://host/path
+    let url = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    let (host, path) = url.split_once('/').unwrap_or((url, ""));
+    let addr = format!("{}:443", host);
+
+    let stream = TcpStream::connect_timeout(
+        &addr.parse().map_err(|e: std::net::AddrParseError| e.to_string())?,
+        timeout,
+    ).map_err(|e| e.to_string())?;
+    stream.set_write_timeout(Some(timeout)).ok();
+
+    let mut s = stream;
+    let request = format!(
+        "POST /{} HTTP/1.0\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        path, host, body.len(), body
+    );
+    s.write_all(request.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn home_dir() -> PathBuf {
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/tmp"))
+}
+
+fn new_uuid() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let t = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
+    format!("tel-{:08x}-{:08x}", t, std::process::id())
 }

@@ -142,6 +142,10 @@ pub mod ai;
 pub mod deploy;
 pub mod intelligence;
 
+pub mod schema;
+pub mod cli_compat;
+pub mod telemetry;
+
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // --- JSON writer (no dependencies) ---
