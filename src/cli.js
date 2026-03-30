@@ -225,6 +225,9 @@ Commands:
   npm-cache-info       Inspect npm cache location, size, and integrity
   module-type          Detect and validate module system (CJS vs ESM)
   migration-guide <p>  Get migration notes for major version upgrades
+  fund-info            Show funding information for installed packages
+  hooks-audit          Audit lifecycle hooks for suspicious patterns
+  pkg-metadata <p>     Show detailed package metadata from npm registry
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -1009,6 +1012,15 @@ export async function runCli(argv) {
         break;
       case "migration-guide":
         await (await import("./commands/migration-guide.js")).cmdMigrationGuide(rest);
+        break;
+      case "fund-info":
+        await (await import("./commands/fund-info.js")).cmdFundInfo(rest);
+        break;
+      case "hooks-audit":
+        await (await import("./commands/hooks-audit.js")).cmdHooksAudit(rest);
+        break;
+      case "pkg-metadata":
+        await (await import("./commands/pkg-metadata.js")).cmdPkgMetadata(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
