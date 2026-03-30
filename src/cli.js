@@ -100,6 +100,9 @@ Commands:
   version-history <p>  Show published version history for a package
   namespace            Analyze package scopes and namespaces
   config-check         Validate project configuration files
+  hooks                Manage git hooks (husky/lefthook detection)
+  duplicates           Find duplicate packages with version conflicts
+  missing              Find imports that are not in package.json
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -509,6 +512,15 @@ export async function runCli(argv) {
         break;
       case "config-check":
         await (await import("./commands/config-check.js")).cmdConfigCheck(rest);
+        break;
+      case "hooks":
+        await (await import("./commands/hooks.js")).cmdHooks(rest);
+        break;
+      case "duplicates":
+        await (await import("./commands/duplicates.js")).cmdDuplicates(rest);
+        break;
+      case "missing":
+        await (await import("./commands/missing.js")).cmdMissing(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
