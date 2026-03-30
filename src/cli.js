@@ -231,6 +231,9 @@ Commands:
   tree-shaking-check   Check packages for tree-shaking compatibility
   npm-run-order <s>    Show pre/post script execution order
   installed-check      Verify all declared dependencies are installed
+  security-headers     Check package.json for security best practices
+  workspace-run <s>    Run a script across all workspace packages
+  node-api-compat      Check native addon N-API version compatibility
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -1033,6 +1036,15 @@ export async function runCli(argv) {
         break;
       case "installed-check":
         await (await import("./commands/installed-check.js")).cmdInstalledCheck(rest);
+        break;
+      case "security-headers":
+        await (await import("./commands/security-headers.js")).cmdSecurityHeaders(rest);
+        break;
+      case "workspace-run":
+        await (await import("./commands/workspace-run.js")).cmdWorkspaceRun(rest);
+        break;
+      case "node-api-compat":
+        await (await import("./commands/node-api-compat.js")).cmdNodeApiCompat(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
