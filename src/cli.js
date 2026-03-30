@@ -234,6 +234,9 @@ Commands:
   security-headers     Check package.json for security best practices
   workspace-run <s>    Run a script across all workspace packages
   node-api-compat      Check native addon N-API version compatibility
+  missing-peer-install Find and generate install cmds for missing peer deps
+  size-limit-check     Check entry point gzipped size against limits
+  tag-manager <p>      List/add/remove npm dist-tags for packages
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -1045,6 +1048,15 @@ export async function runCli(argv) {
         break;
       case "node-api-compat":
         await (await import("./commands/node-api-compat.js")).cmdNodeApiCompat(rest);
+        break;
+      case "missing-peer-install":
+        await (await import("./commands/missing-peer-install.js")).cmdMissingPeerInstall(rest);
+        break;
+      case "size-limit-check":
+        await (await import("./commands/size-limit-check.js")).cmdSizeLimitCheck(rest);
+        break;
+      case "tag-manager":
+        await (await import("./commands/tag-manager.js")).cmdTagManager(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";

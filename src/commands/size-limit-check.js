@@ -1,13 +1,12 @@
 /**
- * better size-limit-check — check bundle/install size limits
+ * better size-limit-check — check if package size is within limits
  *
- * Reads size limits from package.json or a config file and verifies
- * the actual install/pack size stays within defined thresholds.
- * Useful for CI to prevent accidental bloat.
+ * Estimates the gzipped bundle size of your package's main entry
+ * point and checks it against configured size limits (like size-limit tool).
  *
  * Usage:
  *   better size-limit-check
- *   better size-limit-check --limit 5mb
+ *   better size-limit-check --limit 50kb
  *   better size-limit-check --json
  */
 import { parseArgs } from "node:util";
@@ -15,54 +14,29 @@ import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import zlib from "node:zlib";
+import { promisify } from "node:util";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
 
-function parseSize(str) {
-  if (!str) return null;
-  const s = String(str).toLowerCase().trim();
-  const num = parseFloat(s);
-  if (isNaN(num)) return null;
-  if (s.endsWith("gb")) return num * 1024 * 1024 * 1024;
-  if (s.endsWith("mb")) return num * 1024 * 1024;
-  if (s.endsWith("kb")) return num * 1024;
-  if (s.endsWith("b")) return num;
-  return num; // assume bytes
+const gzip = promisify(zlib.gzip);
+
+function parseSize(s) {
+  if (!s) return 0;
+  const m = String(s).toLowerCase().match(/^(\d+(?:\.\d+)?)\s*(gb|mb|kb|b)?$/);
+  if (!m) return 0;
+  const n = parseFloat(m[1]);
+  switch (m[2]) {
+    case "gb": return Math.round(n * 1024 * 1024 * 1024);
+    case "mb": return Math.round(n * 1024 * 1024);
+    case "kb": return Math.round(n * 1024);
+    default:   return Math.round(n);
+  }
 }
 
 function fmtBytes(n) {
-  if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(2)} MB`;
-  if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${n} B`;
-}
-
-async function getDirSize(dir) {
-  let total = 0;
-  try {
-    const entries = await fs.readdir(dir, { withFileTypes: true });
-    for (const e of entries) {
-      const p = path.join(dir, e.name);
-      if (e.isDirectory()) total += await getDirSize(p);
-      else if (e.isFile()) { try { total += (await fs.stat(p)).size; } catch {} }
-    }
-  } catch {}
-  return total;
-}
-
-async function getPackSize(projectRoot) {
-  const result = spawnSync("npm", ["pack", "--dry-run", "--json"], {
-    cwd: projectRoot,
-    encoding: "utf8",
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-
-  if (result.status !== 0) return null;
-
-  try {
-    const data = JSON.parse(result.stdout);
-    const entry = Array.isArray(data) ? data[0] : data;
-    return entry?.unpackedSize || null;
-  } catch { return null; }
+  if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(2)}MB`;
+  if (n >= 1024) return `${(n / 1024).toFixed(1)}KB`;
+  return `${n}B`;
 }
 
 export async function cmdSizeLimitCheck(argv) {
@@ -70,11 +44,9 @@ export async function cmdSizeLimitCheck(argv) {
   const { values } = parseArgs({
     args: argv,
     options: {
-      json:       { type: "boolean", default: runtime.json === true },
-      help:       { type: "boolean", short: "h", default: false },
-      limit:      { type: "string" },
-      "pack-limit":     { type: "string" },
-      "install-limit":  { type: "string" },
+      json:  { type: "boolean", default: runtime.json === true },
+      help:  { type: "boolean", short: "h", default: false },
+      limit: { type: "string" },
     },
     allowPositionals: false,
     strict: false,
@@ -83,24 +55,15 @@ export async function cmdSizeLimitCheck(argv) {
   if (values.help) {
     printText(`Usage: better size-limit-check [options]
 
-Check that package and install sizes stay within limits.
-
-Limits can be set via:
-  - CLI options below
-  - package.json "better" config: { "sizeLimit": { "pack": "5mb", "install": "50mb" } }
+Check package entry point size against configurable limits.
 
 Options:
-  --limit <size>          Combined limit (applies to pack size)
-  --pack-limit <size>     Max packed size (npm pack output)
-  --install-limit <size>  Max node_modules size
-  --json                  Machine-readable output
-  -h, --help              Show this help
+  --limit <s>   Size limit (e.g., 50kb, 1mb). Default: from package.json
+  --json        Machine-readable output
+  -h, --help    Show this help
 
-Size formats: 5mb, 500kb, 1gb, 1024 (bytes)
-
-Examples:
-  better size-limit-check --limit 10mb
-  better size-limit-check --pack-limit 2mb --install-limit 100mb
+Reads size limit from package.json "better.sizeLimit" or "size-limit" config.
+Measures raw and gzipped size of the main/module/exports entry point.
 `);
     return;
   }
@@ -109,118 +72,84 @@ Examples:
   const resolvedRoot = await resolveInstallProjectRoot(cwd);
   const projectRoot = resolvedRoot.root;
 
-  let pkgJson;
-  try {
-    pkgJson = JSON.parse(await fs.readFile(path.join(projectRoot, "package.json"), "utf8"));
-  } catch {
-    const msg = "Cannot read package.json";
-    if (values.json) { printJson({ ok: false, error: msg }); } else { printText(`Error: ${msg}`); }
-    process.exitCode = 1;
-    return;
-  }
-
-  // Read limits from config or CLI
-  const betterConfig = pkgJson.better?.sizeLimit || {};
-  const packLimitStr = values["pack-limit"] || values.limit || betterConfig.pack || null;
-  const installLimitStr = values["install-limit"] || betterConfig.install || null;
-
-  const packLimit = parseSize(packLimitStr);
-  const installLimit = parseSize(installLimitStr);
-
-  if (!packLimit && !installLimit) {
-    printText(`\x1b[33m⚠ No size limits configured.\x1b[0m`);
-    printText(`\nSet limits with --limit, --pack-limit, --install-limit, or in package.json:`);
-    printText(`\x1b[90m{\n  "better": {\n    "sizeLimit": { "pack": "5mb", "install": "100mb" }\n  }\n}\x1b[0m`);
-    return;
-  }
-
   if (!values.json) {
-    process.stderr.write(`\x1b[90mMeasuring package sizes…\x1b[0m\n`);
+    printText(`\n\x1b[1mbetter size-limit-check\x1b[0m\n`);
   }
 
-  const checks = [];
+  let pkgJson = {};
+  try { pkgJson = JSON.parse(await fs.readFile(path.join(projectRoot, "package.json"), "utf8")); } catch {}
 
-  // Pack size check
-  if (packLimit) {
-    const packSize = await getPackSize(projectRoot);
-    if (packSize !== null) {
-      const passed = packSize <= packLimit;
-      checks.push({
-        id: "pack-size",
-        label: `Pack size: ${fmtBytes(packSize)} (limit: ${fmtBytes(packLimit)})`,
-        actualSize: packSize,
-        limit: packLimit,
-        passed,
-        severity: passed ? "info" : "error",
-        hint: passed ? "" : `Pack size exceeds limit by ${fmtBytes(packSize - packLimit)}`,
-      });
-    } else {
-      checks.push({
-        id: "pack-size",
-        label: "Pack size: could not determine",
-        passed: false,
-        severity: "warning",
-        hint: "Run in a project with a valid package.json",
-      });
+  // Find entry point
+  const entryPoints = [];
+  if (pkgJson.main) entryPoints.push({ field: "main", file: pkgJson.main });
+  if (pkgJson.module) entryPoints.push({ field: "module", file: pkgJson.module });
+  if (typeof pkgJson.exports === "string") entryPoints.push({ field: "exports", file: pkgJson.exports });
+  else if (pkgJson.exports?.["."]?.default) entryPoints.push({ field: "exports[.]", file: pkgJson.exports["."].default });
+  else if (pkgJson.exports?.["."]?.import) entryPoints.push({ field: "exports[.]", file: pkgJson.exports["."].import });
+
+  // Also check dist/ index
+  for (const distFile of ["dist/index.js", "dist/index.mjs", "lib/index.js"]) {
+    try {
+      await fs.access(path.join(projectRoot, distFile));
+      if (!entryPoints.some(e => e.file === distFile)) {
+        entryPoints.push({ field: "dist", file: distFile });
+      }
+    } catch {}
+  }
+
+  if (entryPoints.length === 0) {
+    const msg = "No entry point found (main/module/exports/dist)";
+    if (values.json) { printJson({ ok: false, error: msg }); } else { printText(`\x1b[33m⚠ ${msg}\x1b[0m\n`); }
+    return;
+  }
+
+  // Determine size limit
+  const configuredLimit = values.limit
+    ? parseSize(values.limit)
+    : parseSize(pkgJson.better?.sizeLimit || pkgJson["size-limit"]?.[0]?.limit);
+
+  const results = [];
+  for (const ep of entryPoints.slice(0, 3)) {
+    try {
+      const filePath = path.resolve(projectRoot, ep.file);
+      const content = await fs.readFile(filePath);
+      const compressed = await gzip(content);
+      const rawSize = content.length;
+      const gzipSize = compressed.length;
+      const withinLimit = configuredLimit ? gzipSize <= configuredLimit : true;
+
+      results.push({ field: ep.field, file: ep.file, rawSize, gzipSize, withinLimit, limit: configuredLimit });
+    } catch {
+      results.push({ field: ep.field, file: ep.file, rawSize: null, gzipSize: null, withinLimit: true, error: "File not found" });
     }
   }
 
-  // Install size check
-  if (installLimit) {
-    const nmPath = path.join(projectRoot, "node_modules");
-    const nmSize = await getDirSize(nmPath);
-    if (nmSize > 0) {
-      const passed = nmSize <= installLimit;
-      checks.push({
-        id: "install-size",
-        label: `Install size: ${fmtBytes(nmSize)} (limit: ${fmtBytes(installLimit)})`,
-        actualSize: nmSize,
-        limit: installLimit,
-        passed,
-        severity: passed ? "info" : "error",
-        hint: passed ? "" : `Install size exceeds limit by ${fmtBytes(nmSize - installLimit)}`,
-      });
-    } else {
-      checks.push({
-        id: "install-size",
-        label: "Install size: node_modules not found",
-        passed: false,
-        severity: "warning",
-        hint: "Run npm install first",
-      });
-    }
-  }
-
-  const errors = checks.filter(c => !c.passed && c.severity === "error");
-  const allOk = errors.length === 0;
+  const allOk = results.every(r => r.withinLimit);
 
   if (values.json) {
-    printJson({
-      ok: allOk,
-      kind: "better.size-limit-check",
-      checks: checks.map(c => ({ id: c.id, label: c.label, passed: c.passed, severity: c.severity, actualSize: c.actualSize, limit: c.limit })),
-      errors: errors.length,
-    });
+    printJson({ ok: allOk, kind: "better.size-limit-check", limit: configuredLimit, results });
     if (!allOk) process.exitCode = 1;
     return;
   }
 
-  printText(`\n\x1b[1mbetter size-limit-check\x1b[0m\n`);
+  if (configuredLimit) {
+    printText(`  Limit: ${fmtBytes(configuredLimit)}\n`);
+  }
 
-  for (const c of checks) {
-    const icon = c.passed ? "\x1b[32m✔\x1b[0m"
-      : c.severity === "error" ? "\x1b[31m✖\x1b[0m"
-      : "\x1b[33m⚠\x1b[0m";
-    printText(`  ${icon}  ${c.label}`);
-    if (c.hint) printText(`       \x1b[90m→ ${c.hint}\x1b[0m`);
+  for (const r of results) {
+    if (r.error) {
+      printText(`  \x1b[90m?\x1b[0m  ${r.field}: ${r.file}  \x1b[90m(not found)\x1b[0m`);
+      continue;
+    }
+    const icon = r.withinLimit ? "\x1b[32m✔\x1b[0m" : "\x1b[31m✘\x1b[0m";
+    const limitStr = configuredLimit ? (r.withinLimit ? ` \x1b[32m< ${fmtBytes(configuredLimit)}\x1b[0m` : ` \x1b[31m> ${fmtBytes(configuredLimit)}!\x1b[0m`) : "";
+    printText(`  ${icon}  ${r.field}: ${r.file}`);
+    printText(`       Raw: ${fmtBytes(r.rawSize)}  |  Gzipped: \x1b[1m${fmtBytes(r.gzipSize)}\x1b[0m${limitStr}`);
   }
 
   printText("");
-  if (allOk) {
-    printText(`\x1b[32m✔ All size limits met.\x1b[0m`);
-  } else {
-    printText(`\x1b[31m✖ ${errors.length} size limit(s) exceeded.\x1b[0m`);
+  if (!allOk) {
+    printText(`\x1b[31m✘ Bundle exceeds size limit. Optimize your build.\x1b[0m`);
     process.exitCode = 1;
   }
-  printText("");
 }
