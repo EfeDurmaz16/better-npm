@@ -1,6 +1,9 @@
 // crates/better-core/src/intelligence/mod.rs
 // ML-powered dependency intelligence — signal aggregation, risk prediction
 
+pub mod supply_chain;
+pub mod audit_fix;
+
 use serde::Serialize;
 
 /// Aggregated intelligence score for a package.
