@@ -296,6 +296,12 @@ export async function runCli(argv) {
       case "insights":
         await (await import("./commands/insights.js")).cmdInsights(rest);
         break;
+      case "sbom":
+        await (await import("./commands/sbom.js")).cmdSbom(rest);
+        break;
+      case "config":
+        await (await import("./commands/config.js")).cmdConfig(rest);
+        break;
       case "completions": {
         const shell = rest[0] || "bash";
         const { spawnSync } = await import("node:child_process");
