@@ -53,6 +53,9 @@ Commands:
   notify               Proactive update notifications (shell integration)
   graph                Dependency graph (ASCII tree, DOT, Mermaid)
   pin [pkg...]         Pin deps to exact versions (or --unpin)
+  clean                Remove node_modules, dist, build artifacts
+  env-check            Validate .env against .env.example schema
+  trace <package>      Trace dependency resolution paths to a package
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -321,6 +324,15 @@ export async function runCli(argv) {
         break;
       case "pin":
         await (await import("./commands/pin.js")).cmdPin(rest);
+        break;
+      case "clean":
+        await (await import("./commands/clean.js")).cmdClean(rest);
+        break;
+      case "env-check":
+        await (await import("./commands/env-check.js")).cmdEnvCheck(rest);
+        break;
+      case "trace":
+        await (await import("./commands/trace.js")).cmdTrace(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
