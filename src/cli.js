@@ -19,10 +19,13 @@ Commands:
   lock               Generate/verify Better lock metadata
   merge-driver       Git merge driver for better.lock.json (install/uninstall/status)
   risk [pkg...]      Dependency risk scoring (A–F grade, staleness, CVEs, bus factor)
+  upgrade            Self-update — download and install the latest version of better
   update [pkg...]    Auto-update intelligence — patch/minor/major with changelog snippets
   size [pkg...]      Install size impact — own + subtree disk footprint, % of total
   prefetch           Pre-warm registry cache from package.json scripts + source imports
   delta              Show lockfile delta (added/removed/changed) vs last install
+  diff [r1] [r2]     Show dependency changes between two lockfile states (git refs or files)
+  ci                 CI-optimized frozen install (strict, clean node_modules)
   policy <subcmd>    Dependency policy enforcement (check, init)
   workspace <subcmd> Workspace management (list, info, graph, changed, run)
   audit              Scan dependencies for known vulnerabilities (OSV.dev)
@@ -166,6 +169,9 @@ export async function runCli(argv) {
       case "risk":
         await (await import("./commands/risk.js")).cmdRisk(rest);
         break;
+      case "upgrade":
+        await (await import("./commands/upgrade.js")).cmdUpgrade(rest);
+        break;
       case "update":
       case "up":
         await (await import("./commands/update.js")).cmdUpdate(rest);
@@ -178,6 +184,12 @@ export async function runCli(argv) {
         break;
       case "delta":
         await (await import("./commands/delta.js")).cmdDelta(rest);
+        break;
+      case "diff":
+        await (await import("./commands/diff.js")).cmdDiff(rest);
+        break;
+      case "ci":
+        await (await import("./commands/ci.js")).cmdCi(rest);
         break;
       case "policy":
         await (await import("./commands/policy.js")).cmdPolicy(rest);
