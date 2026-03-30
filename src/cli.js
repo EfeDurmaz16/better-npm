@@ -159,6 +159,9 @@ Commands:
   pkg-publish-info     Show pre-publish info and validate publish readiness
   git-check            Validate git repository state before operations
   npm-scripts-run      Run multiple npm scripts in sequence or parallel
+  engines-check        Validate Node.js/npm engine requirements of packages
+  changelog-view <p>   View a package's changelog from npm registry or GitHub
+  pkg-readme <p>       View a package's README from the npm registry
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -745,6 +748,15 @@ export async function runCli(argv) {
         break;
       case "npm-scripts-run":
         await (await import("./commands/npm-scripts-run.js")).cmdNpmScriptsRun(rest);
+        break;
+      case "engines-check":
+        await (await import("./commands/engines-check.js")).cmdEnginesCheck(rest);
+        break;
+      case "changelog-view":
+        await (await import("./commands/changelog-view.js")).cmdChangelogView(rest);
+        break;
+      case "pkg-readme":
+        await (await import("./commands/pkg-readme.js")).cmdPkgReadme(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
