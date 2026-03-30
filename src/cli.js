@@ -65,6 +65,7 @@ Commands:
   import-map           Generate ESM import map (CDN or local)
   licenses-report      Full license compliance report (CSV/table)
   bundle-check         Bundle size impact analysis per package
+  workspace-graph      Monorepo workspace dependency graph
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -369,6 +370,9 @@ export async function runCli(argv) {
         break;
       case "bundle-check":
         await (await import("./commands/bundle-check.js")).cmdBundleCheck(rest);
+        break;
+      case "workspace-graph":
+        await (await import("./commands/workspace-graph.js")).cmdWorkspaceGraph(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
