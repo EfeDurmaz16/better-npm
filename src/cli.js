@@ -58,6 +58,8 @@ Commands:
   trace <package>      Trace dependency resolution paths to a package
   repro                Verify install matches lockfile exactly
   stats                Project dependency statistics overview
+  format               Normalize and format package.json
+  check                Run all health checks (pre-commit / CI)
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -341,6 +343,12 @@ export async function runCli(argv) {
         break;
       case "stats":
         await (await import("./commands/stats.js")).cmdStats(rest);
+        break;
+      case "format":
+        await (await import("./commands/format.js")).cmdFormat(rest);
+        break;
+      case "check":
+        await (await import("./commands/check.js")).cmdCheck(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
