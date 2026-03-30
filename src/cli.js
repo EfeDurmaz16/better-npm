@@ -237,6 +237,9 @@ Commands:
   missing-peer-install Find and generate install cmds for missing peer deps
   size-limit-check     Check entry point gzipped size against limits
   tag-manager <p>      List/add/remove npm dist-tags for packages
+  coverage-check       Check code coverage against thresholds
+  pkg-search <q>       Search npm registry with rich output
+  npm-audit-fix-check  Preview npm audit fix changes before applying
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -1057,6 +1060,15 @@ export async function runCli(argv) {
         break;
       case "tag-manager":
         await (await import("./commands/tag-manager.js")).cmdTagManager(rest);
+        break;
+      case "coverage-check":
+        await (await import("./commands/coverage-check.js")).cmdCoverageCheck(rest);
+        break;
+      case "pkg-search":
+        await (await import("./commands/pkg-search.js")).cmdPkgSearch(rest);
+        break;
+      case "npm-audit-fix-check":
+        await (await import("./commands/npm-audit-fix-check.js")).cmdNpmAuditFixCheck(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
