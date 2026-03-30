@@ -72,6 +72,7 @@ Commands:
   fix                  Auto-fix common project issues
   deprecations         Scan for deprecated packages with alternatives
   security             Comprehensive security check (audit+supply+licenses)
+  perf                 Performance hints — lighter alternatives, duplicates
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -397,6 +398,9 @@ export async function runCli(argv) {
         break;
       case "security":
         await (await import("./commands/security.js")).cmdSecurity(rest);
+        break;
+      case "perf":
+        await (await import("./commands/perf.js")).cmdPerf(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
