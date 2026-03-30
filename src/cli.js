@@ -88,6 +88,9 @@ Commands:
   circular             Detect circular imports in source code
   pack-size            Analyze what npm pack will include and sizes
   dep-age              Show the age of installed dependency versions
+  env-diff <f1> <f2>   Diff two .env files
+  license-compat       Check license compatibility between deps and project
+  tree                 Display visual dependency tree
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -461,6 +464,15 @@ export async function runCli(argv) {
         break;
       case "dep-age":
         await (await import("./commands/dep-age.js")).cmdDepAge(rest);
+        break;
+      case "env-diff":
+        await (await import("./commands/env-diff.js")).cmdEnvDiff(rest);
+        break;
+      case "license-compat":
+        await (await import("./commands/license-compat.js")).cmdLicenseCompat(rest);
+        break;
+      case "tree":
+        await (await import("./commands/tree.js")).cmdTree(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
