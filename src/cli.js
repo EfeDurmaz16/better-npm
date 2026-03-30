@@ -94,6 +94,9 @@ Commands:
   module-check         Verify ESM/CJS module format consistency
   scripts-check        Validate package.json scripts
   registry-status      Check npm registry connectivity and latency
+  peer-deps            Check for peer dependency issues
+  overrides <subcmd>   Manage package.json overrides/resolutions
+  doctor-fix           Auto-fix common project issues
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -485,6 +488,15 @@ export async function runCli(argv) {
         break;
       case "registry-status":
         await (await import("./commands/registry-status.js")).cmdRegistryStatus(rest);
+        break;
+      case "peer-deps":
+        await (await import("./commands/peer-deps.js")).cmdPeerDeps(rest);
+        break;
+      case "overrides":
+        await (await import("./commands/overrides.js")).cmdOverrides(rest);
+        break;
+      case "doctor-fix":
+        await (await import("./commands/doctor-fix.js")).cmdDoctorFix(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
