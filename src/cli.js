@@ -48,6 +48,11 @@ Commands:
   completions <shell>  Generate shell completions (bash, zsh, fish, powershell)
   lint|test|dev|build  Script aliases for better run
   agent <command>      Agent mode: --json --no-color, semantic exit codes
+  watch                Watch package.json for changes and auto-react
+  changelog <pkg>      Show recent changelog entries for a package
+  notify               Proactive update notifications (shell integration)
+  graph                Dependency graph (ASCII tree, DOT, Mermaid)
+  pin [pkg...]         Pin deps to exact versions (or --unpin)
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -307,6 +312,15 @@ export async function runCli(argv) {
         break;
       case "changelog":
         await (await import("./commands/changelog.js")).cmdChangelog(rest);
+        break;
+      case "notify":
+        await (await import("./commands/notify.js")).cmdNotify(rest);
+        break;
+      case "graph":
+        await (await import("./commands/graph.js")).cmdGraph(rest);
+        break;
+      case "pin":
+        await (await import("./commands/pin.js")).cmdPin(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
