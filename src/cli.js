@@ -117,6 +117,9 @@ Commands:
   fix-versions         Normalize version range formats
   verify               Comprehensive package verification (audit + integrity)
   migrate [pkg...]     Migration guidance for major version updates
+  stale [pkg...]       Find potentially abandoned/unmaintained packages
+  compare <a> <b>      Compare two npm packages side-by-side
+  audit-html           Generate a standalone HTML audit report
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -577,6 +580,15 @@ export async function runCli(argv) {
         break;
       case "migrate":
         await (await import("./commands/migrate.js")).cmdMigrate(rest);
+        break;
+      case "stale":
+        await (await import("./commands/stale.js")).cmdStale(rest);
+        break;
+      case "compare":
+        await (await import("./commands/compare.js")).cmdCompare(rest);
+        break;
+      case "audit-html":
+        await (await import("./commands/audit-html.js")).cmdAuditHtml(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
