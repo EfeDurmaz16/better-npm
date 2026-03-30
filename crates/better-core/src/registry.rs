@@ -250,6 +250,69 @@ pub fn registry_rotate(scope: Option<&str>) -> Result<String, String> {
     Ok("Token reference cleared. Re-authenticate with `better registry add`.".to_string())
 }
 
+// === Registry failover chain ===
+
+/// A chain of registries with failover support.
+pub struct RegistryChain {
+    /// Ordered list of registry URLs to try
+    registries: Vec<String>,
+    /// Current healthy registry index
+    current: std::sync::atomic::AtomicUsize,
+}
+
+impl RegistryChain {
+    pub fn new(primary: &str) -> Self {
+        let mirrors = get_mirrors_for(primary);
+        let mut registries = vec![primary.to_string()];
+        registries.extend(mirrors);
+        Self {
+            registries,
+            current: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    pub fn from_config(urls: Vec<String>) -> Self {
+        Self {
+            registries: urls,
+            current: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    /// Get the currently active registry URL.
+    pub fn active(&self) -> &str {
+        let idx = self.current.load(std::sync::atomic::Ordering::Relaxed);
+        &self.registries[idx.min(self.registries.len() - 1)]
+    }
+
+    /// Mark the current registry as failed and try the next one.
+    pub fn failover(&self) -> Option<&str> {
+        let idx = self.current.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let next = idx + 1;
+        if next < self.registries.len() {
+            Some(&self.registries[next])
+        } else {
+            None
+        }
+    }
+
+    /// Reset to primary registry.
+    pub fn reset(&self) {
+        self.current.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Get known mirrors for a registry.
+fn get_mirrors_for(registry: &str) -> Vec<String> {
+    if registry.contains("registry.npmjs.org") {
+        vec![
+            "https://registry.npmmirror.com".to_string(),
+            "https://npm.pkg.github.com".to_string(),
+        ]
+    } else {
+        vec![]
+    }
+}
+
 fn write_registry_config(config: &RegistryConfig) -> Result<(), String> {
     let path = registries_path();
     if let Some(parent) = path.parent() {

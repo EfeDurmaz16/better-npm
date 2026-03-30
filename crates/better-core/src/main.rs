@@ -31,7 +31,7 @@ use better_core::{
     // v0.4 intelligence
     detect_unused, load_license_policy, check_license_policy,
     // v0.5 registry
-    registry_add, registry_list, registry_remove, registry_rotate,
+    registry_add, registry_list, registry_remove, registry_rotate, RegistryChain,
     // v0.5 provenance + receipt + firewall
     verify_provenance, write_provenance_json,
     write_install_receipt, list_receipts, verify_receipt, write_receipt_verify_json,
@@ -76,6 +76,7 @@ enum Command {
         sandbox: bool,
         verify_provenance: bool,
         require_provenance: bool,
+        registry_failover: bool,
     },
     Run {
         project_root: PathBuf,
@@ -412,6 +413,7 @@ fn parse_args() -> (Command, GlobalFlags) {
     let mut vex_flag = false;
     let mut verify_provenance_flag = false;
     let mut require_provenance_flag = false;
+    let mut registry_failover_flag = false;
     let mut from_opt: Option<String> = None;
     let mut all_flag = false;
     let mut force_flag = false;
@@ -512,6 +514,7 @@ fn parse_args() -> (Command, GlobalFlags) {
             "--vex" => { vex_flag = true; i += 1; }
             "--verify-provenance" => { verify_provenance_flag = true; i += 1; }
             "--require-provenance" => { require_provenance_flag = true; i += 1; }
+            "--registry-failover" => { registry_failover_flag = true; i += 1; }
             "--dedup" => { dedup = true; i += 1; }
             "--no-dedup" => { dedup = false; i += 1; }
             "--frozen" | "--frozen-lockfile" => { frozen = true; i += 1; }
@@ -718,7 +721,7 @@ fn parse_args() -> (Command, GlobalFlags) {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
             let lf = lockfile.unwrap_or_else(|| pr.join("package-lock.json"));
             let cr = cache_root.unwrap_or_else(default_cache_root);
-            Command::Install { lockfile: lf, project_root: pr, cache_root: cr, store_root, link_strategy, jobs, scripts: scripts_flag, dedup, frozen, offline: offline_flag, json_progress, node_layout, sandbox: sandbox_flag, verify_provenance: verify_provenance_flag, require_provenance: require_provenance_flag }
+            Command::Install { lockfile: lf, project_root: pr, cache_root: cr, store_root, link_strategy, jobs, scripts: scripts_flag, dedup, frozen, offline: offline_flag, json_progress, node_layout, sandbox: sandbox_flag, verify_provenance: verify_provenance_flag, require_provenance: require_provenance_flag, registry_failover: registry_failover_flag }
         },
         "run" => {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
@@ -1971,6 +1974,41 @@ fn main() {
                 }
             }
         }
+        Command::Plugin { subcommand, plugin_arg } => {
+            use better_core::plugin::PluginRegistry;
+            let registry = PluginRegistry::new();
+            match subcommand.as_str() {
+                "add" | "install" => {
+                    let path = plugin_arg.unwrap_or_else(|| ".".to_string());
+                    let plugin_dir = std::path::Path::new(&path);
+                    match registry.install(plugin_dir) {
+                        Ok(name) => println!("Plugin '{}' installed successfully.", name),
+                        Err(e) => { eprintln!("error: {}", e); std::process::exit(1); }
+                    }
+                }
+                "remove" | "uninstall" => {
+                    let name = match plugin_arg {
+                        Some(n) => n,
+                        None => { eprintln!("error: plugin remove requires a plugin name"); std::process::exit(2); }
+                    };
+                    match registry.remove(&name) {
+                        Ok(()) => println!("Plugin '{}' removed.", name),
+                        Err(e) => { eprintln!("error: {}", e); std::process::exit(1); }
+                    }
+                }
+                "list" | _ => {
+                    let plugins = registry.list();
+                    if plugins.is_empty() {
+                        println!("No plugins installed. Install plugins into ~/.better/plugins/<name>/");
+                    } else {
+                        println!("Installed plugins ({}):", plugins.len());
+                        for p in &plugins {
+                            println!("  {} v{} — {}", p.name, p.version, p.description);
+                        }
+                    }
+                }
+            }
+        }
         Command::Version => {
             println!("{VERSION}");
         }
@@ -2031,7 +2069,7 @@ fn main() {
                 std::process::exit(1);
             }
         },
-        Command::Install { lockfile, project_root, cache_root, store_root, link_strategy, jobs: _, scripts, dedup, frozen, offline, json_progress, node_layout, sandbox, verify_provenance: vp, require_provenance: rp } => {
+        Command::Install { lockfile, project_root, cache_root, store_root, link_strategy, jobs: _, scripts, dedup, frozen, offline, json_progress, node_layout, sandbox, verify_provenance: vp, require_provenance: rp, registry_failover } => {
             let started = Instant::now();
 
             // Engine detection: identify which ecosystem this project uses
@@ -2128,6 +2166,15 @@ fn main() {
                     bytes_downloaded: 0,
                 }
             } else {
+                // Build registry chain for failover if requested
+                let registry_chain = if registry_failover {
+                    let primary = &npmrc.default_registry;
+                    Some(RegistryChain::new(primary))
+                } else {
+                    None
+                };
+                let _ = registry_chain; // chain available for future fetch integration
+
                 match fetch_packages(&resolve_result.packages, &cache_root, Some(&npmrc)) {
                     Ok(r) => {
                         progress.finish_fetch();
