@@ -64,6 +64,7 @@ Commands:
   unused               Detect packages not imported in source code
   import-map           Generate ESM import map (CDN or local)
   licenses-report      Full license compliance report (CSV/table)
+  bundle-check         Bundle size impact analysis per package
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -365,6 +366,9 @@ export async function runCli(argv) {
         break;
       case "licenses-report":
         await (await import("./commands/licenses-report.js")).cmdLicensesReport(rest);
+        break;
+      case "bundle-check":
+        await (await import("./commands/bundle-check.js")).cmdBundleCheck(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
