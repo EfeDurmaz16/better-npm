@@ -79,6 +79,9 @@ Commands:
   types-check          Check TypeScript type definitions availability
   exports-check        Validate package.json exports field paths
   publish-check        Pre-publish checklist for npm publishing
+  changelog-gen        Generate CHANGELOG.md from git conventional commits
+  lockfile-lint        Validate package-lock.json integrity and security
+  init                 Initialize project with best-practice scaffolding
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -425,6 +428,15 @@ export async function runCli(argv) {
         break;
       case "publish-check":
         await (await import("./commands/publish-check.js")).cmdPublishCheck(rest);
+        break;
+      case "changelog-gen":
+        await (await import("./commands/changelog-gen.js")).cmdChangelogGen(rest);
+        break;
+      case "lockfile-lint":
+        await (await import("./commands/lockfile-lint.js")).cmdLockfileLint(rest);
+        break;
+      case "init":
+        await (await import("./commands/init.js")).cmdInit(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
