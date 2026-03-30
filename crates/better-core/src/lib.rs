@@ -145,6 +145,8 @@ pub mod intelligence;
 pub mod schema;
 pub mod cli_compat;
 pub mod telemetry;
+pub mod stats;
+pub mod doctor_v2;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 

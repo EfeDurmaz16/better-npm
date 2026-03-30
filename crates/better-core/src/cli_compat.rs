@@ -26,7 +26,7 @@ impl CompatRegistry {
     }
 
     /// Resolve an alias to its canonical command name.
-    pub fn resolve(&self, command: &str) -> &str {
+    pub fn resolve<'a>(&self, command: &'a str) -> &'a str {
         self.aliases.get(command).copied().unwrap_or(command)
     }
 
