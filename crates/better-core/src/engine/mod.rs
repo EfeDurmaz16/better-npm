@@ -1,3 +1,4 @@
+pub mod cargo;
 pub mod npm;
 pub mod python;
 
@@ -165,7 +166,8 @@ impl EngineRegistry {
         let mut registry = Self { engines: Vec::new() };
         registry.register(Box::new(npm::NpmEngine));
         registry.register(Box::new(python::PythonEngine::new()));
-        // Future: registry.register(Box::new(cargo::CargoEngine));
+        registry.register(Box::new(cargo::CargoEngine));
+        // registry.register(Box::new(go::GoEngine));
         registry
     }
 
