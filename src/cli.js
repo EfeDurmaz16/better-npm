@@ -106,6 +106,9 @@ Commands:
   find <package>       Reverse dependency lookup — who depends on X
   prune                Remove extraneous packages from node_modules
   summarize            Generate human-readable project summary
+  install-check        Verify npm installation health and integrity
+  patch <subcmd>       Create and apply node_modules patches
+  workspace-run <s>    Run scripts across all workspace packages
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -533,6 +536,15 @@ export async function runCli(argv) {
         break;
       case "summarize":
         await (await import("./commands/summarize.js")).cmdSummarize(rest);
+        break;
+      case "install-check":
+        await (await import("./commands/install-check.js")).cmdInstallCheck(rest);
+        break;
+      case "patch":
+        await (await import("./commands/patch.js")).cmdPatch(rest);
+        break;
+      case "workspace-run":
+        await (await import("./commands/workspace-run.js")).cmdWorkspaceRun(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
