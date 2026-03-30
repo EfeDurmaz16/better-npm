@@ -168,6 +168,9 @@ Commands:
   workspace-deps       Analyze cross-workspace dependency graph in monorepo
   dep-score <pkg>      Score packages for quality, maintenance, and safety (0–100)
   find-unused-exports  Find exported symbols not imported anywhere in the project
+  pkg-versions <p>     List all published versions of an npm package with dates
+  config-audit         Audit npm and project configuration for best practices
+  node-modules-info    Show detailed statistics about the node_modules directory
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -781,6 +784,15 @@ export async function runCli(argv) {
         break;
       case "find-unused-exports":
         await (await import("./commands/find-unused-exports.js")).cmdFindUnusedExports(rest);
+        break;
+      case "pkg-versions":
+        await (await import("./commands/pkg-versions.js")).cmdPkgVersions(rest);
+        break;
+      case "config-audit":
+        await (await import("./commands/config-audit.js")).cmdConfigAudit(rest);
+        break;
+      case "node-modules-info":
+        await (await import("./commands/node-modules-info.js")).cmdNodeModulesInfo(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
