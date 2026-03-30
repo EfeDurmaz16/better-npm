@@ -182,6 +182,8 @@ Commands:
   test-runner          Auto-detect and run Jest/Vitest/Mocha with better output
   dependency-audit     Comprehensive audit (npm audit + OSV.dev CVE database)
   outdated-report      Detailed outdated dependencies report with release dates
+  package-lock-audit   Deep security and quality audit of package-lock.json
+  exports-map          Analyze and validate package.json exports field
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -837,6 +839,12 @@ export async function runCli(argv) {
         break;
       case "outdated-report":
         await (await import("./commands/outdated-report.js")).cmdOutdatedReport(rest);
+        break;
+      case "package-lock-audit":
+        await (await import("./commands/package-lock-audit.js")).cmdPackageLockAudit(rest);
+        break;
+      case "exports-map":
+        await (await import("./commands/exports-map.js")).cmdExportsMap(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
