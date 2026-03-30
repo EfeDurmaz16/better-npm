@@ -43,6 +43,20 @@ Commands:
   lint|test|dev|build  Script aliases for better run
   agent <command>      Agent mode: --json --no-color, semantic exit codes
 
+Sardis / OSP commands:
+  login [--sardis]                    Authenticate with Sardis or registry
+  logout [--sardis]                   Remove saved credentials
+  pay <package> [--all] [--budget N]  Pay for package access via Sardis
+  publish [--monetize]                Publish package with optional monetisation
+  earnings [--breakdown]              View your Sardis earnings
+  sponsor <package> [--monthly N]     Sponsor a package with a recurring amount
+  provision <domain/offering> [--tier] [--pay sardis]
+                                      Provision an OSP service offering
+  discover <domain>                   Discover available OSP offerings for a domain
+  services [list|status]              List or check status of provisioned services
+  deprovision <resource_id>           Remove a provisioned OSP resource
+  env-gen [--output .env]             Generate .env file from provisioned services
+
 Global options:
   --json             Machine-readable output (JSON)
   --cache-root PATH  Override Better cache root
@@ -221,6 +235,22 @@ export async function runCli(argv) {
       case "search": {
         const { spawnSync } = await import("node:child_process");
         const result = spawnSync("better-core", ["search", ...rest], { stdio: "inherit" });
+        process.exitCode = result.status;
+        break;
+      }
+      case "login":
+      case "logout":
+      case "pay":
+      case "publish":
+      case "earnings":
+      case "sponsor":
+      case "provision":
+      case "discover":
+      case "services":
+      case "deprovision":
+      case "env-gen": {
+        const { spawnSync } = await import("node:child_process");
+        const result = spawnSync("better-core", [command, ...rest], { stdio: "inherit" });
         process.exitCode = result.status;
         break;
       }
