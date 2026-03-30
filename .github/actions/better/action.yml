@@ -1,0 +1,100 @@
+# .github/actions/better/action.yml
+name: 'better — fast package manager'
+description: 'Install dependencies, run audit, and verify lockfile with better'
+author: 'Sardis'
+
+inputs:
+  command:
+    description: 'Command to run: install, audit, lock verify, or a custom command'
+    required: false
+    default: 'install'
+  working-directory:
+    description: 'Directory to run in'
+    required: false
+    default: '.'
+  frozen:
+    description: 'Use --frozen lockfile (fail if lockfile is outdated)'
+    required: false
+    default: 'false'
+  prod-only:
+    description: 'Audit production dependencies only'
+    required: false
+    default: 'false'
+  min-score:
+    description: 'Minimum audit score threshold (0-10)'
+    required: false
+    default: '0'
+  node-version:
+    description: 'Node.js version to use'
+    required: false
+    default: '20'
+  cache:
+    description: 'Enable package cache'
+    required: false
+    default: 'true'
+
+outputs:
+  cache-hit:
+    description: 'Whether the cache was hit'
+    value: ${{ steps.cache.outputs.cache-hit }}
+  audit-findings:
+    description: 'Number of audit findings'
+    value: ${{ steps.audit.outputs.findings }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Cache better store
+      id: cache
+      if: inputs.cache == 'true'
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.better
+          ~/.npm
+        key: better-${{ runner.os }}-${{ hashFiles('**/package-lock.json', '**/better.lock') }}
+        restore-keys: |
+          better-${{ runner.os }}-
+
+    - name: Install better
+      shell: bash
+      run: npm install -g better-npm
+
+    - name: Run better ${{ inputs.command }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        CMD="${{ inputs.command }}"
+        ARGS=""
+
+        if [ "$CMD" = "install" ]; then
+          if [ "${{ inputs.frozen }}" = "true" ]; then
+            ARGS="$ARGS --frozen"
+          fi
+        fi
+
+        if [ "$CMD" = "audit" ]; then
+          if [ "${{ inputs.prod-only }}" = "true" ]; then
+            ARGS="$ARGS --prod-only"
+          fi
+          if [ "${{ inputs.min-score }}" != "0" ]; then
+            ARGS="$ARGS --min-score ${{ inputs.min-score }}"
+          fi
+        fi
+
+        better $CMD $ARGS
+
+    - name: Audit step (if install command)
+      id: audit
+      if: inputs.command == 'install'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        FINDINGS=$(better audit --json 2>/dev/null | jq '.vulnerabilities | length' 2>/dev/null || echo "0")
+        echo "findings=$FINDINGS" >> $GITHUB_OUTPUT
+      continue-on-error: true

@@ -1,0 +1,32 @@
+# .github/workflows/better-example.yml
+name: CI with better
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  install-and-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        uses: ./.github/actions/better
+        with:
+          command: install
+          frozen: true
+          cache: true
+
+      - name: Security audit
+        uses: ./.github/actions/better
+        with:
+          command: audit
+          prod-only: true
+          min-score: '5'
+
+      - name: Verify lockfile
+        uses: ./.github/actions/better
+        with:
+          command: lock verify
