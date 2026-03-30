@@ -82,6 +82,9 @@ Commands:
   changelog-gen        Generate CHANGELOG.md from git conventional commits
   lockfile-lint        Validate package-lock.json integrity and security
   init                 Initialize project with best-practice scaffolding
+  deps-check           Audit dependency placement (prod vs dev)
+  node-version         Check and manage Node.js version requirements
+  pkg-info <pkg>       Detailed package information from npm registry
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -437,6 +440,15 @@ export async function runCli(argv) {
         break;
       case "init":
         await (await import("./commands/init.js")).cmdInit(rest);
+        break;
+      case "deps-check":
+        await (await import("./commands/deps-check.js")).cmdDepsCheck(rest);
+        break;
+      case "node-version":
+        await (await import("./commands/node-version.js")).cmdNodeVersion(rest);
+        break;
+      case "pkg-info":
+        await (await import("./commands/pkg-info.js")).cmdPkgInfo(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
