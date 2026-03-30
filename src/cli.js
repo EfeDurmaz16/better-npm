@@ -135,6 +135,9 @@ Commands:
   package-diff <p> v1 v2  Diff two published versions of a package
   lockfile-fix         Diagnose and repair package-lock.json issues
   top-deps             Rank dependencies by size, dep-count, or impact
+  deps-used            Show which source files import each dependency
+  cleanup              Deep clean build artifacts, caches, and node_modules
+  npm-check            Validate npm environment health and configuration
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -649,6 +652,15 @@ export async function runCli(argv) {
         break;
       case "top-deps":
         await (await import("./commands/top-deps.js")).cmdTopDeps(rest);
+        break;
+      case "deps-used":
+        await (await import("./commands/deps-used.js")).cmdDepsUsed(rest);
+        break;
+      case "cleanup":
+        await (await import("./commands/cleanup.js")).cmdCleanup(rest);
+        break;
+      case "npm-check":
+        await (await import("./commands/npm-check.js")).cmdNpmCheck(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
