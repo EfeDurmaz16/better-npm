@@ -207,6 +207,9 @@ Commands:
   cve-check            Check installed packages against CVE databases
   license-policy       Enforce license policies across dependencies
   install-time         Estimate npm install time and suggest optimizations
+  resolutions-check    Validate resolutions/overrides entries
+  postinstall-audit    Audit postinstall scripts for risky patterns
+  scope-check          Validate scoped package registry configuration
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -937,6 +940,15 @@ export async function runCli(argv) {
         break;
       case "install-time":
         await (await import("./commands/install-time.js")).cmdInstallTime(rest);
+        break;
+      case "resolutions-check":
+        await (await import("./commands/resolutions-check.js")).cmdResolutionsCheck(rest);
+        break;
+      case "postinstall-audit":
+        await (await import("./commands/postinstall-audit.js")).cmdPostinstallAudit(rest);
+        break;
+      case "scope-check":
+        await (await import("./commands/scope-check.js")).cmdScopeCheck(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
