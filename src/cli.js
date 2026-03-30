@@ -62,6 +62,8 @@ Commands:
   check                Run all health checks (pre-commit / CI)
   report               Generate shareable dependency report (Markdown/HTML)
   unused               Detect packages not imported in source code
+  import-map           Generate ESM import map (CDN or local)
+  licenses-report      Full license compliance report (CSV/table)
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -357,6 +359,12 @@ export async function runCli(argv) {
         break;
       case "unused":
         await (await import("./commands/unused.js")).cmdUnused(rest);
+        break;
+      case "import-map":
+        await (await import("./commands/import-map.js")).cmdImportMap(rest);
+        break;
+      case "licenses-report":
+        await (await import("./commands/licenses-report.js")).cmdLicensesReport(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
