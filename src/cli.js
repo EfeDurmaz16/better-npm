@@ -219,6 +219,9 @@ Commands:
   lock-health          Comprehensive lockfile health analysis
   typings-check        Check TypeScript type definition coverage
   publish-checklist    Run pre-publish validation checklist
+  sbom-gen             Generate SBOM in CycloneDX or SPDX format
+  dep-graph            Visualize dependency graph as ASCII tree or DOT
+  build-diff           Compare build output sizes before/after changes
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -985,6 +988,15 @@ export async function runCli(argv) {
         break;
       case "publish-checklist":
         await (await import("./commands/publish-checklist.js")).cmdPublishChecklist(rest);
+        break;
+      case "sbom-gen":
+        await (await import("./commands/sbom-gen.js")).cmdSbomGen(rest);
+        break;
+      case "dep-graph":
+        await (await import("./commands/dep-graph.js")).cmdDepGraph(rest);
+        break;
+      case "build-diff":
+        await (await import("./commands/build-diff.js")).cmdBuildDiff(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
