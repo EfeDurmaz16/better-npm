@@ -244,6 +244,21 @@ export async function runCli(argv) {
       case "cost":
         await (await import("./commands/cost.js")).cmdCost(rest);
         break;
+      case "impact":
+        await (await import("./commands/impact.js")).cmdImpact(rest);
+        break;
+      case "preview":
+        await (await import("./commands/preview.js")).cmdPreview(rest);
+        break;
+      case "infra":
+        await (await import("./commands/infra.js")).cmdInfra(rest);
+        break;
+      case "sign":
+        await (await import("./commands/sign.js")).cmdSign(rest);
+        break;
+      case "plugin":
+        await (await import("./commands/plugin.js")).cmdPlugin(rest);
+        break;
       case "completions": {
         const shell = rest[0] || "bash";
         const { spawnSync } = await import("node:child_process");
