@@ -138,6 +138,9 @@ Commands:
   deps-used            Show which source files import each dependency
   cleanup              Deep clean build artifacts, caches, and node_modules
   npm-check            Validate npm environment health and configuration
+  resolutions          Find version duplicates and suggest npm overrides
+  size-limit-check     Enforce size budgets for pack and install size
+  which-pkg <m>        Find which package provides a module, binary, or file
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -661,6 +664,15 @@ export async function runCli(argv) {
         break;
       case "npm-check":
         await (await import("./commands/npm-check.js")).cmdNpmCheck(rest);
+        break;
+      case "resolutions":
+        await (await import("./commands/resolutions.js")).cmdResolutions(rest);
+        break;
+      case "size-limit-check":
+        await (await import("./commands/size-limit-check.js")).cmdSizeLimitCheck(rest);
+        break;
+      case "which-pkg":
+        await (await import("./commands/which-pkg.js")).cmdWhichPkg(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
