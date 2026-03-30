@@ -179,6 +179,9 @@ Commands:
   source-map-check     Validate source map files in build output
   link-check           Verify npm-linked packages and their targets
   script-env           Show npm environment variables injected during scripts
+  test-runner          Auto-detect and run Jest/Vitest/Mocha with better output
+  dependency-audit     Comprehensive audit (npm audit + OSV.dev CVE database)
+  outdated-report      Detailed outdated dependencies report with release dates
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -825,6 +828,15 @@ export async function runCli(argv) {
         break;
       case "script-env":
         await (await import("./commands/script-env.js")).cmdScriptEnv(rest);
+        break;
+      case "test-runner":
+        await (await import("./commands/test-runner.js")).cmdTestRunner(rest);
+        break;
+      case "dependency-audit":
+        await (await import("./commands/dependency-audit.js")).cmdDependencyAudit(rest);
+        break;
+      case "outdated-report":
+        await (await import("./commands/outdated-report.js")).cmdOutdatedReport(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
