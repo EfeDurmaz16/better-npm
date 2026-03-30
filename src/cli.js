@@ -188,6 +188,9 @@ Commands:
   pkg-compare-versions Compare metrics across multiple package versions
   unused-scripts       Find package.json scripts that may be dead code
   format-package       Normalize and format package.json with canonical key order
+  update-readme        Auto-update README.md badges and stats from package.json
+  npm-ci-check         Validate prerequisites for npm ci to succeed
+  impact <pkg>         Show impact of adding a dependency (size, deps, health)
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -861,6 +864,15 @@ export async function runCli(argv) {
         break;
       case "format-package":
         await (await import("./commands/format-package.js")).cmdFormatPackage(rest);
+        break;
+      case "update-readme":
+        await (await import("./commands/update-readme.js")).cmdUpdateReadme(rest);
+        break;
+      case "npm-ci-check":
+        await (await import("./commands/npm-ci-check.js")).cmdNpmCiCheck(rest);
+        break;
+      case "impact":
+        await (await import("./commands/impact.js")).cmdImpact(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
