@@ -91,6 +91,9 @@ Commands:
   env-diff <f1> <f2>   Diff two .env files
   license-compat       Check license compatibility between deps and project
   tree                 Display visual dependency tree
+  module-check         Verify ESM/CJS module format consistency
+  scripts-check        Validate package.json scripts
+  registry-status      Check npm registry connectivity and latency
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -473,6 +476,15 @@ export async function runCli(argv) {
         break;
       case "tree":
         await (await import("./commands/tree.js")).cmdTree(rest);
+        break;
+      case "module-check":
+        await (await import("./commands/module-check.js")).cmdModuleCheck(rest);
+        break;
+      case "scripts-check":
+        await (await import("./commands/scripts-check.js")).cmdScriptsCheck(rest);
+        break;
+      case "registry-status":
+        await (await import("./commands/registry-status.js")).cmdRegistryStatus(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
