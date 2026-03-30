@@ -141,6 +141,9 @@ Commands:
   resolutions          Find version duplicates and suggest npm overrides
   size-limit-check     Enforce size budgets for pack and install size
   which-pkg <m>        Find which package provides a module, binary, or file
+  badges               Generate Shields.io README badges from package.json
+  ci-check             Validate GitHub Actions/CircleCI/GitLab CI configs
+  exec <binary>        Run a locally installed binary from node_modules/.bin
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -673,6 +676,15 @@ export async function runCli(argv) {
         break;
       case "which-pkg":
         await (await import("./commands/which-pkg.js")).cmdWhichPkg(rest);
+        break;
+      case "badges":
+        await (await import("./commands/badges.js")).cmdBadges(rest);
+        break;
+      case "ci-check":
+        await (await import("./commands/ci-check.js")).cmdCiCheck(rest);
+        break;
+      case "exec":
+        await (await import("./commands/exec.js")).cmdExec(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
