@@ -228,6 +228,9 @@ Commands:
   fund-info            Show funding information for installed packages
   hooks-audit          Audit lifecycle hooks for suspicious patterns
   pkg-metadata <p>     Show detailed package metadata from npm registry
+  tree-shaking-check   Check packages for tree-shaking compatibility
+  npm-run-order <s>    Show pre/post script execution order
+  installed-check      Verify all declared dependencies are installed
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -1021,6 +1024,15 @@ export async function runCli(argv) {
         break;
       case "pkg-metadata":
         await (await import("./commands/pkg-metadata.js")).cmdPkgMetadata(rest);
+        break;
+      case "tree-shaking-check":
+        await (await import("./commands/tree-shaking-check.js")).cmdTreeShakingCheck(rest);
+        break;
+      case "npm-run-order":
+        await (await import("./commands/npm-run-order.js")).cmdNpmRunOrder(rest);
+        break;
+      case "installed-check":
+        await (await import("./commands/installed-check.js")).cmdInstalledCheck(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
