@@ -186,6 +186,8 @@ Commands:
   exports-map          Analyze and validate package.json exports field
   monorepo-info        Detect and display monorepo structure and tooling
   pkg-compare-versions Compare metrics across multiple package versions
+  unused-scripts       Find package.json scripts that may be dead code
+  format-package       Normalize and format package.json with canonical key order
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -853,6 +855,12 @@ export async function runCli(argv) {
         break;
       case "pkg-compare-versions":
         await (await import("./commands/pkg-compare-versions.js")).cmdPkgCompareVersions(rest);
+        break;
+      case "unused-scripts":
+        await (await import("./commands/unused-scripts.js")).cmdUnusedScripts(rest);
+        break;
+      case "format-package":
+        await (await import("./commands/format-package.js")).cmdFormatPackage(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
