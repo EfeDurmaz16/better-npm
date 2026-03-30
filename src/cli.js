@@ -240,6 +240,9 @@ Commands:
   coverage-check       Check code coverage against thresholds
   pkg-search <q>       Search npm registry with rich output
   npm-audit-fix-check  Preview npm audit fix changes before applying
+  circular-deps        Detect circular dependency chains in node_modules
+  package-json-diff    Diff package.json between two package versions
+  health-dashboard     Show overall project health score and dashboard
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -1069,6 +1072,15 @@ export async function runCli(argv) {
         break;
       case "npm-audit-fix-check":
         await (await import("./commands/npm-audit-fix-check.js")).cmdNpmAuditFixCheck(rest);
+        break;
+      case "circular-deps":
+        await (await import("./commands/circular-deps.js")).cmdCircularDeps(rest);
+        break;
+      case "package-json-diff":
+        await (await import("./commands/package-json-diff.js")).cmdPackageJsonDiff(rest);
+        break;
+      case "health-dashboard":
+        await (await import("./commands/health-dashboard.js")).cmdHealthDashboard(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
