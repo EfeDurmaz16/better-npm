@@ -66,6 +66,8 @@ Commands:
   licenses-report      Full license compliance report (CSV/table)
   bundle-check         Bundle size impact analysis per package
   workspace-graph      Monorepo workspace dependency graph
+  bump <type>          Bump semver version (patch/minor/major/prerelease)
+  release <type>       Full release workflow (test, bump, tag, publish)
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -373,6 +375,12 @@ export async function runCli(argv) {
         break;
       case "workspace-graph":
         await (await import("./commands/workspace-graph.js")).cmdWorkspaceGraph(rest);
+        break;
+      case "bump":
+        await (await import("./commands/bump.js")).cmdBump(rest);
+        break;
+      case "release":
+        await (await import("./commands/release.js")).cmdRelease(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
