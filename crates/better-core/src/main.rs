@@ -270,6 +270,10 @@ enum Command {
         schedule: Option<String>,
         list: bool,
     },
+    Plugin {
+        subcommand: String,
+        plugin_arg: Option<String>,
+    },
     Version,
     Help { error: Option<String> },
 }
@@ -883,6 +887,11 @@ fn parse_args() -> (Command, GlobalFlags) {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
             Command::Suggest { project_root: pr, json: json_progress || global_flags.json || global_flags.agent_mode }
         },
+        "plugin" => {
+            let subcmd = positional.first().cloned().unwrap_or_else(|| "list".to_string());
+            let plugin_arg = positional.get(1).cloned();
+            Command::Plugin { subcommand: subcmd, plugin_arg }
+        },
         "completions" => {
             let shell = positional.first().cloned().unwrap_or_else(|| "bash".into());
             Command::Completions { shell }
@@ -995,7 +1004,7 @@ fn print_help(error: Option<String>) {
         "better-core {VERSION}
 
 Usage:
-  better-core install [--lockfile <path>] [--project-root <path>] [--cache-root <path>] [--dedup] [--frozen] [--sandbox]
+  better-core install [--lockfile <path>] [--project-root <path>] [--cache-root <path>] [--dedup] [--frozen] [--offline] [--sandbox]
   better-core run <script> [--watch] [-- extra args...]
   better-core test|lint|build|start [--watch] [args...]
   better-core dev [args...]  (watch mode by default)

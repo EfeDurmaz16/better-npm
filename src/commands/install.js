@@ -475,7 +475,7 @@ export async function cmdInstall(argv) {
   if (argv.includes("--help") || argv.includes("-h")) {
     printText(`Usage:
   better install [--json] [--dry-run] [--pm auto|npm|pnpm|yarn] [--engine pm|bun|better]
-                 [--frozen] [--production] [--cache-root PATH] [--project-root PATH]
+                 [--frozen] [--offline] [--production] [--cache-root PATH] [--project-root PATH]
                  [--global-cache] [--cache-mode strict|relaxed] [--cache-scripts rebuild|off]
                  [--cache-read-only] [--cache-key-salt STRING]
                  [--measure-cache auto|on|off]
@@ -484,6 +484,9 @@ export async function cmdInstall(argv) {
                  [--strict] [--hoist] [--node-layout strict|hoist]
                  [--workspace PKG | -w PKG] [--workspace-concurrency N] [--workspace-topo]
                  [-- --<pm-specific flags>]
+
+Offline options:
+  --offline              Install from cache only — skip all network requests (fails if package not in CAS)
 
 Workspace options:
   --workspace, -w PKG    Install only specific workspace package (can repeat)
@@ -505,6 +508,7 @@ Workspace options:
       engine: { type: "string", default: "pm" },
       "dry-run": { type: "boolean", default: false },
       frozen: { type: "boolean", default: false },
+      offline: { type: "boolean", default: false },
       production: { type: "boolean", default: false },
       experimental: { type: "boolean", default: false },
       mode: { type: "string", default: "wrap" },
@@ -563,6 +567,7 @@ Workspace options:
 
   const dryRun = values["dry-run"] === true;
   const frozen = values.frozen === true;
+  const offline = values.offline === true;
   const production = values.production === true;
 
   const knownOptionKeys = new Set([
@@ -573,6 +578,7 @@ Workspace options:
     "engine",
     "dry-run",
     "frozen",
+    "offline",
     "production",
     "experimental",
     "mode",
@@ -645,6 +651,13 @@ Workspace options:
     };
   } else if (workspaceResolved.ok) {
     workspaceResolved = { ...workspaceResolved, filtered: false };
+  }
+
+  if (offline) {
+    progress("Running in offline mode — using cached packages only");
+    if (!values.json) {
+      printText("Running in offline mode — using cached packages only");
+    }
   }
 
   const cacheRoot = getCacheRoot(values["cache-root"]);
@@ -1135,6 +1148,7 @@ Workspace options:
         scripts: values.scripts !== "off",
         dedup: false,
         nodeLayout,
+        offline,
       });
       const ended = Date.now();
       cmd = "better";
@@ -1159,7 +1173,8 @@ Workspace options:
 
       progress(`running ${cmd} ${args.join(" ")}`);
       installBar.phase("fetch");
-      install = await runCommand(cmd, args, { cwd: projectRoot, env: installEnv, passthroughStdio: !values.json });
+      const pmRunEnv = offline ? { ...installEnv, BETTER_OFFLINE: "1" } : installEnv;
+      install = await runCommand(cmd, args, { cwd: projectRoot, env: pmRunEnv, passthroughStdio: !values.json });
       if (install.exitCode !== 0) {
         const err = new Error(`${cmd} exited with code ${install.exitCode}`);
         err.install = install;
