@@ -68,6 +68,8 @@ Commands:
   workspace-graph      Monorepo workspace dependency graph
   bump <type>          Bump semver version (patch/minor/major/prerelease)
   release <type>       Full release workflow (test, bump, tag, publish)
+  compat               Check Node.js version compatibility of packages
+  fix                  Auto-fix common project issues
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -381,6 +383,12 @@ export async function runCli(argv) {
         break;
       case "release":
         await (await import("./commands/release.js")).cmdRelease(rest);
+        break;
+      case "compat":
+        await (await import("./commands/compat.js")).cmdCompat(rest);
+        break;
+      case "fix":
+        await (await import("./commands/fix.js")).cmdFix(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
