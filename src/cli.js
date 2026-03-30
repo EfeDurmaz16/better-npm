@@ -184,6 +184,8 @@ Commands:
   outdated-report      Detailed outdated dependencies report with release dates
   package-lock-audit   Deep security and quality audit of package-lock.json
   exports-map          Analyze and validate package.json exports field
+  monorepo-info        Detect and display monorepo structure and tooling
+  pkg-compare-versions Compare metrics across multiple package versions
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -845,6 +847,12 @@ export async function runCli(argv) {
         break;
       case "exports-map":
         await (await import("./commands/exports-map.js")).cmdExportsMap(rest);
+        break;
+      case "monorepo-info":
+        await (await import("./commands/monorepo-info.js")).cmdMonorepoInfo(rest);
+        break;
+      case "pkg-compare-versions":
+        await (await import("./commands/pkg-compare-versions.js")).cmdPkgCompareVersions(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
