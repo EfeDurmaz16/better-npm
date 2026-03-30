@@ -48,6 +48,7 @@ Commands:
   completions <shell>  Generate shell completions (bash, zsh, fish, powershell)
   lint|test|dev|build  Script aliases for better run
   agent <command>      Agent mode: --json --no-color, semantic exit codes
+  telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
   login [--sardis]                    Authenticate with Sardis or registry
@@ -285,6 +286,9 @@ export async function runCli(argv) {
         break;
       case "cross-project":
         await (await import("./commands/cross-project.js")).cmdCrossProject(rest);
+        break;
+      case "telemetry":
+        await (await import("./commands/telemetry.js")).cmdTelemetry(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";

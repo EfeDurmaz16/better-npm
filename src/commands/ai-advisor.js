@@ -75,6 +75,12 @@ Options:
   try { pkg = JSON.parse(await fs.readFile(pkgPath, "utf8")); } catch {}
 
   switch (sub) {
+    case "review": {
+      // Static (rule-based) dependency review — no AI key required
+      const { cmdAiReview } = await import("./ai-review.js");
+      await cmdAiReview([...rest.slice(1), useJson ? "--json" : ""]);
+      break;
+    }
     case "advise": {
       const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
       const depList = Object.entries(deps).map(([n, v]) => `${n}@${v}`).join(", ");
