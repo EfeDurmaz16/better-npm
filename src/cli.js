@@ -150,6 +150,9 @@ Commands:
   contributors-check   Check packages for bus factor and publisher risks
   license-report       Generate full license compliance report (MD/CSV/HTML)
   scan-secrets         Scan source files for accidentally committed secrets
+  typescript-check     Run TypeScript type checking (tsc --noEmit)
+  package-stats        Aggregate statistics about installed packages
+  dep-tree-size        Show cumulative size of each dependency's subtree
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -709,6 +712,15 @@ export async function runCli(argv) {
         break;
       case "scan-secrets":
         await (await import("./commands/scan-secrets.js")).cmdScanSecrets(rest);
+        break;
+      case "typescript-check":
+        await (await import("./commands/typescript-check.js")).cmdTypescriptCheck(rest);
+        break;
+      case "package-stats":
+        await (await import("./commands/package-stats.js")).cmdPackageStats(rest);
+        break;
+      case "dep-tree-size":
+        await (await import("./commands/dep-tree-size.js")).cmdDepTreeSize(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
