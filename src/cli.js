@@ -56,6 +56,8 @@ Commands:
   clean                Remove node_modules, dist, build artifacts
   env-check            Validate .env against .env.example schema
   trace <package>      Trace dependency resolution paths to a package
+  repro                Verify install matches lockfile exactly
+  stats                Project dependency statistics overview
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -333,6 +335,12 @@ export async function runCli(argv) {
         break;
       case "trace":
         await (await import("./commands/trace.js")).cmdTrace(rest);
+        break;
+      case "repro":
+        await (await import("./commands/repro.js")).cmdRepro(rest);
+        break;
+      case "stats":
+        await (await import("./commands/stats.js")).cmdStats(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
