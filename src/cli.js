@@ -60,6 +60,8 @@ Commands:
   stats                Project dependency statistics overview
   format               Normalize and format package.json
   check                Run all health checks (pre-commit / CI)
+  report               Generate shareable dependency report (Markdown/HTML)
+  unused               Detect packages not imported in source code
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -349,6 +351,12 @@ export async function runCli(argv) {
         break;
       case "check":
         await (await import("./commands/check.js")).cmdCheck(rest);
+        break;
+      case "report":
+        await (await import("./commands/report.js")).cmdReport(rest);
+        break;
+      case "unused":
+        await (await import("./commands/unused.js")).cmdUnused(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
