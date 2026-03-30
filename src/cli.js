@@ -144,6 +144,9 @@ Commands:
   badges               Generate Shields.io README badges from package.json
   ci-check             Validate GitHub Actions/CircleCI/GitLab CI configs
   exec <binary>        Run a locally installed binary from node_modules/.bin
+  pkg-json-lint        Lint package.json for best practices and issues
+  dep-changes <pkg>    Show what changed in a dependency's latest release
+  health-score         Compute overall project dependency health score (0-100)
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -685,6 +688,15 @@ export async function runCli(argv) {
         break;
       case "exec":
         await (await import("./commands/exec.js")).cmdExec(rest);
+        break;
+      case "pkg-json-lint":
+        await (await import("./commands/pkg-json-lint.js")).cmdPkgJsonLint(rest);
+        break;
+      case "dep-changes":
+        await (await import("./commands/dep-changes.js")).cmdDepChanges(rest);
+        break;
+      case "health-score":
+        await (await import("./commands/health-score.js")).cmdHealthScore(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
