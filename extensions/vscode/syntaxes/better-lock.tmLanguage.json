@@ -1,0 +1,44 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Better Lock",
+  "scopeName": "source.better-lock",
+  "fileTypes": ["better.lock.json"],
+  "patterns": [
+    { "include": "#string" },
+    { "include": "#number" },
+    { "include": "#boolean" },
+    { "include": "#null" },
+    { "include": "#key" },
+    { "include": "#ecosystem-section" }
+  ],
+  "repository": {
+    "string": {
+      "name": "string.quoted.double.better-lock",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        { "name": "constant.character.escape.better-lock", "match": "\\\\." }
+      ]
+    },
+    "number": {
+      "name": "constant.numeric.better-lock",
+      "match": "-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?"
+    },
+    "boolean": {
+      "name": "constant.language.boolean.better-lock",
+      "match": "\\b(?:true|false)\\b"
+    },
+    "null": {
+      "name": "constant.language.null.better-lock",
+      "match": "\\bnull\\b"
+    },
+    "key": {
+      "name": "support.type.property-name.better-lock",
+      "match": "\"(?:name|version|resolved|integrity|requires|dependencies|ecosystem|lockfileVersion|schemaVersion)\""
+    },
+    "ecosystem-section": {
+      "name": "keyword.control.ecosystem.better-lock",
+      "match": "\"(?:npm|python|cargo|go|ruby|php|dotnet|swift|cocoapods)\""
+    }
+  }
+}

@@ -290,6 +290,9 @@ export async function runCli(argv) {
       case "telemetry":
         await (await import("./commands/telemetry.js")).cmdTelemetry(rest);
         break;
+      case "pipeline":
+        await (await import("./commands/pipeline.js")).cmdPipeline(rest);
+        break;
       case "completions": {
         const shell = rest[0] || "bash";
         const { spawnSync } = await import("node:child_process");
