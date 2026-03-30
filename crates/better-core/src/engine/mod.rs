@@ -1,4 +1,5 @@
 pub mod cargo;
+pub mod go;
 pub mod npm;
 pub mod python;
 
@@ -167,7 +168,7 @@ impl EngineRegistry {
         registry.register(Box::new(npm::NpmEngine));
         registry.register(Box::new(python::PythonEngine::new()));
         registry.register(Box::new(cargo::CargoEngine));
-        // registry.register(Box::new(go::GoEngine));
+        registry.register(Box::new(go::GoEngine));
         registry
     }
 
