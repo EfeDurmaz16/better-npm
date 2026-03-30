@@ -29,6 +29,8 @@ Commands:
   policy <subcmd>    Dependency policy enforcement (check, init)
   workspace <subcmd> Workspace management (list, info, graph, changed, run)
   audit              Scan dependencies for known vulnerabilities (OSV.dev)
+  audit fix          Auto-fix vulnerabilities with semver-safe upgrades
+  maintenance        Predictive maintenance — risk-score packages needing attention
   dashboard          Interactive TUI dashboard for project health
   run <script>       Run package.json scripts via npm/pnpm/yarn
   why <package>      Show why a package is installed (dependency paths)
@@ -199,7 +201,15 @@ export async function runCli(argv) {
         await (await import("./commands/workspace.js")).cmdWorkspace(rest);
         break;
       case "audit":
-        await (await import("./commands/audit.js")).cmdAudit(rest);
+        // check if subcommand is 'fix'
+        if (rest[0] === "fix") {
+          await (await import("./commands/audit-fix.js")).cmdAuditFix(rest.slice(1));
+        } else {
+          await (await import("./commands/audit.js")).cmdAudit(rest);
+        }
+        break;
+      case "maintenance":
+        await (await import("./commands/maintenance.js")).cmdMaintenance(rest);
         break;
       case "dashboard":
         await (await import("./commands/dashboard.js")).cmdDashboard(rest);

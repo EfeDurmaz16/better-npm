@@ -128,6 +128,7 @@ pub mod search;
 pub mod osp;
 pub mod sardis;
 pub mod monetize;
+pub mod plugin;
 
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
