@@ -165,6 +165,9 @@ Commands:
   shrinkwrap-check     Validate npm-shrinkwrap.json integrity and consistency
   bundle-analyzer      Analyze JavaScript/CSS bundle sizes in build output
   npm-token            Audit npm authentication tokens in .npmrc files
+  workspace-deps       Analyze cross-workspace dependency graph in monorepo
+  dep-score <pkg>      Score packages for quality, maintenance, and safety (0–100)
+  find-unused-exports  Find exported symbols not imported anywhere in the project
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -769,6 +772,15 @@ export async function runCli(argv) {
         break;
       case "npm-token":
         await (await import("./commands/npm-token.js")).cmdNpmToken(rest);
+        break;
+      case "workspace-deps":
+        await (await import("./commands/workspace-deps.js")).cmdWorkspaceDeps(rest);
+        break;
+      case "dep-score":
+        await (await import("./commands/dep-score.js")).cmdDepScore(rest);
+        break;
+      case "find-unused-exports":
+        await (await import("./commands/find-unused-exports.js")).cmdFindUnusedExports(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
