@@ -37,6 +37,7 @@ Commands:
   outdated           Check for newer versions of installed packages
   scripts            Manage install script sandboxing (list, allow, block)
   suggest            Suggest missing deps and flag unused ones from imports
+  deploy [options]   Deploy with OSP auto-provisioning (--platform, --env, --provision, --dry-run)
   context <package>   Generate LLM-friendly context for a package
   context --all        Generate context for all installed dependencies
   context gc           Clean stale context cache entries
@@ -223,6 +224,9 @@ export async function runCli(argv) {
         break;
       case "suggest":
         await (await import("./commands/suggest.js")).cmdSuggest(rest);
+        break;
+      case "deploy":
+        await (await import("./commands/deploy.js")).cmdDeploy(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
