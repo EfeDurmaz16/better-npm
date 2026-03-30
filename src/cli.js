@@ -196,6 +196,8 @@ Commands:
   global-packages      List and analyze globally installed npm packages
   package-size-map     Visualize node_modules size as ASCII treemap
   deprecation-check    Find deprecated packages and suggest modern alternatives
+  optional-deps        Show optional dependency installation status
+  pkg-alternatives <p> Find modern alternatives to a package
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -893,6 +895,12 @@ export async function runCli(argv) {
         break;
       case "deprecation-check":
         await (await import("./commands/deprecation-check.js")).cmdDeprecationCheck(rest);
+        break;
+      case "optional-deps":
+        await (await import("./commands/optional-deps.js")).cmdOptionalDeps(rest);
+        break;
+      case "pkg-alternatives":
+        await (await import("./commands/pkg-alternatives.js")).cmdPkgAlternatives(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
