@@ -73,6 +73,8 @@ Commands:
   deprecations         Scan for deprecated packages with alternatives
   security             Comprehensive security check (audit+supply+licenses)
   perf                 Performance hints — lighter alternatives, duplicates
+  contributors         Analyze package maintainers and bus factor risk
+  snapshot <subcmd>    Lockfile snapshot management (save/restore/diff)
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -401,6 +403,12 @@ export async function runCli(argv) {
         break;
       case "perf":
         await (await import("./commands/perf.js")).cmdPerf(rest);
+        break;
+      case "contributors":
+        await (await import("./commands/contributors.js")).cmdContributors(rest);
+        break;
+      case "snapshot":
+        await (await import("./commands/snapshot.js")).cmdSnapshot(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
