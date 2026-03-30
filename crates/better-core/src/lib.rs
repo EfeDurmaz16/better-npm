@@ -129,6 +129,8 @@ pub mod osp;
 pub mod sardis;
 pub mod monetize;
 pub mod plugin;
+pub mod reputation;
+pub use reputation::run_reputation;
 
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

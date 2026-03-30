@@ -276,6 +276,9 @@ export async function runCli(argv) {
         process.exitCode = result.status;
         break;
       }
+      case "supply-chain":
+        await (await import("./commands/supply-chain.js")).cmdSupplyChain(rest);
+        break;
       case "login":
       case "logout":
       case "pay":

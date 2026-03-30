@@ -48,6 +48,7 @@ use better_core::engine::EngineRegistry;
 use better_core::context;
 use better_core::search;
 use better_core::audit;
+use better_core::reputation;
 
 #[derive(Debug)]
 enum Command {
@@ -274,6 +275,10 @@ enum Command {
     Plugin {
         subcommand: String,
         plugin_arg: Option<String>,
+    },
+    Reputation {
+        packages: Vec<(String, String)>,
+        project_root: PathBuf,
     },
     Version,
     Help { error: Option<String> },
@@ -894,6 +899,18 @@ fn parse_args() -> (Command, GlobalFlags) {
             let subcmd = positional.first().cloned().unwrap_or_else(|| "list".to_string());
             let plugin_arg = positional.get(1).cloned();
             Command::Plugin { subcommand: subcmd, plugin_arg }
+        },
+        "reputation" => {
+            let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
+            // positional args are package[@version] pairs
+            let packages: Vec<(String, String)> = positional.iter().map(|p| {
+                if let Some(at) = p.rfind('@').filter(|&i| i > 0) {
+                    (p[..at].to_string(), p[at+1..].to_string())
+                } else {
+                    (p.clone(), "latest".to_string())
+                }
+            }).collect();
+            Command::Reputation { packages, project_root: pr }
         },
         "completions" => {
             let shell = positional.first().cloned().unwrap_or_else(|| "bash".into());
@@ -2008,6 +2025,20 @@ fn main() {
                     }
                 }
             }
+        }
+        Command::Reputation { packages, project_root } => {
+            // If no packages specified, read from package.json dependencies
+            let pkgs = if packages.is_empty() {
+                let pkg_json_path = project_root.join("package.json");
+                let pkg_json = std::fs::read_to_string(&pkg_json_path).unwrap_or_default();
+                let deps = better_core::extract_json_object_pairs(&pkg_json, "dependencies").unwrap_or_default();
+                let dev_deps = better_core::extract_json_object_pairs(&pkg_json, "devDependencies").unwrap_or_default();
+                deps.into_iter().chain(dev_deps).map(|(name, _ver)| (name, "latest".to_string())).collect::<Vec<_>>()
+            } else {
+                packages
+            };
+            let output = reputation::run_reputation(&pkgs);
+            print!("{}\n", output);
         }
         Command::Version => {
             println!("{VERSION}");
