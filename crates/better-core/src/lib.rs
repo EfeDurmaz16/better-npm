@@ -139,6 +139,8 @@ pub mod content_publish;
 pub mod cross_project;
 pub mod ai;
 
+pub mod deploy;
+pub mod intelligence;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
