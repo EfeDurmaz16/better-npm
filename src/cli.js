@@ -132,6 +132,9 @@ Commands:
   mono-deps            Analyze shared dependencies across monorepo workspaces
   gen-types            Generate TypeScript stubs for untyped packages
   dep-graph-json       Export dependency graph (JSON/DOT/Mermaid)
+  package-diff <p> v1 v2  Diff two published versions of a package
+  lockfile-fix         Diagnose and repair package-lock.json issues
+  top-deps             Rank dependencies by size, dep-count, or impact
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -637,6 +640,15 @@ export async function runCli(argv) {
         break;
       case "dep-graph-json":
         await (await import("./commands/dep-graph-json.js")).cmdDepGraphJson(rest);
+        break;
+      case "package-diff":
+        await (await import("./commands/package-diff.js")).cmdPackageDiff(rest);
+        break;
+      case "lockfile-fix":
+        await (await import("./commands/lockfile-fix.js")).cmdLockfileFix(rest);
+        break;
+      case "top-deps":
+        await (await import("./commands/top-deps.js")).cmdTopDeps(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
