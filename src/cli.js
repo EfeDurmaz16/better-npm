@@ -120,6 +120,9 @@ Commands:
   stale [pkg...]       Find potentially abandoned/unmaintained packages
   compare <a> <b>      Compare two npm packages side-by-side
   audit-html           Generate a standalone HTML audit report
+  why-size <pkg>       Explain the disk size cost of a package tree
+  preinstall-check     Scan install scripts for suspicious patterns
+  update-interactive   Interactively choose which packages to update
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -589,6 +592,15 @@ export async function runCli(argv) {
         break;
       case "audit-html":
         await (await import("./commands/audit-html.js")).cmdAuditHtml(rest);
+        break;
+      case "why-size":
+        await (await import("./commands/why-size.js")).cmdWhySize(rest);
+        break;
+      case "preinstall-check":
+        await (await import("./commands/preinstall-check.js")).cmdPreinstallCheck(rest);
+        break;
+      case "update-interactive":
+        await (await import("./commands/update-interactive.js")).cmdUpdateInteractive(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
