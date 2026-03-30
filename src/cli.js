@@ -126,6 +126,9 @@ Commands:
   check-updates        Show all available updates grouped by patch/minor/major
   test-coverage        Check test coverage thresholds from existing reports
   env-validate         Validate environment variables against a schema
+  import-check [dir]   Verify all imports/requires resolve correctly
+  pkg-size-history <p> Show unpacked size history across package versions
+  semver-check         Test semver ranges and find matching versions
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -613,6 +616,15 @@ export async function runCli(argv) {
         break;
       case "env-validate":
         await (await import("./commands/env-validate.js")).cmdEnvValidate(rest);
+        break;
+      case "import-check":
+        await (await import("./commands/import-check.js")).cmdImportCheck(rest);
+        break;
+      case "pkg-size-history":
+        await (await import("./commands/pkg-size-history.js")).cmdPkgSizeHistory(rest);
+        break;
+      case "semver-check":
+        await (await import("./commands/semver-check.js")).cmdSemverCheck(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
