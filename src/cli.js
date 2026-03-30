@@ -204,6 +204,9 @@ Commands:
   patch-package-check  Audit patch-package patches for version drift
   registry-health      Check npm registry connectivity and latency
   node-compat          Check Node.js version compatibility across packages
+  cve-check            Check installed packages against CVE databases
+  license-policy       Enforce license policies across dependencies
+  install-time         Estimate npm install time and suggest optimizations
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -925,6 +928,15 @@ export async function runCli(argv) {
         break;
       case "node-compat":
         await (await import("./commands/node-compat.js")).cmdNodeCompat(rest);
+        break;
+      case "cve-check":
+        await (await import("./commands/cve-check.js")).cmdCveCheck(rest);
+        break;
+      case "license-policy":
+        await (await import("./commands/license-policy.js")).cmdLicensePolicy(rest);
+        break;
+      case "install-time":
+        await (await import("./commands/install-time.js")).cmdInstallTime(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";

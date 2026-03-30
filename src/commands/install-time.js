@@ -1,12 +1,12 @@
 /**
- * better install-time — benchmark npm install time
+ * better install-time — estimate npm install time based on dependency count
  *
- * Runs a fresh install benchmark to measure how long npm install
- * takes with and without cache. Reports timing and suggestions.
+ * Analyzes your dependency tree to estimate install times, identifies
+ * the heaviest packages contributing to install time, and suggests
+ * optimizations to speed up CI and developer installs.
  *
  * Usage:
  *   better install-time
- *   better install-time --runs 3
  *   better install-time --json
  */
 import { parseArgs } from "node:util";
@@ -14,36 +14,46 @@ import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
 
-function fmtMs(ms) {
-  if (ms >= 60000) return `${(ms / 60000).toFixed(1)}m`;
-  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${ms}ms`;
+async function getDirSize(dir) {
+  let total = 0;
+  try {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    await Promise.all(entries.map(async (e) => {
+      const full = path.join(dir, e.name);
+      if (e.isSymlink()) return;
+      if (e.isDirectory()) {
+        total += await getDirSize(full);
+      } else if (e.isFile()) {
+        try { total += (await fs.stat(full)).size; } catch {}
+      }
+    }));
+  } catch {}
+  return total;
 }
 
-async function fileExists(p) {
-  try { await fs.access(p); return true; } catch { return false; }
+function fmtBytes(n) {
+  if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)}MB`;
+  if (n >= 1024) return `${(n / 1024).toFixed(1)}KB`;
+  return `${n}B`;
 }
 
-async function runInstall(projectRoot, fresh) {
-  const nmPath = path.join(projectRoot, "node_modules");
+function fmtTime(ms) {
+  if (ms >= 60000) return `${(ms / 60000).toFixed(1)}min`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
 
-  if (fresh) {
-    // Remove node_modules
-    await fs.rm(nmPath, { recursive: true, force: true });
-  }
-
-  const start = Date.now();
-  const result = spawnSync("npm", ["install", "--prefer-offline"], {
-    cwd: projectRoot,
-    stdio: ["pipe", "pipe", "pipe"],
-    encoding: "utf8",
-  });
-  const elapsed = Date.now() - start;
-
-  return { elapsed, success: result.status === 0, stdout: result.stdout };
+// Rough install time model based on package size and count
+// Based on empirical npm install benchmarks
+function estimateInstallTime(totalSizeMB, pkgCount) {
+  // Network: ~5MB/s on typical CI (100Mbps limited by registry)
+  const networkMs = (totalSizeMB / 5) * 1000;
+  // Extraction: ~50MB/s
+  const extractMs = (totalSizeMB / 50) * 1000;
+  // Package resolution overhead: ~10ms per package
+  const resolutionMs = pkgCount * 10;
+  return Math.round(networkMs + extractMs + resolutionMs);
 }
 
 export async function cmdInstallTime(argv) {
@@ -51,10 +61,9 @@ export async function cmdInstallTime(argv) {
   const { values } = parseArgs({
     args: argv,
     options: {
-      json:     { type: "boolean", default: runtime.json === true },
-      help:     { type: "boolean", short: "h", default: false },
-      runs:     { type: "string", default: "1" },
-      "no-fresh": { type: "boolean", default: false },
+      json:  { type: "boolean", default: runtime.json === true },
+      help:  { type: "boolean", short: "h", default: false },
+      top:   { type: "string", default: "10" },
     },
     allowPositionals: false,
     strict: false,
@@ -63,116 +72,132 @@ export async function cmdInstallTime(argv) {
   if (values.help) {
     printText(`Usage: better install-time [options]
 
-Benchmark npm install time for your project.
+Estimate npm install time and find optimization opportunities.
 
 Options:
-  --runs <n>      Number of cached runs to average (default: 1)
-  --no-fresh      Skip the fresh install (node_modules deletion) benchmark
-  --json          Machine-readable output
-  -h, --help      Show this help
+  --top <n>    Show top N heaviest packages (default: 10)
+  --json       Machine-readable output
+  -h, --help   Show this help
 
-WARNING: --fresh mode will delete and reinstall node_modules.
-
-Examples:
-  better install-time
-  better install-time --runs 3
-  better install-time --no-fresh
+Shows:
+  • Estimated install time (fresh + cached)
+  • Top packages by size
+  • node_modules total size and package count
+  • Suggestions for reducing install time
 `);
     return;
   }
 
-  const numRuns = Math.max(1, Math.min(5, parseInt(values.runs) || 1));
-  const doFresh = !values["no-fresh"];
+  const topN = parseInt(values.top, 10) || 10;
 
   const cwd = process.cwd();
   const resolvedRoot = await resolveInstallProjectRoot(cwd);
   const projectRoot = resolvedRoot.root;
+  const nmPath = path.join(projectRoot, "node_modules");
 
-  const pkgJsonPath = path.join(projectRoot, "package.json");
-  if (!await fileExists(pkgJsonPath)) {
-    const msg = "Cannot find package.json";
+  if (!values.json) {
+    printText(`\n\x1b[1mbetter install-time\x1b[0m\n`);
+    process.stderr.write(`\x1b[90mAnalyzing node_modules...\x1b[0m\n`);
+  }
+
+  // Get all top-level packages
+  let pkgDirs = [];
+  try {
+    const entries = await fs.readdir(nmPath, { withFileTypes: true });
+    for (const e of entries) {
+      if (!e.isDirectory() && !e.isSymlink()) continue;
+      if (e.name.startsWith(".")) continue;
+      if (e.name.startsWith("@")) {
+        const scopeDir = path.join(nmPath, e.name);
+        try {
+          const scoped = await fs.readdir(scopeDir, { withFileTypes: true });
+          for (const s of scoped) {
+            if (s.isDirectory() || s.isSymlink()) pkgDirs.push(path.join(scopeDir, s.name));
+          }
+        } catch {}
+      } else {
+        pkgDirs.push(path.join(nmPath, e.name));
+      }
+    }
+  } catch {
+    const msg = "Cannot read node_modules";
     if (values.json) { printJson({ ok: false, error: msg }); } else { printText(`Error: ${msg}`); }
     process.exitCode = 1;
     return;
   }
 
-  const pkgJson = JSON.parse(await fs.readFile(pkgJsonPath, "utf8"));
-  const depCount = Object.keys({ ...pkgJson.dependencies, ...pkgJson.devDependencies }).length;
-
-  if (!values.json) {
-    printText(`\n\x1b[1mbetter install-time\x1b[0m — ${depCount} declared dependencies\n`);
+  // Measure sizes in batches
+  const packages = [];
+  const BATCH = 8;
+  for (let i = 0; i < pkgDirs.length; i += BATCH) {
+    const batch = pkgDirs.slice(i, i + BATCH);
+    await Promise.all(batch.map(async (dir) => {
+      const size = await getDirSize(dir);
+      const pkgName = dir.replace(nmPath + path.sep, "");
+      packages.push({ name: pkgName, size, dir });
+    }));
   }
 
-  const results = { fresh: null, cached: [] };
+  packages.sort((a, b) => b.size - a.size);
 
-  // Fresh install (delete node_modules)
-  if (doFresh) {
-    const hasNm = await fileExists(path.join(projectRoot, "node_modules"));
-    if (!values.json) {
-      process.stderr.write(`\x1b[90mRunning fresh install (this will delete node_modules)…\x1b[0m\n`);
-    }
-    const freshResult = await runInstall(projectRoot, true);
-    results.fresh = freshResult.elapsed;
+  const totalSize = packages.reduce((s, p) => s + p.size, 0);
+  const totalSizeMB = totalSize / 1024 / 1024;
+  const pkgCount = packages.length;
 
-    if (!freshResult.success) {
-      if (!values.json) printText(`\x1b[31m✖ npm install failed\x1b[0m`);
-    }
+  const freshEstimate = estimateInstallTime(totalSizeMB, pkgCount);
+  const cachedEstimate = Math.round(freshEstimate * 0.3); // cache reduces ~70% of network time
+
+  // Check for optimizations
+  const suggestions = [];
+  let pkgJson = {};
+  try { pkgJson = JSON.parse(await fs.readFile(path.join(projectRoot, "package.json"), "utf8")); } catch {}
+
+  if (!pkgJson.scripts?.["ci"] && pkgJson.packageManager?.startsWith("npm")) {
+    suggestions.push("Use `npm ci` instead of `npm install` in CI for faster, reproducible installs");
+  }
+  if (pkgJson.devDependencies && Object.keys(pkgJson.devDependencies).length > 0) {
+    suggestions.push("Use `npm ci --omit=dev` in production deployments");
+  }
+  if (totalSizeMB > 500) {
+    suggestions.push(`node_modules is ${fmtBytes(totalSize)} — consider reviewing large packages`);
   }
 
-  // Cached installs
-  for (let i = 0; i < numRuns; i++) {
-    if (!values.json) {
-      process.stderr.write(`\x1b[90mRunning cached install ${i + 1}/${numRuns}…\x1b[0m\n`);
-    }
-    const r = await runInstall(projectRoot, false);
-    results.cached.push(r.elapsed);
-  }
-
-  const avgCached = results.cached.length
-    ? Math.round(results.cached.reduce((a, b) => a + b, 0) / results.cached.length)
-    : null;
+  const top = packages.slice(0, topN);
 
   if (values.json) {
     printJson({
       ok: true,
       kind: "better.install-time",
-      freshInstallMs: results.fresh,
-      cachedInstallMs: avgCached,
-      cachedRuns: results.cached,
-      depCount,
+      packageCount: pkgCount,
+      totalSize,
+      freshEstimateMs: freshEstimate,
+      cachedEstimateMs: cachedEstimate,
+      topPackages: top.map(p => ({ name: p.name, size: p.size })),
+      suggestions,
     });
     return;
   }
 
-  if (results.fresh !== null) {
-    printText(`  \x1b[1mFresh install:\x1b[0m ${fmtMs(results.fresh)}`);
-  }
-
-  if (avgCached !== null) {
-    printText(`  \x1b[1mCached install (avg):\x1b[0m ${fmtMs(avgCached)}${numRuns > 1 ? ` (${numRuns} runs)` : ""}`);
-  }
-
-  if (results.fresh !== null && avgCached !== null) {
-    const savings = results.fresh - avgCached;
-    if (savings > 0) {
-      printText(`  \x1b[90mCache saves: ${fmtMs(savings)} (${Math.round(savings / results.fresh * 100)}%)\x1b[0m`);
-    }
-  }
-
+  printText(`  Packages: ${pkgCount}  |  Total size: ${fmtBytes(totalSize)}\n`);
+  printText(`  \x1b[1mEstimated install time:\x1b[0m`);
+  printText(`    Fresh (no cache):  \x1b[33m${fmtTime(freshEstimate)}\x1b[0m`);
+  printText(`    With npm cache:    \x1b[32m${fmtTime(cachedEstimate)}\x1b[0m`);
   printText("");
 
-  // Suggestions
-  const fresh = results.fresh;
-  if (fresh) {
-    if (fresh > 120000) {
-      printText(`\x1b[33m⚠ Fresh install is very slow (>${fmtMs(fresh)}).\x1b[0m`);
-      printText(`\x1b[90m  Consider: npm ci in CI, pnpm, or reducing dependency count\x1b[0m`);
-    } else if (fresh > 60000) {
-      printText(`\x1b[33m⚠ Fresh install is slow (${fmtMs(fresh)}). Consider caching in CI.\x1b[0m`);
-    } else {
-      printText(`\x1b[32m✔ Install time looks reasonable.\x1b[0m`);
-    }
+  printText(`\x1b[1mTop ${Math.min(topN, top.length)} packages by size:\x1b[0m`);
+  for (const p of top) {
+    const pct = ((p.size / totalSize) * 100).toFixed(1);
+    const barLen = Math.round((p.size / (packages[0]?.size || 1)) * 20);
+    const bar = "█".repeat(barLen) + "░".repeat(20 - barLen);
+    const color = p.size > 50 * 1024 * 1024 ? "\x1b[31m" : p.size > 10 * 1024 * 1024 ? "\x1b[33m" : "\x1b[90m";
+    printText(`  ${color}${bar}\x1b[0m  ${p.name.padEnd(30)}  ${fmtBytes(p.size).padStart(8)}  \x1b[90m${pct}%\x1b[0m`);
   }
 
+  if (suggestions.length > 0) {
+    printText(`\n\x1b[1mOptimization suggestions:\x1b[0m`);
+    for (const s of suggestions) {
+      printText(`  \x1b[36m→\x1b[0m  ${s}`);
+    }
+  }
   printText("");
 }
