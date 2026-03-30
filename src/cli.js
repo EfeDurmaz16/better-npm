@@ -249,6 +249,9 @@ Commands:
   package-size-breakdown <pkg>  Show size breakdown of a package's files
   changelog-gen        Generate CHANGELOG entry from git log
   peer-conflicts       Detect peer dependency version conflicts
+  config-audit         Audit npm configuration for issues
+  workspace-deps       Visualize workspace inter-package dependencies
+  install-order        Show topological install order of dependencies
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -1105,6 +1108,15 @@ export async function runCli(argv) {
         break;
       case "peer-conflicts":
         await (await import("./commands/peer-conflicts.js")).cmdPeerConflicts(rest);
+        break;
+      case "config-audit":
+        await (await import("./commands/config-audit.js")).cmdConfigAudit(rest);
+        break;
+      case "workspace-deps":
+        await (await import("./commands/workspace-deps.js")).cmdWorkspaceDeps(rest);
+        break;
+      case "install-order":
+        await (await import("./commands/install-order.js")).cmdInstallOrder(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";

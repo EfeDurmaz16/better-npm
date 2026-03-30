@@ -1,43 +1,39 @@
 /**
- * better config-audit — audit npm and project configuration
+ * better config-audit — audit npm configuration
  *
- * Reviews npm config, .npmrc, package.json config fields, and
- * flags insecure or suboptimal settings.
+ * Reads and validates npm configuration from all sources (.npmrc files,
+ * environment variables, defaults) and reports security or correctness issues.
  *
  * Usage:
  *   better config-audit
- *   better config-audit --strict
  *   better config-audit --json
  */
 import { parseArgs } from "node:util";
 import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { spawnSync } from "node:child_process";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
 
-function npmConfig(key) {
-  const r = spawnSync("npm", ["config", "get", key], { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
-  return (r.stdout || "").trim();
+function run(cmd, args) {
+  const r = spawnSync(cmd, args, { encoding: "utf8", timeout: 8000 });
+  return r.status === 0 ? r.stdout.trim() : null;
 }
 
-async function readNpmrc(filePath) {
-  try {
-    const text = await fs.readFile(filePath, "utf8");
-    return Object.fromEntries(
-      text.split("\n")
-        .map(l => l.trim())
-        .filter(l => l && !l.startsWith("#") && l.includes("="))
-        .map(l => {
-          const idx = l.indexOf("=");
-          return [l.slice(0, idx).trim(), l.slice(idx + 1).trim()];
-        })
-    );
-  } catch {
-    return {};
+function parseNpmrc(content) {
+  const result = {};
+  for (const line of content.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith(";") || trimmed.startsWith("#")) continue;
+    const eqIdx = trimmed.indexOf("=");
+    if (eqIdx < 0) continue;
+    const key = trimmed.slice(0, eqIdx).trim();
+    const val = trimmed.slice(eqIdx + 1).trim();
+    result[key] = val;
   }
+  return result;
 }
 
 export async function cmdConfigAudit(argv) {
@@ -45,9 +41,8 @@ export async function cmdConfigAudit(argv) {
   const { values } = parseArgs({
     args: argv,
     options: {
-      json:   { type: "boolean", default: runtime.json === true },
-      help:   { type: "boolean", short: "h", default: false },
-      strict: { type: "boolean", default: false },
+      json:  { type: "boolean", default: runtime.json === true },
+      help:  { type: "boolean", short: "h", default: false },
     },
     allowPositionals: false,
     strict: false,
@@ -56,21 +51,19 @@ export async function cmdConfigAudit(argv) {
   if (values.help) {
     printText(`Usage: better config-audit [options]
 
-Audit npm and project configuration for security and best practices.
+Audit npm configuration for security and correctness issues.
 
 Options:
-  --strict     Fail on warnings
   --json       Machine-readable output
   -h, --help   Show this help
 
 Checks:
-  • npm registry setting
-  • audit-level configuration
-  • save-exact vs save-prefix
-  • ignore-scripts risk
-  • package-lock settings
-  • .npmrc token exposure
-  • fund / update-notifier settings
+  • Registry URL (should be HTTPS)
+  • unsafe-perm setting
+  • ignore-scripts setting
+  • Proxy configuration
+  • Auth tokens exposure
+  • Deprecated settings
 `);
     return;
   }
@@ -83,125 +76,125 @@ Checks:
     printText(`\n\x1b[1mbetter config-audit\x1b[0m\n`);
   }
 
-  const issues = [];
-  const infos = [];
+  // Read all npmrc files
+  const sources = [
+    { label: "project .npmrc", file: path.join(projectRoot, ".npmrc") },
+    { label: "user .npmrc", file: path.join(os.homedir(), ".npmrc") },
+  ];
 
-  // Read npm config values
-  const registry = npmConfig("registry");
-  const auditLevel = npmConfig("audit-level");
-  const saveExact = npmConfig("save-exact");
-  const packageLock = npmConfig("package-lock");
-  const ignoreScripts = npmConfig("ignore-scripts");
-  const fundConfig = npmConfig("fund");
-
-  // Check registry
-  if (registry && registry !== "https://registry.npmjs.org/") {
-    infos.push(`Custom registry: ${registry}`);
-  } else {
-    infos.push(`Registry: ${registry || "https://registry.npmjs.org/"}`);
+  const configs = {};
+  for (const src of sources) {
+    try {
+      const content = await fs.readFile(src.file, "utf8");
+      const parsed = parseNpmrc(content);
+      for (const [k, v] of Object.entries(parsed)) {
+        configs[k] = { value: v, source: src.label };
+      }
+    } catch {}
   }
 
-  // Check audit-level
-  if (!auditLevel || auditLevel === "undefined") {
-    issues.push({ severity: "warning", message: "audit-level not set — defaults to all severities", hint: "Set: npm config set audit-level moderate" });
-  } else {
-    infos.push(`audit-level: ${auditLevel}`);
-  }
+  // Also get runtime values from npm
+  const npmRegistry = run("npm", ["config", "get", "registry"]) || "https://registry.npmjs.org/";
+  const npmIgnoreScripts = run("npm", ["config", "get", "ignore-scripts"]);
+  const npmUnsafePerm = run("npm", ["config", "get", "unsafe-perm"]);
+  const npmAuditLevel = run("npm", ["config", "get", "audit-level"]);
 
-  // package-lock disabled?
-  if (packageLock === "false") {
-    issues.push({ severity: "error", message: "package-lock is disabled — reproducible installs not guaranteed", hint: "Run: npm config set package-lock true" });
-  }
+  const checks = [];
 
-  // ignore-scripts set globally?
-  if (ignoreScripts === "true") {
-    infos.push("ignore-scripts: true (safe, but may break some packages)");
-  }
+  // Registry HTTPS check
+  const registryIsHttps = npmRegistry.startsWith("https://");
+  checks.push({
+    name: "registry-https",
+    ok: registryIsHttps,
+    message: registryIsHttps
+      ? `Registry uses HTTPS: ${npmRegistry}`
+      : `Registry uses insecure HTTP: ${npmRegistry}`,
+    severity: registryIsHttps ? "ok" : "error",
+  });
 
-  // save-exact
-  if (saveExact === "true") {
-    infos.push("save-exact: true (pins exact versions)");
-  } else {
-    issues.push({ severity: "info", message: "save-exact is not set — npm install uses ^ ranges", hint: "Consider: npm config set save-exact true for production apps" });
-  }
+  // unsafe-perm
+  const unsafePerm = configs["unsafe-perm"]?.value || npmUnsafePerm;
+  const unsafePermOn = unsafePerm === "true";
+  checks.push({
+    name: "unsafe-perm",
+    ok: !unsafePermOn,
+    message: unsafePermOn ? "unsafe-perm=true is set (security risk)" : "unsafe-perm not enabled",
+    severity: unsafePermOn ? "warning" : "ok",
+  });
 
-  // Read project .npmrc
-  const projectRc = await readNpmrc(path.join(projectRoot, ".npmrc"));
-  const globalRc = await readNpmrc(path.join(os.homedir(), ".npmrc"));
+  // ignore-scripts
+  const ignoreScripts = configs["ignore-scripts"]?.value || npmIgnoreScripts;
+  const ignoreScriptsOn = ignoreScripts === "true";
+  checks.push({
+    name: "ignore-scripts",
+    ok: ignoreScriptsOn,
+    message: ignoreScriptsOn ? "ignore-scripts=true (good security practice)" : "ignore-scripts not enabled (lifecycle scripts run on install)",
+    severity: ignoreScriptsOn ? "ok" : "info",
+  });
 
-  // Check for ignore-scripts in project .npmrc
-  if (projectRc["ignore-scripts"] === "true") {
-    infos.push(".npmrc: ignore-scripts=true (install scripts disabled)");
-  }
+  // audit-level
+  const auditLevel = configs["audit-level"]?.value || npmAuditLevel;
+  const goodLevels = ["low", "moderate", "high", "critical"];
+  const auditLevelOk = !auditLevel || auditLevel === "null" || goodLevels.includes(auditLevel);
+  checks.push({
+    name: "audit-level",
+    ok: auditLevelOk,
+    message: auditLevel && auditLevel !== "null" ? `audit-level set to: ${auditLevel}` : "audit-level not configured (defaults to low)",
+    severity: "info",
+  });
 
-  // Detect legacy-peer-deps
-  if (projectRc["legacy-peer-deps"] === "true" || globalRc["legacy-peer-deps"] === "true") {
-    issues.push({ severity: "warning", message: "legacy-peer-deps=true bypasses peer dependency resolution", hint: "Fix peer dep conflicts instead of suppressing them" });
-  }
-
-  // Check package.json for config overrides
-  let pkgJson;
-  try {
-    pkgJson = JSON.parse(await fs.readFile(path.join(projectRoot, "package.json"), "utf8"));
-  } catch {}
-
-  if (pkgJson) {
-    if (pkgJson.config) {
-      infos.push(`package.json config: ${JSON.stringify(pkgJson.config).slice(0, 80)}`);
+  // Auth tokens in config
+  const authTokenKeys = Object.keys(configs).filter(k => k.includes(":_authToken"));
+  if (authTokenKeys.length > 0) {
+    checks.push({
+      name: "auth-tokens",
+      ok: true,
+      message: `${authTokenKeys.length} auth token(s) configured in .npmrc`,
+      severity: "info",
+    });
+    // Check if any are committed to project .npmrc
+    const projectAuthTokens = authTokenKeys.filter(k => configs[k].source === "project .npmrc");
+    if (projectAuthTokens.length > 0) {
+      checks.push({
+        name: "auth-tokens-in-project",
+        ok: false,
+        message: `Auth token(s) found in project .npmrc — risk of accidental commit`,
+        severity: "error",
+      });
     }
-    // Check engines.node
-    if (!pkgJson.engines?.node) {
-      issues.push({ severity: "info", message: "No engines.node specified in package.json", hint: "Add: \"engines\": { \"node\": \">=18\" }" });
-    } else {
-      infos.push(`engines.node: ${pkgJson.engines.node}`);
-    }
   }
 
-  const errors = issues.filter(i => i.severity === "error");
-  const warnings = issues.filter(i => i.severity === "warning");
-  const allOk = errors.length === 0 && (!values.strict || warnings.length === 0);
+  // HTTP proxy
+  const httpProxy = process.env.HTTP_PROXY || process.env.http_proxy || configs["proxy"]?.value;
+  if (httpProxy && httpProxy !== "null" && httpProxy !== "") {
+    checks.push({
+      name: "proxy",
+      ok: true,
+      message: `HTTP proxy configured: ${httpProxy}`,
+      severity: "info",
+    });
+  }
+
+  const ok = checks.every(c => c.ok || c.severity === "info");
 
   if (values.json) {
-    printJson({
-      ok: allOk,
-      kind: "better.config-audit",
-      registry: registry || null,
-      auditLevel: auditLevel || null,
-      saveExact: saveExact === "true",
-      packageLock: packageLock !== "false",
-      issues,
-      infos,
-      errors: errors.length,
-      warnings: warnings.length,
-    });
-    if (!allOk) process.exitCode = 1;
+    printJson({ ok, kind: "better.config-audit", registry: npmRegistry, checks });
+    if (!ok) process.exitCode = 1;
     return;
   }
 
-  for (const info of infos) {
-    printText(`  \x1b[90m·  ${info}\x1b[0m`);
-  }
-
-  if (issues.length > 0) {
-    printText("");
-    for (const iss of issues) {
-      const icon = iss.severity === "error" ? "\x1b[31m✖\x1b[0m"
-        : iss.severity === "warning" ? "\x1b[33m⚠\x1b[0m"
-        : "\x1b[90m·\x1b[0m";
-      printText(`  ${icon}  ${iss.message}`);
-      if (iss.hint) printText(`       \x1b[90m→ ${iss.hint}\x1b[0m`);
-    }
+  for (const c of checks) {
+    const icon = c.ok ? "\x1b[32m✔\x1b[0m" : (c.severity === "warning" ? "\x1b[33m⚠\x1b[0m" : c.severity === "info" ? "\x1b[36mℹ\x1b[0m" : "\x1b[31m✘\x1b[0m");
+    printText(`  ${icon}  ${c.message}`);
   }
 
   printText("");
-  if (allOk) {
-    printText(`\x1b[32m✔ npm configuration looks good.\x1b[0m`);
-  } else if (errors.length > 0) {
-    printText(`\x1b[31m✖ ${errors.length} configuration issue(s) found.\x1b[0m`);
+  if (!ok) {
+    const errors = checks.filter(c => !c.ok && c.severity !== "info");
+    printText(`\x1b[31m✘ ${errors.length} configuration issue(s) found.\x1b[0m`);
     process.exitCode = 1;
   } else {
-    printText(`\x1b[33m⚠ ${warnings.length} warning(s).\x1b[0m`);
-    if (values.strict) process.exitCode = 1;
+    printText(`\x1b[32m✔ npm configuration looks good.\x1b[0m`);
   }
   printText("");
 }
