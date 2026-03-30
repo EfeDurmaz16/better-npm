@@ -243,6 +243,9 @@ Commands:
   circular-deps        Detect circular dependency chains in node_modules
   package-json-diff    Diff package.json between two package versions
   health-dashboard     Show overall project health score and dashboard
+  exports-check        Validate "exports" field paths in package.json
+  bin-check            Validate bin entries exist and are executable
+  files-check          Audit "files" field and publish surface
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -1081,6 +1084,15 @@ export async function runCli(argv) {
         break;
       case "health-dashboard":
         await (await import("./commands/health-dashboard.js")).cmdHealthDashboard(rest);
+        break;
+      case "exports-check":
+        await (await import("./commands/exports-check.js")).cmdExportsCheck(rest);
+        break;
+      case "bin-check":
+        await (await import("./commands/bin-check.js")).cmdBinCheck(rest);
+        break;
+      case "files-check":
+        await (await import("./commands/files-check.js")).cmdFilesCheck(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";

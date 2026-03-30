@@ -1,8 +1,8 @@
 /**
- * better exports-check — validate package.json exports field
+ * better exports-check — validate package exports field
  *
- * Checks that all paths listed in the "exports" field exist and
- * are valid (files present, correct format, etc.)
+ * Checks that all paths declared in the "exports" field of package.json
+ * actually exist on disk, and warns about missing or broken export entries.
  *
  * Usage:
  *   better exports-check
@@ -15,35 +15,25 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
 
-function collectPaths(exports, base) {
-  const paths = [];
-  if (!exports) return paths;
+async function fileExists(p) {
+  try { await fs.access(p); return true; } catch { return false; }
+}
+
+function collectExportPaths(exports, results = [], prefix = "") {
   if (typeof exports === "string") {
-    paths.push({ condition: ".", path: exports });
-    return paths;
-  }
-  if (typeof exports === "object") {
-    for (const [key, value] of Object.entries(exports)) {
-      if (key.startsWith(".") || key === ".") {
-        // Subpath export
-        if (typeof value === "string") {
-          paths.push({ condition: key, path: value });
-        } else if (typeof value === "object") {
-          for (const [cond, p] of Object.entries(value)) {
-            if (typeof p === "string") {
-              paths.push({ condition: `${key}[${cond}]`, path: p });
-            }
-          }
-        }
+    results.push({ condition: prefix || ".", path: exports });
+  } else if (Array.isArray(exports)) {
+    for (const e of exports) collectExportPaths(e, results, prefix);
+  } else if (exports && typeof exports === "object") {
+    for (const [key, val] of Object.entries(exports)) {
+      if (key.startsWith(".")) {
+        collectExportPaths(val, results, key);
       } else {
-        // Condition export
-        if (typeof value === "string") {
-          paths.push({ condition: key, path: value });
-        }
+        collectExportPaths(val, results, prefix ? `${prefix}[${key}]` : key);
       }
     }
   }
-  return paths;
+  return results;
 }
 
 export async function cmdExportsCheck(argv) {
@@ -51,8 +41,8 @@ export async function cmdExportsCheck(argv) {
   const { values } = parseArgs({
     args: argv,
     options: {
-      json: { type: "boolean", default: runtime.json === true },
-      help: { type: "boolean", short: "h", default: false },
+      json:  { type: "boolean", default: runtime.json === true },
+      help:  { type: "boolean", short: "h", default: false },
     },
     allowPositionals: false,
     strict: false,
@@ -62,14 +52,15 @@ export async function cmdExportsCheck(argv) {
     printText(`Usage: better exports-check [options]
 
 Validate the "exports" field in package.json.
-Checks that all exported paths exist as files.
 
 Options:
   --json       Machine-readable output
   -h, --help   Show this help
 
-Examples:
-  better exports-check
+Checks:
+  • All export paths point to existing files
+  • Main entry point exists
+  • Types/typings entry exists (if declared)
 `);
     return;
   }
@@ -78,7 +69,11 @@ Examples:
   const resolvedRoot = await resolveInstallProjectRoot(cwd);
   const projectRoot = resolvedRoot.root;
 
-  let pkgJson;
+  if (!values.json) {
+    printText(`\n\x1b[1mbetter exports-check\x1b[0m\n`);
+  }
+
+  let pkgJson = {};
   try {
     pkgJson = JSON.parse(await fs.readFile(path.join(projectRoot, "package.json"), "utf8"));
   } catch {
@@ -88,117 +83,65 @@ Examples:
     return;
   }
 
-  if (!pkgJson.exports && !pkgJson.main && !pkgJson.module) {
-    if (values.json) {
-      printJson({ ok: true, kind: "better.exports-check", message: "No exports/main/module field found" });
-    } else {
-      printText(`\x1b[90mNo exports, main, or module field in package.json.\x1b[0m`);
-    }
-    return;
-  }
-
   const checks = [];
 
-  // Check exports field
-  if (pkgJson.exports) {
-    const exportPaths = collectPaths(pkgJson.exports, projectRoot);
-    for (const { condition, path: relPath } of exportPaths) {
-      if (!relPath || relPath.startsWith("node_modules/")) continue;
-      const fullPath = path.join(projectRoot, relPath);
-      let exists = false;
-      let error = null;
-      try {
-        const stat = await fs.stat(fullPath);
-        exists = stat.isFile();
-        if (!exists) error = "Path exists but is not a file";
-      } catch {
-        error = "File not found";
-      }
-      checks.push({ field: "exports", condition, path: relPath, exists, error });
-    }
-  }
-
-  // Check main field
-  if (pkgJson.main) {
-    const mainPath = path.join(projectRoot, pkgJson.main);
-    let exists = false;
-    let error = null;
-    try {
-      const stat = await fs.stat(mainPath);
-      exists = stat.isFile();
-      if (!exists) error = "Path exists but is not a file";
-    } catch {
-      // Try with .js extension
-      try {
-        await fs.stat(mainPath + ".js");
-        exists = true;
-      } catch {
-        error = "File not found";
-      }
-    }
-    checks.push({ field: "main", condition: "main", path: pkgJson.main, exists, error });
-  }
+  // Check main entry
+  const mainFile = pkgJson.main || "index.js";
+  const mainExists = await fileExists(path.join(projectRoot, mainFile));
+  checks.push({ field: "main", path: mainFile, exists: mainExists, ok: mainExists });
 
   // Check module field
   if (pkgJson.module) {
-    const modulePath = path.join(projectRoot, pkgJson.module);
-    let exists = false;
-    let error = null;
-    try {
-      const stat = await fs.stat(modulePath);
-      exists = stat.isFile();
-      if (!exists) error = "Path exists but is not a file";
-    } catch {
-      error = "File not found";
-    }
-    checks.push({ field: "module", condition: "module", path: pkgJson.module, exists, error });
+    const exists = await fileExists(path.join(projectRoot, pkgJson.module));
+    checks.push({ field: "module", path: pkgJson.module, exists, ok: exists });
   }
 
-  // Check types field
-  if (pkgJson.types || pkgJson.typings) {
-    const typesPath = path.join(projectRoot, pkgJson.types || pkgJson.typings);
-    let exists = false;
-    let error = null;
-    try {
-      const stat = await fs.stat(typesPath);
-      exists = stat.isFile();
-      if (!exists) error = "Path exists but is not a file";
-    } catch {
-      error = "File not found";
-    }
-    checks.push({ field: "types", condition: "types", path: pkgJson.types || pkgJson.typings, exists, error });
+  // Check types/typings
+  const typingsFile = pkgJson.types || pkgJson.typings;
+  if (typingsFile) {
+    const exists = await fileExists(path.join(projectRoot, typingsFile));
+    checks.push({ field: "types", path: typingsFile, exists, ok: exists });
   }
 
-  const failing = checks.filter(c => !c.exists);
-  const passing = checks.filter(c => c.exists);
-  const allOk = failing.length === 0;
+  // Check exports field
+  const exportPaths = pkgJson.exports ? collectExportPaths(pkgJson.exports) : [];
+  for (const ep of exportPaths) {
+    if (!ep.path || !ep.path.startsWith(".")) continue;
+    const fullPath = path.join(projectRoot, ep.path);
+    const exists = await fileExists(fullPath);
+    checks.push({ field: `exports["${ep.condition}"]`, path: ep.path, exists, ok: exists });
+  }
 
-  if (values.json) {
-    printJson({
-      ok: allOk,
-      kind: "better.exports-check",
-      checks,
-      passing: passing.length,
-      failing: failing.length,
-    });
-    if (!allOk) process.exitCode = 1;
+  if (checks.length === 0) {
+    if (values.json) {
+      printJson({ ok: true, kind: "better.exports-check", checks: [] });
+    } else {
+      printText(`  \x1b[90mNo exports or entry fields found in package.json.\x1b[0m\n`);
+    }
     return;
   }
 
-  printText(`\n\x1b[1mbetter exports-check\x1b[0m — ${checks.length} path(s) checked\n`);
+  const ok = checks.every(c => c.ok);
+
+  if (values.json) {
+    printJson({ ok, kind: "better.exports-check", package: pkgJson.name, checks });
+    if (!ok) process.exitCode = 1;
+    return;
+  }
 
   for (const c of checks) {
-    const icon = c.exists ? "\x1b[32m✔\x1b[0m" : "\x1b[31m✖\x1b[0m";
-    const label = `${c.field}${c.condition !== c.field ? `[${c.condition}]` : ""}`;
-    const err = c.error ? ` \x1b[31m(${c.error})\x1b[0m` : "";
-    printText(`  ${icon}  ${label.padEnd(30)} ${c.path}${err}`);
+    const icon = c.ok ? "\x1b[32m✔\x1b[0m" : "\x1b[31m✘\x1b[0m";
+    const status = c.ok ? "\x1b[90mexists\x1b[0m" : "\x1b[31mmissing\x1b[0m";
+    printText(`  ${icon}  \x1b[1m${c.field}\x1b[0m  →  ${c.path}  ${status}`);
   }
 
-  if (allOk) {
-    printText(`\n\x1b[32m✔ All exports validated.\x1b[0m`);
-  } else {
-    printText(`\n\x1b[31m✖ ${failing.length} path(s) missing.\x1b[0m`);
-    printText(`\x1b[90mRun 'better build' or check your build output.\x1b[0m`);
+  printText("");
+  if (!ok) {
+    const missing = checks.filter(c => !c.ok);
+    printText(`\x1b[31m✘ ${missing.length} export path(s) are missing. Update your package.json exports field.\x1b[0m`);
     process.exitCode = 1;
+  } else {
+    printText(`\x1b[32m✔ All ${checks.length} export paths exist.\x1b[0m`);
   }
+  printText("");
 }
