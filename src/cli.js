@@ -162,6 +162,9 @@ Commands:
   engines-check        Validate Node.js/npm engine requirements of packages
   changelog-view <p>   View a package's changelog from npm registry or GitHub
   pkg-readme <p>       View a package's README from the npm registry
+  shrinkwrap-check     Validate npm-shrinkwrap.json integrity and consistency
+  bundle-analyzer      Analyze JavaScript/CSS bundle sizes in build output
+  npm-token            Audit npm authentication tokens in .npmrc files
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -757,6 +760,15 @@ export async function runCli(argv) {
         break;
       case "pkg-readme":
         await (await import("./commands/pkg-readme.js")).cmdPkgReadme(rest);
+        break;
+      case "shrinkwrap-check":
+        await (await import("./commands/shrinkwrap-check.js")).cmdShrinkwrapCheck(rest);
+        break;
+      case "bundle-analyzer":
+        await (await import("./commands/bundle-analyzer.js")).cmdBundleAnalyzer(rest);
+        break;
+      case "npm-token":
+        await (await import("./commands/npm-token.js")).cmdNpmToken(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
