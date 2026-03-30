@@ -1,0 +1,20 @@
+# docker/Dockerfile.slim
+# Slim better image — npm only, minimal footprint
+FROM node:20-alpine
+
+RUN apk add --no-cache git
+
+WORKDIR /app
+COPY package.json package-lock.json* ./
+COPY src/ src/
+COPY bin/ bin/
+
+RUN npm install --production --ignore-scripts
+
+ENV BETTER_DOCKER=1
+ENV BETTER_SLIM=1
+ENTRYPOINT ["node", "src/cli.js"]
+CMD ["--help"]
+
+LABEL org.opencontainers.image.title="better-slim"
+LABEL org.opencontainers.image.description="better package manager (npm-only slim variant)"
