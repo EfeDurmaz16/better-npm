@@ -147,6 +147,9 @@ Commands:
   pkg-json-lint        Lint package.json for best practices and issues
   dep-changes <pkg>    Show what changed in a dependency's latest release
   health-score         Compute overall project dependency health score (0-100)
+  contributors-check   Check packages for bus factor and publisher risks
+  license-report       Generate full license compliance report (MD/CSV/HTML)
+  scan-secrets         Scan source files for accidentally committed secrets
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -697,6 +700,15 @@ export async function runCli(argv) {
         break;
       case "health-score":
         await (await import("./commands/health-score.js")).cmdHealthScore(rest);
+        break;
+      case "contributors-check":
+        await (await import("./commands/contributors-check.js")).cmdContributorsCheck(rest);
+        break;
+      case "license-report":
+        await (await import("./commands/license-report.js")).cmdLicenseReport(rest);
+        break;
+      case "scan-secrets":
+        await (await import("./commands/scan-secrets.js")).cmdScanSecrets(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
