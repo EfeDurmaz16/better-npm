@@ -171,6 +171,8 @@ Commands:
   pkg-versions <p>     List all published versions of an npm package with dates
   config-audit         Audit npm and project configuration for best practices
   node-modules-info    Show detailed statistics about the node_modules directory
+  lockfile-merge       Resolve merge conflicts in package-lock.json
+  pkg-downloads <p>    Show npm package download statistics (daily/weekly/monthly)
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -793,6 +795,12 @@ export async function runCli(argv) {
         break;
       case "node-modules-info":
         await (await import("./commands/node-modules-info.js")).cmdNodeModulesInfo(rest);
+        break;
+      case "lockfile-merge":
+        await (await import("./commands/lockfile-merge.js")).cmdLockfileMerge(rest);
+        break;
+      case "pkg-downloads":
+        await (await import("./commands/pkg-downloads.js")).cmdPkgDownloads(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
