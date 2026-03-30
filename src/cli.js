@@ -112,6 +112,9 @@ Commands:
   fund                 Show funding information for installed packages
   provenance           Check package provenance attestations
   interactive          Interactive TUI for dependency management
+  diff-deps <ref>      Compare dependencies between git refs
+  explain <pkg>        Explain what a package does
+  fix-versions         Normalize version range formats
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -557,6 +560,15 @@ export async function runCli(argv) {
         break;
       case "interactive":
         await (await import("./commands/interactive.js")).cmdInteractive(rest);
+        break;
+      case "diff-deps":
+        await (await import("./commands/diff-deps.js")).cmdDiffDeps(rest);
+        break;
+      case "explain":
+        await (await import("./commands/explain.js")).cmdExplain(rest);
+        break;
+      case "fix-versions":
+        await (await import("./commands/fix-versions.js")).cmdFixVersions(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
