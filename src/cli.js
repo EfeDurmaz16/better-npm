@@ -76,6 +76,7 @@ Commands:
   contributors         Analyze package maintainers and bus factor risk
   snapshot <subcmd>    Lockfile snapshot management (save/restore/diff)
   score                Overall project health score (0-100, grade A-F)
+  types-check          Check TypeScript type definitions availability
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -413,6 +414,9 @@ export async function runCli(argv) {
         break;
       case "score":
         await (await import("./commands/score.js")).cmdScore(rest);
+        break;
+      case "types-check":
+        await (await import("./commands/types-check.js")).cmdTypesCheck(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
