@@ -85,6 +85,9 @@ Commands:
   deps-check           Audit dependency placement (prod vs dev)
   node-version         Check and manage Node.js version requirements
   pkg-info <pkg>       Detailed package information from npm registry
+  circular             Detect circular imports in source code
+  pack-size            Analyze what npm pack will include and sizes
+  dep-age              Show the age of installed dependency versions
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -449,6 +452,15 @@ export async function runCli(argv) {
         break;
       case "pkg-info":
         await (await import("./commands/pkg-info.js")).cmdPkgInfo(rest);
+        break;
+      case "circular":
+        await (await import("./commands/circular.js")).cmdCircular(rest);
+        break;
+      case "pack-size":
+        await (await import("./commands/pack-size.js")).cmdPackSize(rest);
+        break;
+      case "dep-age":
+        await (await import("./commands/dep-age.js")).cmdDepAge(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
