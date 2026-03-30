@@ -265,6 +265,12 @@ export async function runCli(argv) {
       case "pr-bot":
         await (await import("./commands/pr-bot.js")).cmdPrBot(rest);
         break;
+      case "ai":
+        await (await import("./commands/ai-advisor.js")).cmdAi(rest);
+        break;
+      case "semver":
+        await (await import("./commands/semantic-version.js")).cmdSemver(rest);
+        break;
       case "completions": {
         const shell = rest[0] || "bash";
         const { spawnSync } = await import("node:child_process");
