@@ -103,6 +103,9 @@ Commands:
   hooks                Manage git hooks (husky/lefthook detection)
   duplicates           Find duplicate packages with version conflicts
   missing              Find imports that are not in package.json
+  find <package>       Reverse dependency lookup — who depends on X
+  prune                Remove extraneous packages from node_modules
+  summarize            Generate human-readable project summary
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -521,6 +524,15 @@ export async function runCli(argv) {
         break;
       case "missing":
         await (await import("./commands/missing.js")).cmdMissing(rest);
+        break;
+      case "find":
+        await (await import("./commands/find.js")).cmdFind(rest);
+        break;
+      case "prune":
+        await (await import("./commands/prune.js")).cmdPrune(rest);
+        break;
+      case "summarize":
+        await (await import("./commands/summarize.js")).cmdSummarize(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
