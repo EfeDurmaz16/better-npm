@@ -173,6 +173,9 @@ Commands:
   node-modules-info    Show detailed statistics about the node_modules directory
   lockfile-merge       Resolve merge conflicts in package-lock.json
   pkg-downloads <p>    Show npm package download statistics (daily/weekly/monthly)
+  perf-budget          Enforce performance budgets for dependency footprint
+  alias <subcmd>       Manage custom command aliases (add/list/remove/run)
+  peer-check           Comprehensive peer dependency conflict analysis
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -801,6 +804,15 @@ export async function runCli(argv) {
         break;
       case "pkg-downloads":
         await (await import("./commands/pkg-downloads.js")).cmdPkgDownloads(rest);
+        break;
+      case "perf-budget":
+        await (await import("./commands/perf-budget.js")).cmdPerfBudget(rest);
+        break;
+      case "alias":
+        await (await import("./commands/alias.js")).cmdAlias(rest);
+        break;
+      case "peer-check":
+        await (await import("./commands/peer-check.js")).cmdPeerCheck(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
