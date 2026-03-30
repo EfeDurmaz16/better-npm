@@ -246,6 +246,9 @@ Commands:
   exports-check        Validate "exports" field paths in package.json
   bin-check            Validate bin entries exist and are executable
   files-check          Audit "files" field and publish surface
+  package-size-breakdown <pkg>  Show size breakdown of a package's files
+  changelog-gen        Generate CHANGELOG entry from git log
+  peer-conflicts       Detect peer dependency version conflicts
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -1093,6 +1096,15 @@ export async function runCli(argv) {
         break;
       case "files-check":
         await (await import("./commands/files-check.js")).cmdFilesCheck(rest);
+        break;
+      case "package-size-breakdown":
+        await (await import("./commands/package-size-breakdown.js")).cmdPackageSizeBreakdown(rest);
+        break;
+      case "changelog-gen":
+        await (await import("./commands/changelog-gen.js")).cmdChangelogGen(rest);
+        break;
+      case "peer-conflicts":
+        await (await import("./commands/peer-conflicts.js")).cmdPeerConflicts(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
