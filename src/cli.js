@@ -97,6 +97,9 @@ Commands:
   peer-deps            Check for peer dependency issues
   overrides <subcmd>   Manage package.json overrides/resolutions
   doctor-fix           Auto-fix common project issues
+  version-history <p>  Show published version history for a package
+  namespace            Analyze package scopes and namespaces
+  config-check         Validate project configuration files
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -497,6 +500,15 @@ export async function runCli(argv) {
         break;
       case "doctor-fix":
         await (await import("./commands/doctor-fix.js")).cmdDoctorFix(rest);
+        break;
+      case "version-history":
+        await (await import("./commands/version-history.js")).cmdVersionHistory(rest);
+        break;
+      case "namespace":
+        await (await import("./commands/namespace.js")).cmdNamespace(rest);
+        break;
+      case "config-check":
+        await (await import("./commands/config-check.js")).cmdConfigCheck(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
