@@ -277,6 +277,12 @@ export async function runCli(argv) {
       case "link":
         await (await import("./commands/link.js")).cmdLink(rest);
         break;
+      case "heal":
+        await (await import("./commands/heal.js")).cmdHeal(rest);
+        break;
+      case "orchestrate":
+        await (await import("./commands/orchestrate.js")).cmdOrchestrate(rest);
+        break;
       case "completions": {
         const shell = rest[0] || "bash";
         const { spawnSync } = await import("node:child_process");
