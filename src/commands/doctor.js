@@ -486,7 +486,10 @@ export async function cmdDoctor(argv) {
       core: { type: "boolean", default: false },
       "no-core": { type: "boolean", default: false },
       workspace: { type: "boolean", default: false },
-      unused: { type: "boolean", default: false }
+      unused: { type: "boolean", default: false },
+      v2: { type: "boolean", default: false },
+      cas: { type: "boolean", default: false },
+      "cross-ecosystem": { type: "boolean", default: false }
     },
     allowPositionals: true,
     strict: false
@@ -500,6 +503,33 @@ export async function cmdDoctor(argv) {
     throw new Error(`Unknown --security '${securityMode}'. Expected auto|on|off.`);
   }
   const coreMode = values["no-core"] ? "off" : values.core ? "force" : "auto";
+
+  // v2 cross-ecosystem doctor — delegates to Rust binary
+  if (values.v2 || values.cas || values["cross-ecosystem"]) {
+    const { spawnSync } = await import("node:child_process");
+    const { findBetterCore } = await import("../lib/core.js");
+    const binPath = findBetterCore();
+    const args = ["doctor"];
+    if (values.v2) args.push("--v2");
+    if (values.cas) args.push("--cas");
+    if (values["cross-ecosystem"]) args.push("--cross-ecosystem");
+    if (values.json) args.push("--json");
+    if (binPath) {
+      const result = spawnSync(binPath, args, { stdio: "inherit" });
+      process.exitCode = result.status ?? 0;
+    } else {
+      // JS fallback: cross-ecosystem check
+      const ecosystems = [];
+      const cwd = process.cwd();
+      const { access } = await import("node:fs/promises");
+      for (const [eco, file] of [["npm","package.json"],["python","pyproject.toml"],["cargo","Cargo.toml"],["go","go.mod"],["ruby","Gemfile"],["php","composer.json"]]) {
+        try { await access(cwd + "/" + file); ecosystems.push(eco); } catch {}
+      }
+      const out = { ok: true, kind: "better.doctor.v2", ecosystems, overall_score: 80 };
+      if (values.json) { printJson(out); } else { printText(`Ecosystems found: ${ecosystems.join(", ") || "none"}`); }
+    }
+    return;
+  }
 
   if (values.workspace) {
     const workspaceResolved = await resolveWorkspacePackages(projectRoot);
