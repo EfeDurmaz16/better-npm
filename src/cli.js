@@ -77,6 +77,7 @@ Commands:
   snapshot <subcmd>    Lockfile snapshot management (save/restore/diff)
   score                Overall project health score (0-100, grade A-F)
   types-check          Check TypeScript type definitions availability
+  exports-check        Validate package.json exports field paths
   telemetry <on|off|status>  Manage opt-in anonymous usage telemetry
 
 Sardis / OSP commands:
@@ -417,6 +418,9 @@ export async function runCli(argv) {
         break;
       case "types-check":
         await (await import("./commands/types-check.js")).cmdTypesCheck(rest);
+        break;
+      case "exports-check":
+        await (await import("./commands/exports-check.js")).cmdExportsCheck(rest);
         break;
       case "completions": {
         const shell = rest[0] || "bash";
