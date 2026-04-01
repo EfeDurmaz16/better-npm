@@ -112,3 +112,58 @@ pub fn run_benchmark(project_root: &Path, rounds: usize, pms: &[String]) -> Resu
     Ok(BenchmarkReport { platform, arch, cpus, results })
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compute_timing_empty_returns_zeros() {
+        let t = compute_timing(vec![]);
+        assert_eq!(t.median_ms, 0);
+        assert_eq!(t.min_ms, 0);
+        assert_eq!(t.max_ms, 0);
+        assert_eq!(t.mean_ms, 0);
+    }
+
+    #[test]
+    fn compute_timing_single_value() {
+        let t = compute_timing(vec![42]);
+        assert_eq!(t.min_ms, 42);
+        assert_eq!(t.max_ms, 42);
+        assert_eq!(t.mean_ms, 42);
+        assert_eq!(t.median_ms, 42);
+    }
+
+    #[test]
+    fn compute_timing_multiple_values() {
+        let t = compute_timing(vec![10, 30, 20]);
+        assert_eq!(t.min_ms, 10);
+        assert_eq!(t.max_ms, 30);
+        assert_eq!(t.mean_ms, 20);
+        assert_eq!(t.median_ms, 20); // sorted: [10, 20, 30] → median at index 1
+    }
+
+    #[test]
+    fn run_benchmark_no_pms_returns_empty_results() {
+        let tmp = std::env::temp_dir().join("bench-test-empty");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let report = run_benchmark(&tmp, 1, &[]).unwrap();
+        assert!(report.results.is_empty());
+        assert!(!report.platform.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn run_benchmark_unavailable_pm_skipped() {
+        let tmp = std::env::temp_dir().join("bench-test-skip");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let pms = vec!["definitely-nonexistent-pm-xyz".to_string()];
+        let report = run_benchmark(&tmp, 1, &pms).unwrap();
+        assert!(report.results.is_empty()); // skipped because not found
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}

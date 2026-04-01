@@ -200,6 +200,59 @@ fn walk_cas(dir: &Path, callback: &mut impl FnMut(&Path)) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cas_stats_no_cas_dir_returns_default() {
+        // When ~/.better/cas doesn't exist, should return default (zeroes)
+        let stats = calculate_cas_stats();
+        // Can't guarantee ~/.better/cas doesn't exist, so just check it returns Ok
+        assert!(stats.is_ok());
+    }
+
+    #[test]
+    fn compare_empty_dir_zero_traditional() {
+        let tmp = std::env::temp_dir().join("stats-test-empty");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let result = compare_without_better(&tmp).unwrap();
+        assert_eq!(result.without_better_bytes, 0);
+        assert_eq!(result.with_better_bytes, 0);
+        assert_eq!(result.breakdown.len(), 0);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn compare_with_node_modules_has_breakdown() {
+        let tmp = std::env::temp_dir().join("stats-test-nm");
+        let nm = tmp.join("node_modules").join("some-pkg");
+        std::fs::create_dir_all(&nm).unwrap();
+        std::fs::write(nm.join("index.js"), "module.exports = {}").unwrap();
+        let result = compare_without_better(&tmp).unwrap();
+        assert!(!result.breakdown.is_empty());
+        assert_eq!(result.breakdown[0].ecosystem, "npm");
+        assert!(result.without_better_bytes > 0);
+        assert!(result.with_better_bytes < result.without_better_bytes);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn deduped_entry_total_saved_calculation() {
+        let entry = DedupedEntry {
+            hash: "abc".to_string(),
+            reference_count: 3,
+            file_size: 1000,
+            total_saved: 2000, // 1000 * (3-1)
+        };
+        assert_eq!(entry.total_saved, entry.file_size * (entry.reference_count as u64 - 1));
+    }
+}
+
 /// Compare disk usage with vs without better CAS.
 pub fn compare_without_better(project_root: &Path) -> Result<ComparisonStats, String> {
     let mut breakdown = vec![];

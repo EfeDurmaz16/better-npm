@@ -278,3 +278,91 @@ pub struct AuditReportWithConfig {
     pub expired_warnings: Vec<String>,
     pub strict_fail: bool,
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::AuditVulnerability;
+
+    fn vuln(id: &str) -> AuditVulnerability {
+        AuditVulnerability {
+            id: id.to_string(),
+            summary: "test vulnerability".to_string(),
+            severity: "HIGH".to_string(),
+            package: "some-pkg".to_string(),
+            version: "1.0.0".to_string(),
+            fixed: "2.0.0".to_string(),
+        }
+    }
+
+    #[test]
+    fn missing_config_file_returns_default() {
+        let config = load_audit_config(std::path::Path::new("/nonexistent-audit-dir"));
+        assert!(config.ignore.is_empty());
+    }
+
+    #[test]
+    fn parse_single_ignore_entry() {
+        let json = r#"{"ignore":[{"id":"CVE-2024-0001","reason":"not affected"}]}"#;
+        let mut c = AuditConfig::default();
+        c = parse_audit_config(json);
+        assert_eq!(c.ignore.len(), 1);
+        assert_eq!(c.ignore[0].id, "CVE-2024-0001");
+        assert_eq!(c.ignore[0].reason, "not affected");
+        assert!(c.ignore[0].expires.is_none());
+    }
+
+    #[test]
+    fn parse_ignore_entry_with_expiry() {
+        let json = r#"{"ignore":[{"id":"CVE-2024-0002","reason":"patched","expires":"2030-01-01"}]}"#;
+        let c = parse_audit_config(json);
+        assert_eq!(c.ignore.len(), 1);
+        assert_eq!(c.ignore[0].expires.as_deref(), Some("2030-01-01"));
+    }
+
+    #[test]
+    fn filter_ignored_vulns_removes_matching_cve() {
+        let mut config = AuditConfig::default();
+        config.ignore.push(AuditIgnoreEntry {
+            id: "CVE-2024-0001".to_string(),
+            reason: "test".to_string(),
+            expires: None,
+        });
+        let vulns = vec![vuln("CVE-2024-0001"), vuln("CVE-2024-9999")];
+        let (filtered, ignored_count, warnings) = filter_ignored_vulns(&vulns, &config);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "CVE-2024-9999");
+        assert_eq!(ignored_count, 1);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn filter_expired_waiver_keeps_vuln() {
+        let mut config = AuditConfig::default();
+        config.ignore.push(AuditIgnoreEntry {
+            id: "CVE-2020-0001".to_string(),
+            reason: "old waiver".to_string(),
+            expires: Some("2020-01-01".to_string()), // expired
+        });
+        let vulns = vec![vuln("CVE-2020-0001")];
+        let (filtered, ignored_count, warnings) = filter_ignored_vulns(&vulns, &config);
+        assert_eq!(filtered.len(), 1); // vuln kept because waiver expired
+        assert_eq!(ignored_count, 0);
+        assert!(!warnings.is_empty());
+    }
+
+    #[test]
+    fn add_audit_ignore_writes_and_reads_back() {
+        let tmp = std::env::temp_dir().join("audit-config-test");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let _ = std::fs::remove_file(tmp.join(".betterauditrc.json"));
+        add_audit_ignore(&tmp, "CVE-2024-1234", "test reason").unwrap();
+        let config = load_audit_config(&tmp);
+        assert!(config.ignore.iter().any(|e| e.id == "CVE-2024-1234"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}

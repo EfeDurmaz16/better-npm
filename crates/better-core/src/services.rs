@@ -143,3 +143,48 @@ pub fn check_services_ready(project_root: &Path) -> Result<Vec<ResolvedService>,
     let vault_dir = std::path::PathBuf::from(home).join(".better").join("vault");
     Ok(resolve_services(&deps, &vault_dir))
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_valid_osp_uri() {
+        let spec = parse_service_uri("osp://supabase.com/postgres@free").unwrap();
+        assert_eq!(spec.provider, "supabase.com");
+        assert_eq!(spec.service, "postgres");
+        assert_eq!(spec.tier, "free");
+    }
+
+    #[test]
+    fn parse_osp_uri_without_tier_defaults_to_free() {
+        let spec = parse_service_uri("osp://upstash.com/redis").unwrap();
+        assert_eq!(spec.tier, "free");
+    }
+
+    #[test]
+    fn parse_invalid_uri_returns_error() {
+        let result = parse_service_uri("https://not-osp.com/service");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_service_deps_missing_pkg_json_returns_error() {
+        let result = load_service_dependencies(std::path::Path::new("/nonexistent-services-dir"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolve_services_no_vault_needs_provision() {
+        let mut deps = ServiceDependencies::default();
+        deps.services.insert("db".to_string(), "osp://supabase.com/postgres@free".to_string());
+        let vault_dir = std::path::PathBuf::from("/nonexistent-vault");
+        let resolved = resolve_services(&deps, &vault_dir);
+        assert_eq!(resolved.len(), 1);
+        assert!(matches!(resolved[0].status, ServiceStatus::NeedsProvision));
+    }
+}
