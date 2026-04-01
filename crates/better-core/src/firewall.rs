@@ -127,7 +127,7 @@ fn check_typosquat(name: &str) -> Option<(String, usize)> {
     let mut best_match: Option<(String, usize)> = None;
     for &popular in POPULAR_PACKAGES {
         let dist = levenshtein(bare_name, popular);
-        if dist > 0 && dist < 2 {
+        if dist > 0 && dist <= 2 {
             match &best_match {
                 Some((_, best_dist)) if dist < *best_dist => {
                     best_match = Some((popular.to_string(), dist));
@@ -439,4 +439,80 @@ pub fn write_firewall_json(report: &FirewallReport) -> String {
     w.end_array();
     w.end_object();
     w.finish()
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::ResolvedPackage;
+
+    fn pkg(name: &str) -> ResolvedPackage {
+        ResolvedPackage {
+            name: name.to_string(),
+            version: "1.0.0".to_string(),
+            rel_path: format!("node_modules/{}", name),
+            resolved_url: String::new(),
+            integrity: String::new(),
+        }
+    }
+
+    #[test]
+    fn typosquat_lodash_detected() {
+        let result = check_typosquat("lodahs");
+        assert!(result.is_some());
+        let (name, dist) = result.unwrap();
+        assert_eq!(name, "lodash");
+        assert_eq!(dist, 2);
+    }
+
+    #[test]
+    fn popular_package_not_flagged() {
+        // lodash itself should not be flagged
+        assert!(check_typosquat("lodash").is_none());
+    }
+
+    #[test]
+    fn unrelated_package_not_flagged() {
+        assert!(check_typosquat("my-completely-unique-package-xyz").is_none());
+    }
+
+    #[test]
+    fn run_firewall_empty_packages() {
+        let config = FirewallConfig::default();
+        let report = run_firewall(&[], std::path::Path::new("/tmp"), &config);
+        assert_eq!(report.total_checked, 0);
+        assert!(report.alerts.is_empty());
+    }
+
+    #[test]
+    fn run_firewall_typosquat_flagged() {
+        let config = FirewallConfig {
+            typosquat_detection: true,
+            binary_detection: false,
+            new_package_warning: false,
+            ..Default::default()
+        };
+        let packages = vec![pkg("lodahs")];
+        let report = run_firewall(&packages, std::path::Path::new("/tmp"), &config);
+        assert!(!report.alerts.is_empty());
+        assert!(report.alerts.iter().any(|a| a.alert_type == "typosquat"));
+    }
+
+    #[test]
+    fn firewall_blocked_count_matches_high_severity() {
+        let config = FirewallConfig {
+            typosquat_detection: true,
+            binary_detection: false,
+            new_package_warning: false,
+            ..Default::default()
+        };
+        let packages = vec![pkg("lodahs"), pkg("reect")]; // two typosquats
+        let report = run_firewall(&packages, std::path::Path::new("/tmp"), &config);
+        // All typosquats are "high" severity → should be blocked
+        assert_eq!(report.blocked, report.alerts.iter().filter(|a| a.severity == "high").count() as u64);
+    }
 }
