@@ -596,3 +596,73 @@ pub fn write_sandbox_scan_json(result: &SandboxScanResult) -> String {
     w.out.push('\n');
     w.finish()
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn tmp_pkg_dir() -> std::path::PathBuf {
+        std::env::temp_dir().join("sandbox-test-pkg")
+    }
+
+    #[test]
+    fn default_permissions_block_network() {
+        let dir = tmp_pkg_dir();
+        let perms = SandboxPermissions::default_for_package(&dir);
+        assert!(!perms.net_allow);
+        assert!(perms.fs_read.contains(&dir));
+    }
+
+    #[test]
+    fn unrestricted_allows_everything() {
+        let perms = SandboxPermissions::unrestricted();
+        assert!(perms.net_allow);
+        assert!(perms.env_allow_read);
+        assert_eq!(perms.fs_read[0], PathBuf::from("/"));
+    }
+
+    #[test]
+    fn from_allow_list_net_grants_network() {
+        let dir = tmp_pkg_dir();
+        let perms = SandboxPermissions::from_allow_list(&dir, &["net".to_string()]);
+        assert!(perms.net_allow);
+        assert!(!perms.env_allow_read); // env not granted
+    }
+
+    #[test]
+    fn permissions_for_blocked_package_returns_none() {
+        let policy = SandboxPolicy {
+            allow: HashMap::new(),
+            block: vec!["malicious-pkg".to_string()],
+        };
+        let dir = tmp_pkg_dir();
+        let result = permissions_for_package(&policy, "malicious-pkg", &dir);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn permissions_for_allowed_package_has_custom_perms() {
+        let mut allow = HashMap::new();
+        allow.insert("esbuild".to_string(), vec!["net".to_string()]);
+        let policy = SandboxPolicy { allow, block: vec![] };
+        let dir = tmp_pkg_dir();
+        let perms = permissions_for_package(&policy, "esbuild", &dir).unwrap();
+        assert!(perms.net_allow);
+    }
+
+    #[test]
+    fn permissions_for_unknown_package_uses_defaults() {
+        let policy = SandboxPolicy {
+            allow: HashMap::new(),
+            block: vec![],
+        };
+        let dir = tmp_pkg_dir();
+        let perms = permissions_for_package(&policy, "some-pkg", &dir).unwrap();
+        assert!(!perms.net_allow);
+    }
+}
