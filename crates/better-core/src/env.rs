@@ -270,3 +270,59 @@ pub fn run_script_watch(
     Ok(())
 }
 
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_dotenv_parses_simple_key_value() {
+        let tmp = std::env::temp_dir().join("env-test-dotenv");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join(".env"), "FOO=bar\nBAZ=qux\n").unwrap();
+        let vars = load_dotenv(&tmp);
+        assert!(vars.iter().any(|(k, v)| k == "FOO" && v == "bar"));
+        assert!(vars.iter().any(|(k, v)| k == "BAZ" && v == "qux"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn load_dotenv_ignores_comments() {
+        let tmp = std::env::temp_dir().join("env-test-comments");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join(".env"), "# comment\nKEY=val\n").unwrap();
+        let vars = load_dotenv(&tmp);
+        assert_eq!(vars.len(), 1);
+        assert_eq!(vars[0].0, "KEY");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn load_dotenv_strips_quotes() {
+        let tmp = std::env::temp_dir().join("env-test-quotes");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join(".env"), "KEY=\"quoted value\"\n").unwrap();
+        let vars = load_dotenv(&tmp);
+        assert_eq!(vars[0].1, "quoted value");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn load_dotenv_empty_dir_returns_empty() {
+        let vars = load_dotenv(std::path::Path::new("/nonexistent-env-project"));
+        assert!(vars.is_empty());
+    }
+
+    #[test]
+    fn env_info_returns_platform() {
+        let tmp = std::env::temp_dir().join("env-test-info");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let info = env_info(&tmp);
+        assert!(!info.platform.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}

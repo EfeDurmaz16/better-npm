@@ -158,3 +158,58 @@ pub fn check_outdated(_project_root: &Path, lockfile: &Path) -> Result<OutdatedR
     Ok(OutdatedReport { packages, total_checked, outdated, major, minor, patch })
 }
 
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_semver_valid() {
+        let v = parse_semver("1.2.3").unwrap();
+        assert_eq!(v.major, 1);
+        assert_eq!(v.minor, 2);
+        assert_eq!(v.patch, 3);
+    }
+
+    #[test]
+    fn parse_semver_strips_v_prefix() {
+        let v = parse_semver("v2.0.0").unwrap();
+        assert_eq!(v.major, 2);
+    }
+
+    #[test]
+    fn parse_semver_strips_prerelease() {
+        let v = parse_semver("1.0.0-beta.1").unwrap();
+        assert_eq!(v.patch, 0);
+    }
+
+    #[test]
+    fn check_semver_range_gte() {
+        let v = parse_semver("18.0.0").unwrap();
+        assert!(check_semver_range(&v, ">=16.0.0"));
+        assert!(!check_semver_range(&v, ">=20.0.0"));
+    }
+
+    #[test]
+    fn check_semver_range_caret() {
+        let v = parse_semver("18.5.0").unwrap();
+        assert!(check_semver_range(&v, "^18.0.0"));
+        assert!(!check_semver_range(&v, "^19.0.0"));
+    }
+
+    #[test]
+    fn check_outdated_missing_lockfile_errors() {
+        let tmp = std::env::temp_dir().join("outdated-test-nolock");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("package.json"), r#"{"dependencies":{"lodash":"^4.0.0"}}"#).unwrap();
+        // No lockfile → should error
+        let fake_lock = tmp.join("package-lock.json");
+        let result = check_outdated(&tmp, &fake_lock);
+        assert!(result.is_err());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}

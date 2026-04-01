@@ -239,3 +239,67 @@ fn parse_lockfile_versions(content: &str, installed: &mut HashMap<String, String
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_range_removes_caret() {
+        assert_eq!(strip_range("^1.2.3"), "1.2.3");
+    }
+
+    #[test]
+    fn strip_range_removes_tilde() {
+        assert_eq!(strip_range("~1.2.3"), "1.2.3");
+    }
+
+    #[test]
+    fn strip_range_leaves_exact() {
+        assert_eq!(strip_range("1.2.3"), "1.2.3");
+    }
+
+    #[test]
+    fn has_range_true_for_caret() {
+        assert!(has_range("^1.0.0"));
+    }
+
+    #[test]
+    fn has_range_false_for_exact() {
+        assert!(!has_range("1.0.0"));
+    }
+
+    #[test]
+    fn pin_versions_missing_package_json_errors() {
+        let result = pin_versions(
+            std::path::Path::new("/nonexistent-pin-project"),
+            &[],
+            false, false, false, true,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn pin_dry_run_no_file_changes() {
+        let tmp = std::env::temp_dir().join("pin-test-dryrun");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            tmp.join("package.json"),
+            r#"{"name":"app","dependencies":{"lodash":"^4.17.21"}}"#,
+        ).unwrap();
+        std::fs::write(
+            tmp.join("package-lock.json"),
+            r#"{"lockfileVersion":3,"packages":{"node_modules/lodash":{"version":"4.17.21"}}}"#,
+        ).unwrap();
+        let result = pin_versions(&tmp, &[], false, false, false, true).unwrap();
+        // In dry_run mode, changes are calculated but not written
+        let _ = result;
+        let content = std::fs::read_to_string(tmp.join("package.json")).unwrap();
+        assert!(content.contains("^4.17.21")); // unchanged
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
