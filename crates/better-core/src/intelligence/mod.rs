@@ -5,9 +5,11 @@ pub mod supply_chain;
 pub mod audit_fix;
 pub mod signals;
 pub mod scoring;
+pub mod impact;
 
 pub use signals::PackageSignals;
 pub use scoring::{ReputationScore, Grade, ScoreBreakdown, ReputationFlag, FlagType, FlagSeverity, compute_score};
+pub use impact::{ImpactAnalysis, UsageAnalysis, RemovalImpact, AlternativePackage, ImpactRisk, MigrationEffort, analyze_impact};
 
 use serde::Serialize;
 
