@@ -367,3 +367,104 @@ fn compute_max_depth(graph: &DepGraph) -> usize {
         .max()
         .unwrap_or(0)
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn make_graph(nodes: &[(&str, &str, &[&str], bool)]) -> DepGraph {
+        let mut map = HashMap::new();
+        for (name, version, deps, is_direct) in nodes {
+            map.insert(name.to_string(), DepNode {
+                name: name.to_string(),
+                version: version.to_string(),
+                deps: deps.iter().map(|s| s.to_string()).collect(),
+                is_direct: *is_direct,
+                dep_type: if *is_direct { "prod".to_string() } else { "transitive".to_string() },
+            });
+        }
+        DepGraph { nodes: map, root_name: "my-app".to_string(), root_version: "1.0.0".to_string() }
+    }
+
+    #[test]
+    fn find_paths_direct_dep() {
+        let graph = make_graph(&[
+            ("express", "4.18.2", &["lodash"], true),
+            ("lodash", "4.17.21", &[], false),
+        ]);
+        let paths = graph.find_paths("express", 10);
+        assert!(!paths.is_empty());
+        assert!(paths.iter().any(|p| p.contains(&"express".to_string())));
+    }
+
+    #[test]
+    fn find_paths_transitive_dep() {
+        let graph = make_graph(&[
+            ("a", "1.0.0", &["b"], true),
+            ("b", "1.0.0", &["c"], false),
+            ("c", "1.0.0", &[], false),
+        ]);
+        let paths = graph.find_paths("c", 10);
+        assert!(!paths.is_empty());
+    }
+
+    #[test]
+    fn find_cycles_no_cycle() {
+        let graph = make_graph(&[
+            ("a", "1.0.0", &["b"], true),
+            ("b", "1.0.0", &[], false),
+        ]);
+        let report = graph.find_cycles();
+        assert!(!report.has_cycles);
+        assert!(report.cycles.is_empty());
+    }
+
+    #[test]
+    fn to_dot_contains_edges() {
+        let graph = make_graph(&[
+            ("react", "18.0.0", &["react-dom"], true),
+            ("react-dom", "18.0.0", &[], false),
+        ]);
+        let dot = graph.to_dot(5);
+        assert!(dot.starts_with("digraph"));
+        assert!(dot.contains("react") && dot.contains("react-dom"));
+    }
+
+    #[test]
+    fn from_lockfile_missing_file_returns_error() {
+        let result = DepGraph::from_lockfile(Path::new("/nonexistent-graph-project"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn from_lockfile_parses_packages() {
+        let tmp = std::env::temp_dir().join("graph-test-lock");
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let lock = r#"{
+            "name": "my-app",
+            "version": "1.0.0",
+            "lockfileVersion": 3,
+            "packages": {
+                "": { "name": "my-app", "version": "1.0.0", "dependencies": { "lodash": "^4.17.21" } },
+                "node_modules/lodash": { "version": "4.17.21", "resolved": "", "integrity": "" }
+            }
+        }"#;
+        let pkg = r#"{"name":"my-app","version":"1.0.0","dependencies":{"lodash":"^4.17.21"}}"#;
+
+        let mut f = std::fs::File::create(tmp.join("package-lock.json")).unwrap();
+        f.write_all(lock.as_bytes()).unwrap();
+        let mut f2 = std::fs::File::create(tmp.join("package.json")).unwrap();
+        f2.write_all(pkg.as_bytes()).unwrap();
+
+        let graph = DepGraph::from_lockfile(&tmp).unwrap();
+        assert!(graph.nodes.contains_key("lodash"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
