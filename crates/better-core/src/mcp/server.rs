@@ -1,5 +1,5 @@
 use super::protocol::*;
-use super::transport::*;
+use super::transport::McpTransport;
 use super::tools;
 
 pub struct McpServer<T: McpTransport> {
@@ -131,5 +131,104 @@ impl<T: McpTransport> McpServer<T> {
                 }),
             },
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct MockTransport {
+        requests: std::collections::VecDeque<JsonRpcRequest>,
+        // Store responses as JSON strings since JsonRpcResponse isn't Clone
+        response_jsons: Vec<String>,
+    }
+
+    impl MockTransport {
+        fn new(requests: Vec<JsonRpcRequest>) -> Self {
+            Self {
+                requests: requests.into(),
+                response_jsons: vec![],
+            }
+        }
+
+        fn response_count(&self) -> usize {
+            self.response_jsons.len()
+        }
+
+        fn response_at(&self, i: usize) -> serde_json::Value {
+            serde_json::from_str(&self.response_jsons[i]).unwrap()
+        }
+    }
+
+    impl McpTransport for MockTransport {
+        fn read_message(&mut self) -> Result<JsonRpcRequest, String> {
+            self.requests.pop_front().ok_or_else(|| "EOF".to_string())
+        }
+
+        fn write_message(&mut self, response: &JsonRpcResponse) -> Result<(), String> {
+            self.response_jsons.push(serde_json::to_string(response).unwrap());
+            Ok(())
+        }
+    }
+
+    fn make_request(method: &str, id: i64) -> JsonRpcRequest {
+        JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(serde_json::json!(id)),
+            method: method.to_string(),
+            params: None,
+        }
+    }
+
+    #[test]
+    fn server_handles_ping() {
+        let transport = MockTransport::new(vec![make_request("ping", 1)]);
+        let mut server = McpServer::new(transport);
+        server.run().unwrap();
+        assert_eq!(server.transport.response_count(), 1);
+        let resp = server.transport.response_at(0);
+        assert!(resp.get("error").is_none());
+        assert_eq!(resp["id"], serde_json::json!(1));
+    }
+
+    #[test]
+    fn server_handles_unknown_method_returns_error() {
+        let transport = MockTransport::new(vec![make_request("unknown/method", 2)]);
+        let mut server = McpServer::new(transport);
+        server.run().unwrap();
+        assert_eq!(server.transport.response_count(), 1);
+        let resp = server.transport.response_at(0);
+        assert_eq!(resp["error"]["code"], serde_json::json!(-32601));
+    }
+
+    #[test]
+    fn server_handles_initialize() {
+        let transport = MockTransport::new(vec![make_request("initialize", 3)]);
+        let mut server = McpServer::new(transport);
+        server.run().unwrap();
+        assert_eq!(server.transport.response_count(), 1);
+        let resp = server.transport.response_at(0);
+        assert!(resp.get("error").is_none());
+        assert!(!resp["result"].is_null());
+    }
+
+    #[test]
+    fn server_skips_response_for_notification_no_id() {
+        let notify = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: None,
+            method: "notifications/initialized".to_string(),
+            params: None,
+        };
+        let transport = MockTransport::new(vec![notify]);
+        let mut server = McpServer::new(transport);
+        server.run().unwrap();
+        // Notifications with no id get no response
+        assert_eq!(server.transport.response_count(), 0);
     }
 }

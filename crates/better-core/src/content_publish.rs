@@ -134,3 +134,74 @@ fn fnv_hash_hex(data: &[u8]) -> String {
     }
     format!("{:016x}{:016x}", h, h.rotate_left(17))
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fnv_hash_hex_is_deterministic() {
+        let h1 = fnv_hash_hex(b"hello");
+        let h2 = fnv_hash_hex(b"hello");
+        assert_eq!(h1, h2);
+        assert_eq!(h1.len(), 32); // two 16-char hex strings
+    }
+
+    #[test]
+    fn fnv_hash_hex_differs_for_different_input() {
+        assert_ne!(fnv_hash_hex(b"hello"), fnv_hash_hex(b"world"));
+    }
+
+    #[test]
+    fn build_manifest_missing_package_json_returns_err() {
+        let tmp = std::env::temp_dir().join("cpub-test-no-pkg");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let result = build_manifest(&tmp, "test", "1.0.0", "author");
+        assert!(result.is_err());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn build_manifest_valid_package_returns_manifest() {
+        let tmp = std::env::temp_dir().join("cpub-test-valid");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("package.json"), r#"{"name":"test","version":"1.0.0","dependencies":{"lodash":"^4.0.0"}}"#).unwrap();
+        std::fs::write(tmp.join("index.js"), "module.exports = {};").unwrap();
+        let manifest = build_manifest(&tmp, "test", "1.0.0", "author").unwrap();
+        assert_eq!(manifest.name, "test");
+        assert_eq!(manifest.version, "1.0.0");
+        assert!(!manifest.content_hash.is_empty());
+        assert!(!manifest.files.is_empty());
+        assert!(manifest.dependencies.contains_key("lodash"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn verify_package_matches_own_manifest() {
+        let tmp = std::env::temp_dir().join("cpub-test-verify");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("package.json"), r#"{"name":"test","version":"1.0.0"}"#).unwrap();
+        let manifest = build_manifest(&tmp, "test", "1.0.0", "author").unwrap();
+        let ok = verify_package(&manifest, &tmp).unwrap();
+        assert!(ok);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn generate_publish_receipt_writes_json() {
+        let tmp = std::env::temp_dir().join("cpub-test-receipt");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("package.json"), r#"{"name":"test","version":"1.0.0"}"#).unwrap();
+        let manifest = build_manifest(&tmp, "test", "1.0.0", "author").unwrap();
+        let receipt_path = tmp.join(".better-publish.json");
+        generate_publish_receipt(&manifest, &receipt_path).unwrap();
+        assert!(receipt_path.exists());
+        let content = std::fs::read_to_string(&receipt_path).unwrap();
+        assert!(content.contains("\"name\""));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
