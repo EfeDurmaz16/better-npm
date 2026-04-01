@@ -37,3 +37,30 @@ impl CompatRegistry {
         None
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_alias_i_to_install() {
+        let reg = CompatRegistry::new();
+        assert_eq!(reg.resolve("i"), "install");
+    }
+
+    #[test]
+    fn resolve_unknown_returns_unchanged() {
+        let reg = CompatRegistry::new();
+        assert_eq!(reg.resolve("audit"), "audit");
+    }
+
+    #[test]
+    fn resolve_rm_to_remove() {
+        let reg = CompatRegistry::new();
+        assert_eq!(reg.resolve("rm"), "remove");
+    }
+}

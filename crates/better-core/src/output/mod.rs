@@ -128,3 +128,37 @@ impl Default for GlobalFlags {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn better_error_new_sets_error_flag() {
+        let err = BetterError::new(ErrorCode::NetworkError, "connection refused");
+        assert!(err.error);
+        assert_eq!(err.message, "connection refused");
+    }
+
+    #[test]
+    fn semantic_exit_code_security_vulnerability() {
+        let err = BetterError::new(ErrorCode::SecurityVulnerability, "");
+        assert_eq!(err.semantic_exit_code(), 2);
+    }
+
+    #[test]
+    fn semantic_exit_code_policy_violation() {
+        let err = BetterError::new(ErrorCode::PolicyViolation, "");
+        assert_eq!(err.semantic_exit_code(), 3);
+    }
+
+    #[test]
+    fn error_code_serde() {
+        let json = serde_json::to_string(&ErrorCode::NetworkError).unwrap();
+        assert_eq!(json, "\"network_error\"");
+    }
+}
