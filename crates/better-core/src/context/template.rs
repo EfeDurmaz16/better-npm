@@ -88,3 +88,52 @@ pub fn render_context(ctx: &PackageContext) -> String {
 
     md
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::PackageContext;
+
+    fn test_ctx() -> PackageContext {
+        PackageContext {
+            name: "lodash".to_string(),
+            version: "4.17.21".to_string(),
+            ecosystem: "npm".to_string(),
+            description: "A modern JS utility library".to_string(),
+            exports: vec![],
+            quick_start: "".to_string(),
+            patterns: vec![],
+            gotchas: vec![],
+            types_summary: None,
+            dependencies: vec![],
+            generated_at: "2024-01-01T00:00:00Z".to_string(),
+            markdown: "".to_string(),
+        }
+    }
+
+    #[test]
+    fn render_contains_name_and_version() {
+        let ctx = test_ctx();
+        let output = render_context(&ctx);
+        assert!(output.contains("lodash"));
+        assert!(output.contains("4.17.21"));
+    }
+
+    #[test]
+    fn render_contains_ecosystem() {
+        let ctx = test_ctx();
+        let output = render_context(&ctx);
+        assert!(output.contains("npm"));
+    }
+
+    #[test]
+    fn render_contains_description() {
+        let ctx = test_ctx();
+        let output = render_context(&ctx);
+        assert!(output.contains("A modern JS utility library"));
+    }
+}

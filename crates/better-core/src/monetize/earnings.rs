@@ -70,3 +70,42 @@ pub fn fetch_earnings(
 
     Ok(earnings)
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn earnings_summary_construction() {
+        let summary = EarningsSummary {
+            total_earned: "100.00".to_string(),
+            currency: "USD".to_string(),
+            period_start: "2024-01-01".to_string(),
+            period_end: "2024-01-31".to_string(),
+            packages: vec![],
+            pending_payout: "50.00".to_string(),
+            last_payout_at: None,
+        };
+        assert_eq!(summary.currency, "USD");
+        assert!(summary.packages.is_empty());
+    }
+
+    #[test]
+    fn package_earnings_construction() {
+        let pe = PackageEarnings {
+            package_name: "lodash".to_string(),
+            total: "25.00".to_string(),
+            installs_paid: 100,
+            installs_free: 5000,
+            donations: 3,
+            recurring_subscribers: 2,
+            breakdown: None,
+        };
+        assert_eq!(pe.package_name, "lodash");
+        assert_eq!(pe.installs_free, 5000);
+    }
+}

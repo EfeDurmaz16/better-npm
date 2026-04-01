@@ -87,3 +87,36 @@ pub fn list_sponsorships(
 
     Ok(sponsorships)
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sponsorship_struct_construction() {
+        let s = Sponsorship {
+            sponsor_wallet_id: "wallet-123".to_string(),
+            package_name: Some("lodash".to_string()),
+            maintainer_id: None,
+            amount: "5.00".to_string(),
+            currency: "USD".to_string(),
+            schedule: SponsorSchedule::Monthly,
+            started_at: "2024-01-01".to_string(),
+            status: SponsorStatus::Active,
+        };
+        assert_eq!(s.currency, "USD");
+        assert!(matches!(s.schedule, SponsorSchedule::Monthly));
+        assert!(matches!(s.status, SponsorStatus::Active));
+    }
+
+    #[test]
+    fn sponsor_schedule_variants() {
+        let _ = SponsorSchedule::OneTime;
+        let _ = SponsorSchedule::Quarterly;
+        let _ = SponsorSchedule::Annual;
+    }
+}
