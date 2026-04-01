@@ -268,7 +268,10 @@ pub struct SmartAuditReport {
 ///
 /// Takes the raw audit vulnerabilities + package.json dep maps, classifies each
 /// dep by context (prod/dev/build/optional/transitive), scores each vuln by
-/// severity x context weight, then applies the given filter.
+/// severity x context weight, applies the given filter, and optionally suppresses
+/// waived vulnerabilities from `.betterauditrc.json`.
+///
+/// Pass `allowlist: None` to skip waiver checking (backward compatible).
 pub fn smart_audit(
     raw_vulns: &[AuditVulnerability],
     root_deps: &HashMap<String, String>,
@@ -278,6 +281,36 @@ pub fn smart_audit(
     resolved_versions: &HashMap<String, String>,
     audit_filter: &AuditFilter,
 ) -> SmartAuditReport {
+    smart_audit_with_allowlist(
+        raw_vulns,
+        root_deps,
+        root_dev_deps,
+        root_optional_deps,
+        dep_graph,
+        resolved_versions,
+        audit_filter,
+        None,
+        None,
+    )
+}
+
+/// Variant of `smart_audit` that also applies an `AuditAllowList`.
+///
+/// `today_iso`: today's date as `"YYYY-MM-DD"` for expiry checks.
+/// Pass `None` to use the current date derived from the system clock.
+pub fn smart_audit_with_allowlist(
+    raw_vulns: &[AuditVulnerability],
+    root_deps: &HashMap<String, String>,
+    root_dev_deps: &HashMap<String, String>,
+    root_optional_deps: &HashMap<String, String>,
+    dep_graph: &HashMap<String, Vec<String>>,
+    resolved_versions: &HashMap<String, String>,
+    audit_filter: &AuditFilter,
+    allowlist: Option<&allowlist::AuditAllowList>,
+    today_iso: Option<&str>,
+) -> SmartAuditReport {
+    let today = today_iso.map(|s| s.to_string()).unwrap_or_else(today_date_iso);
+
     let classifier = DepClassifier::classify(
         root_deps,
         root_dev_deps,
@@ -314,7 +347,23 @@ pub fn smart_audit(
         .collect();
 
     let total = scored.len() as u64;
-    let filtered_vulns = audit_filter.apply(&scored);
+
+    // Apply severity/context filter first
+    let post_filter = audit_filter.apply(&scored);
+
+    // Then apply allowlist waivers
+    let filtered_vulns: Vec<ScoredVuln> = if let Some(al) = allowlist {
+        post_filter
+            .into_iter()
+            .filter(|v| {
+                let pkg_key = format!("{}@{}", v.package_name, v.package_version);
+                al.is_waived(&v.id, &pkg_key, &today).is_suppressed() == false
+            })
+            .collect()
+    } else {
+        post_filter
+    };
+
     let filtered = filtered_vulns.len() as u64;
 
     let risk_level = if filtered_vulns.iter().any(|v| v.severity == Severity::Critical) {
@@ -336,5 +385,44 @@ pub fn smart_audit(
         scanned_packages: 0,
         risk_level: risk_level.to_string(),
     }
+}
+
+/// Return today's date as "YYYY-MM-DD" using the system clock.
+/// Uses only std::time — no chrono dependency.
+fn today_date_iso() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    // Days since 1970-01-01
+    let mut days = secs / 86_400;
+    let mut year = 1970u32;
+    loop {
+        let days_in_year = if is_leap(year) { 366 } else { 365 };
+        if days < days_in_year {
+            break;
+        }
+        days -= days_in_year;
+        year += 1;
+    }
+    let leap = is_leap(year);
+    let month_days: [u32; 12] = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut month = 1u32;
+    let mut rem = days as u32;
+    for (i, &md) in month_days.iter().enumerate() {
+        if rem < md {
+            month = i as u32 + 1;
+            break;
+        }
+        rem -= md;
+    }
+    let day = rem + 1;
+    format!("{:04}-{:02}-{:02}", year, month, day)
+}
+
+fn is_leap(year: u32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
 }
 
