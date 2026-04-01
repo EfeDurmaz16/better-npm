@@ -503,3 +503,50 @@ fn generate_types_summary(exports: &[ExportedSymbol]) -> String {
     }
     summary
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_js_context_empty_dir_returns_ok() {
+        let tmp = std::env::temp_dir().join("js-ctx-test-empty");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let result = extract_js_context(&tmp, "lodash", "4.17.21");
+        assert!(result.is_ok());
+        let ctx = result.unwrap();
+        assert_eq!(ctx.name, "lodash");
+        assert_eq!(ctx.ecosystem, "npm");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn extract_js_context_reads_package_json_description() {
+        let tmp = std::env::temp_dir().join("js-ctx-test-pkg");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            tmp.join("package.json"),
+            r#"{"name":"express","version":"4.18.0","description":"Fast web framework"}"#,
+        ).unwrap();
+        let ctx = extract_js_context(&tmp, "express", "4.18.0").unwrap();
+        assert_eq!(ctx.description, "Fast web framework");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn extract_js_context_markdown_not_empty() {
+        let tmp = std::env::temp_dir().join("js-ctx-test-md");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            tmp.join("package.json"),
+            r#"{"name":"mylib","version":"1.0.0"}"#,
+        ).unwrap();
+        let ctx = extract_js_context(&tmp, "mylib", "1.0.0").unwrap();
+        assert!(!ctx.markdown.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}

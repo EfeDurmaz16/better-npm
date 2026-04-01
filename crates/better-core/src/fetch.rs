@@ -326,3 +326,55 @@ pub fn fetch_packages(
     })
 }
 
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cas_key_from_integrity_valid_sha512() {
+        // SHA-512 integrity string in base64
+        let integrity = "sha512-AAAA";
+        let result = cas_key_from_integrity(integrity);
+        assert!(result.is_some());
+        let (algo, _hex) = result.unwrap();
+        assert_eq!(algo, "sha512");
+    }
+
+    #[test]
+    fn cas_key_from_integrity_invalid_format() {
+        assert!(cas_key_from_integrity("nohyphen").is_none());
+    }
+
+    #[test]
+    fn tarball_path_has_expected_structure() {
+        let layout = CasLayout::new(std::path::Path::new("/tmp/cas"));
+        let hex = "abcdef1234567890";
+        let p = tarball_path(&layout, "sha512", hex);
+        let s = p.to_string_lossy();
+        assert!(s.contains("sha512"));
+        assert!(s.contains("ab"));
+        assert!(s.ends_with(".tgz"));
+    }
+
+    #[test]
+    fn fetch_packages_empty_list_returns_zero() {
+        let tmp = std::env::temp_dir().join("fetch-test-empty");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let result = fetch_packages(&[], &tmp, None).unwrap();
+        assert_eq!(result.packages_fetched, 0);
+        assert_eq!(result.packages_cached, 0);
+        assert_eq!(result.bytes_downloaded, 0);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_from_lockfile_missing_returns_err() {
+        let result = resolve_from_lockfile(std::path::Path::new("/nonexistent/package-lock.json"));
+        assert!(result.is_err());
+    }
+}
