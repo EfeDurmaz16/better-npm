@@ -89,6 +89,9 @@ pub use progress::*;
 pub mod strict;
 pub use strict::*;
 
+pub mod materialize;
+pub use materialize::*;
+
 pub mod unused;
 pub use unused::*;
 
