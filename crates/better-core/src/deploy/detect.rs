@@ -90,3 +90,67 @@ fn mk(f: Framework, build: &str, out: &str, dev: &str, platform: DeployPlatform)
         recommended_platform: platform,
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_pkg(root: &Path, content: &str) {
+        std::fs::create_dir_all(root).unwrap();
+        let mut f = std::fs::File::create(root.join("package.json")).unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn detect_nextjs() {
+        let tmp = std::env::temp_dir().join("detect-test-next");
+        write_pkg(&tmp, r#"{"dependencies":{"next":"^14.0.0"}}"#);
+        let d = detect_framework(&tmp);
+        assert!(matches!(d.framework, Framework::NextJs));
+        assert!(matches!(d.recommended_platform, DeployPlatform::Vercel));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detect_express() {
+        let tmp = std::env::temp_dir().join("detect-test-express");
+        write_pkg(&tmp, r#"{"dependencies":{"express":"^4.18.0"}}"#);
+        let d = detect_framework(&tmp);
+        assert!(matches!(d.framework, Framework::Express));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detect_django_from_manage_py() {
+        let tmp = std::env::temp_dir().join("detect-test-django");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::File::create(tmp.join("manage.py")).unwrap();
+        let d = detect_framework(&tmp);
+        assert!(matches!(d.framework, Framework::Django));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detect_unknown_empty_dir() {
+        let tmp = std::env::temp_dir().join("detect-test-unknown");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let d = detect_framework(&tmp);
+        assert!(matches!(d.framework, Framework::Unknown));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detect_vite_project() {
+        let tmp = std::env::temp_dir().join("detect-test-vite");
+        write_pkg(&tmp, r#"{"dependencies":{"vite":"^4.0.0"}}"#);
+        let d = detect_framework(&tmp);
+        assert!(matches!(d.framework, Framework::Vite));
+        assert!(!d.build_command.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
