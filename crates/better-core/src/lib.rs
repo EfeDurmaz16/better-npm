@@ -122,6 +122,9 @@ pub use upgrade::*;
 pub mod cid;
 pub use cid::*;
 
+pub mod federation;
+pub use federation::*;
+
 pub mod unused;
 pub use unused::*;
 
