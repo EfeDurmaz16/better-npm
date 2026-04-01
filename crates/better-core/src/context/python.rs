@@ -306,3 +306,65 @@ fn generate_python_types_summary(exports: &[ExportedSymbol]) -> String {
     }
     summary
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_python_context_empty_dir_returns_ok() {
+        let tmp = std::env::temp_dir().join("py-ctx-test-empty");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let result = extract_python_context(&tmp, "mypackage", "1.0.0");
+        assert!(result.is_ok());
+        let ctx = result.unwrap();
+        assert_eq!(ctx.name, "mypackage");
+        assert_eq!(ctx.ecosystem, "python");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn extract_python_context_parses_init_py() {
+        let tmp = std::env::temp_dir().join("py-ctx-test-init");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            tmp.join("__init__.py"),
+            "def hello(name: str) -> str:\n    return f'Hello {name}'\n\nclass MyClass:\n    pass\n",
+        ).unwrap();
+        let ctx = extract_python_context(&tmp, "mypkg", "1.0.0").unwrap();
+        assert!(!ctx.exports.is_empty());
+        let names: Vec<&str> = ctx.exports.iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"hello"));
+        assert!(names.contains(&"MyClass"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn read_python_version_returns_none_no_dist_info() {
+        let tmp = std::env::temp_dir().join("py-ctx-test-ver");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let pkg_dir = tmp.join("mypkg");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        let result = read_python_version(&pkg_dir);
+        assert!(result.is_none());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn read_python_version_finds_dist_info() {
+        let tmp = std::env::temp_dir().join("py-ctx-test-ver-found");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let pkg_dir = tmp.join("requests");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        // Create dist-info dir in parent
+        let dist_info = tmp.join("requests-2.28.0.dist-info");
+        std::fs::create_dir_all(&dist_info).unwrap();
+        let version = read_python_version(&pkg_dir);
+        assert_eq!(version, Some("2.28.0".to_string()));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}

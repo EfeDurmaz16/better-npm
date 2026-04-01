@@ -346,3 +346,49 @@ fn execute_search(args: &serde_json::Value) -> ToolResult {
         Err(e) => ToolResult::error(format!("Search failed: {}", e)),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn list_tools_returns_expected_names() {
+        let tools = list_tools();
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"install"));
+        assert!(names.contains(&"audit"));
+        assert!(names.contains(&"search"));
+        assert!(names.contains(&"why"));
+    }
+
+    fn get_text(result: &ToolResult) -> &str {
+        match result.content.first() {
+            Some(ToolContent::Text { text }) => text.as_str(),
+            None => "",
+        }
+    }
+
+    #[test]
+    fn execute_tool_unknown_returns_error() {
+        let result = execute_tool("unknown_xyz", &serde_json::json!({}));
+        assert!(result.is_error);
+        assert!(get_text(&result).contains("Unknown tool"));
+    }
+
+    #[test]
+    fn execute_tool_install_missing_project_root_returns_error() {
+        let result = execute_tool("install", &serde_json::json!({}));
+        assert!(result.is_error);
+        assert!(get_text(&result).contains("project_root"));
+    }
+
+    #[test]
+    fn execute_tool_audit_missing_project_root_returns_error() {
+        let result = execute_tool("audit", &serde_json::json!({}));
+        assert!(result.is_error);
+    }
+}
