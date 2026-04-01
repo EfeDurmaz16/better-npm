@@ -154,3 +154,102 @@ pub fn analyze_supply_chain(project_root: &Path) -> Result<SupplyChainReport, St
         trust_score,
     })
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_lock(path: &std::path::Path, content: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        let mut f = std::fs::File::create(path).unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn clean_lock_no_anomalies() {
+        let tmp = std::env::temp_dir().join("supply-chain-clean");
+        let lock = serde_json::json!({
+            "lockfileVersion": 3,
+            "packages": {
+                "": { "name": "myapp" },
+                "node_modules/express": {
+                    "version": "4.18.2",
+                    "resolved": "https://registry.npmjs.org/express/-/express-4.18.2.tgz"
+                }
+            }
+        });
+        write_lock(&tmp.join("package-lock.json"), &lock.to_string());
+        let report = analyze_supply_chain(&tmp).unwrap();
+        assert!(report.anomalies.iter().all(|a| !matches!(a.kind, AnomalyKind::NonNpmRegistry)));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn non_npm_registry_flagged() {
+        let tmp = std::env::temp_dir().join("supply-chain-registry");
+        let lock = serde_json::json!({
+            "lockfileVersion": 3,
+            "packages": {
+                "node_modules/internal-pkg": {
+                    "version": "1.0.0",
+                    "resolved": "https://my-private-registry.example.com/internal-pkg-1.0.0.tgz"
+                }
+            }
+        });
+        write_lock(&tmp.join("package-lock.json"), &lock.to_string());
+        let report = analyze_supply_chain(&tmp).unwrap();
+        assert!(report.anomalies.iter().any(|a| matches!(a.kind, AnomalyKind::NonNpmRegistry)));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn install_script_flagged() {
+        let tmp = std::env::temp_dir().join("supply-chain-scripts");
+        let lock = serde_json::json!({
+            "lockfileVersion": 3,
+            "packages": {
+                "node_modules/tricky-pkg": {
+                    "version": "1.0.0",
+                    "resolved": "https://registry.npmjs.org/tricky-pkg/-/tricky-pkg-1.0.0.tgz",
+                    "scripts": { "postinstall": "node setup.js" }
+                }
+            }
+        });
+        write_lock(&tmp.join("package-lock.json"), &lock.to_string());
+        let report = analyze_supply_chain(&tmp).unwrap();
+        assert!(report.anomalies.iter().any(|a| matches!(a.kind, AnomalyKind::ScriptPresent)));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn trust_score_reduces_with_anomalies() {
+        let tmp = std::env::temp_dir().join("supply-chain-score");
+        let lock = serde_json::json!({
+            "lockfileVersion": 3,
+            "packages": {
+                "node_modules/bad-pkg": {
+                    "version": "1.0.0",
+                    "resolved": "https://evil.example.com/bad-pkg.tgz",
+                    "scripts": { "preinstall": "rm -rf /" }
+                }
+            }
+        });
+        write_lock(&tmp.join("package-lock.json"), &lock.to_string());
+        let report = analyze_supply_chain(&tmp).unwrap();
+        assert!(report.trust_score < 100.0);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn missing_lock_returns_error() {
+        let result = analyze_supply_chain(std::path::Path::new("/nonexistent-project"));
+        assert!(result.is_err());
+    }
+}

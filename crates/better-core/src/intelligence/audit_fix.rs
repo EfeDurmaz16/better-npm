@@ -215,3 +215,77 @@ fn is_major_bump(current: &str, target: &str) -> bool {
         .unwrap_or(0);
     tgt_major > cur_major
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    fn make_vuln(pkg: &str, from: &str, to: Option<&str>) -> AuditVuln {
+        AuditVuln {
+            package: pkg.to_string(),
+            version: from.to_string(),
+            severity: "high".to_string(),
+            ids: vec!["GHSA-test-0001".to_string()],
+            patched_version: to.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn no_patched_version_is_skipped() {
+        let vulns = vec![make_vuln("unpatchable", "1.0.0", None)];
+        let cfg = AuditFixConfig { dry_run: true, ..Default::default() };
+        let result = apply_audit_fixes(Path::new("/tmp"), &vulns, &cfg).unwrap();
+        assert_eq!(result.fixes_attempted, 1);
+        assert_eq!(result.fixes_applied, 0);
+        assert!(matches!(result.details[0].status, FixStatus::Skipped { .. }));
+    }
+
+    #[test]
+    fn major_bump_skipped_without_force() {
+        let vulns = vec![make_vuln("mypkg", "1.5.0", Some("2.0.0"))];
+        let cfg = AuditFixConfig { dry_run: true, force_major: false, ..Default::default() };
+        let result = apply_audit_fixes(Path::new("/tmp"), &vulns, &cfg).unwrap();
+        assert!(matches!(result.details[0].status, FixStatus::Skipped { .. }));
+    }
+
+    #[test]
+    fn major_bump_allowed_with_force() {
+        let vulns = vec![make_vuln("mypkg", "1.5.0", Some("2.0.0"))];
+        let cfg = AuditFixConfig { dry_run: true, force_major: true, ..Default::default() };
+        let result = apply_audit_fixes(Path::new("/tmp"), &vulns, &cfg).unwrap();
+        assert!(matches!(result.details[0].status, FixStatus::Applied));
+    }
+
+    #[test]
+    fn dry_run_applies_without_spawning_npm() {
+        let vulns = vec![make_vuln("lodash", "4.17.20", Some("4.17.21"))];
+        let cfg = AuditFixConfig { dry_run: true, ..Default::default() };
+        let result = apply_audit_fixes(Path::new("/nonexistent"), &vulns, &cfg).unwrap();
+        assert_eq!(result.fixes_applied, 1);
+    }
+
+    #[test]
+    fn is_major_bump_detection() {
+        assert!(is_major_bump("1.0.0", "2.0.0"));
+        assert!(!is_major_bump("1.0.0", "1.5.0"));
+        assert!(!is_major_bump("2.0.0", "2.0.1"));
+        assert!(is_major_bump("v1.0.0", "v2.0.0"));
+    }
+
+    #[test]
+    fn remaining_vulns_count() {
+        let vulns = vec![
+            make_vuln("a", "1.0.0", Some("1.0.1")),  // will be applied (dry_run)
+            make_vuln("b", "2.0.0", None),             // will be skipped (no fix)
+        ];
+        let cfg = AuditFixConfig { dry_run: true, ..Default::default() };
+        let result = apply_audit_fixes(Path::new("/tmp"), &vulns, &cfg).unwrap();
+        assert_eq!(result.fixes_applied, 1);
+        assert_eq!(result.remaining_vulns, 1);
+    }
+}
