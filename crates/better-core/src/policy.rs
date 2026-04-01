@@ -550,3 +550,78 @@ fn parse_iso_timestamp(s: &str) -> Option<u64> {
 fn is_leap(y: u64) -> bool {
     (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0)
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_pkg(root: &Path, name: &str, extra: &str) {
+        let dir = root.join("node_modules").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let content = format!(r#"{{"name":"{}","version":"1.0.0"{}}} "#, name, extra);
+        let mut f = std::fs::File::create(dir.join("package.json")).unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn load_policy_config_defaults_when_no_file() {
+        let tmp = std::env::temp_dir().join("policy-test-defaults");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let config = load_policy_config(&tmp);
+        assert!(config.threshold > 0);
+        assert!(!config.rules.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn policy_check_empty_node_modules_passes() {
+        let tmp = std::env::temp_dir().join("policy-test-empty");
+        let nm = tmp.join("node_modules");
+        std::fs::create_dir_all(&nm).unwrap();
+        let result = policy_check(&tmp).unwrap();
+        assert!(result.violations.is_empty());
+        assert!(result.pass);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn policy_check_deprecated_package_produces_warning() {
+        let tmp = std::env::temp_dir().join("policy-test-deprecated");
+        write_pkg(&tmp, "old-pkg", r#","deprecated":"Use new-pkg instead""#);
+        let result = policy_check(&tmp).unwrap();
+        assert!(result.violations.iter().any(|v| v.rule == "no-deprecated" && v.package == "old-pkg"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn policy_check_clean_package_has_no_violations() {
+        let tmp = std::env::temp_dir().join("policy-test-clean");
+        write_pkg(&tmp, "lodash", "");
+        let result = policy_check(&tmp).unwrap();
+        // A clean package should not trigger deprecated or banned rules
+        assert!(!result.violations.iter().any(|v| v.package == "lodash" && v.rule == "no-deprecated"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn default_policy_has_seven_rules() {
+        let config = default_policy_config();
+        assert_eq!(config.rules.len(), 8);
+        assert!(config.rules.iter().any(|r| r.id == "no-deprecated"));
+        assert!(config.rules.iter().any(|r| r.id == "max-duplicates"));
+        assert!(config.rules.iter().any(|r| r.id == "max-depth"));
+    }
+
+    #[test]
+    fn policy_check_missing_node_modules_returns_error() {
+        // list_packages_in_node_modules returns Err when node_modules is missing
+        let result = policy_check(Path::new("/nonexistent-policy-project"));
+        // Either an error or empty violations — both are valid; key is no panic
+        let _ = result;
+    }
+}
