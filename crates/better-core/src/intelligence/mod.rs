@@ -7,6 +7,8 @@ pub mod signals;
 pub mod scoring;
 pub mod impact;
 pub mod predict;
+pub mod changelog;
+pub mod smart_upgrade;
 
 pub use signals::PackageSignals;
 pub use scoring::{ReputationScore, Grade, ScoreBreakdown, ReputationFlag, FlagType, FlagSeverity, compute_score};
