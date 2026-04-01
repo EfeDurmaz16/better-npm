@@ -75,3 +75,37 @@ pub fn initialize_result() -> serde_json::Value {
         }
     })
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initialize_result_has_protocol_version() {
+        let result = initialize_result();
+        assert!(result["protocolVersion"].is_string());
+        assert_eq!(result["protocolVersion"], "2024-11-05");
+    }
+
+    #[test]
+    fn initialize_result_has_server_info() {
+        let result = initialize_result();
+        assert_eq!(result["serverInfo"]["name"], "better");
+    }
+
+    #[test]
+    fn json_rpc_request_construction() {
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(serde_json::json!(1)),
+            method: "tools/list".to_string(),
+            params: None,
+        };
+        assert_eq!(req.method, "tools/list");
+        assert_eq!(req.jsonrpc, "2.0");
+    }
+}

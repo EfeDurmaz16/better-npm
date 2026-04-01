@@ -78,3 +78,57 @@ impl CommandOutput for WhyResult {
         "https://better.sh/schema/v1/why.json"
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::output::CommandOutput;
+
+    #[test]
+    fn audit_result_high_vulns_exit_code_2() {
+        let r = AuditResult {
+            command: "audit",
+            total: 2,
+            critical: 0,
+            high: 1,
+            medium: 0,
+            low: 0,
+            packages_scanned: 100,
+            scan_ms: 500,
+        };
+        assert_eq!(r.exit_code(), 2);
+    }
+
+    #[test]
+    fn audit_result_clean_exit_code_0() {
+        let r = AuditResult {
+            command: "audit",
+            total: 0,
+            critical: 0,
+            high: 0,
+            medium: 1,
+            low: 0,
+            packages_scanned: 100,
+            scan_ms: 500,
+        };
+        assert_eq!(r.exit_code(), 0);
+    }
+
+    #[test]
+    fn install_result_command_name() {
+        let r = InstallResult {
+            command: "install",
+            success: true,
+            total_packages: 10,
+            total_ms: 1000,
+            cache_hits: 8,
+            cache_misses: 2,
+            lockfile_updated: false,
+        };
+        assert_eq!(r.command_name(), "install");
+    }
+}
