@@ -170,3 +170,69 @@ impl std::fmt::Display for OspError {
 }
 
 impl std::error::Error for OspError {}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::manifest::{ProviderEndpoints, ServiceManifest};
+
+    fn make_test_manifest() -> ServiceManifest {
+        ServiceManifest {
+            manifest_id: "test".to_string(),
+            manifest_version: 1,
+            previous_version: None,
+            osp_spec_version: None,
+            provider_id: "test.provider.com".to_string(),
+            display_name: "Test Provider".to_string(),
+            provider_url: None,
+            provider_public_key: None,
+            offerings: vec![],
+            accepted_payment_methods: None,
+            trust_tier_required: None,
+            endpoints: ProviderEndpoints {
+                provision: "/provision".to_string(),
+                deprovision: "/deprovision".to_string(),
+                credentials: "/credentials".to_string(),
+                rotate: None,
+                status: "/status".to_string(),
+                usage: None,
+                health: "/health".to_string(),
+            },
+            extensions: None,
+            effective_at: None,
+            provider_signature: "sig".to_string(),
+        }
+    }
+
+    #[test]
+    fn search_offerings_empty_manifest_returns_empty() {
+        let manifest = make_test_manifest();
+        let results = search_offerings(&manifest, None);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn find_offering_not_found_returns_err() {
+        let manifest = make_test_manifest();
+        let result = find_offering(&manifest, "nonexistent-offering");
+        assert!(result.is_err());
+        if let Err(OspError::OfferingNotFound(id)) = result {
+            assert_eq!(id, "nonexistent-offering");
+        }
+    }
+
+    #[test]
+    fn clear_cache_does_not_panic() {
+        clear_cache();
+    }
+
+    #[test]
+    fn osp_error_display_nonce_replay() {
+        let err = OspError::NonceReplay;
+        assert!(err.to_string().contains("replay"));
+    }
+}

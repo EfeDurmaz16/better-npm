@@ -187,3 +187,45 @@ pub fn setup_recurring(
 
     Ok(result)
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn payment_status_serde_roundtrip() {
+        let status = PaymentStatus::Completed;
+        let json = serde_json::to_string(&status).unwrap();
+        let back: PaymentStatus = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, PaymentStatus::Completed));
+    }
+
+    #[test]
+    fn recurring_schedule_serde_roundtrip() {
+        let schedule = RecurringSchedule::Monthly;
+        let json = serde_json::to_string(&schedule).unwrap();
+        let back: RecurringSchedule = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, RecurringSchedule::Monthly));
+    }
+
+    #[test]
+    fn payment_result_serde_roundtrip() {
+        let result = PaymentResult {
+            transaction_id: "tx-001".to_string(),
+            package_name: "lodash".to_string(),
+            amount: "1.00".to_string(),
+            currency: "USD".to_string(),
+            status: PaymentStatus::Completed,
+            recipient: "jdalton".to_string(),
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let back: PaymentResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.transaction_id, "tx-001");
+        assert_eq!(back.package_name, "lodash");
+    }
+}
