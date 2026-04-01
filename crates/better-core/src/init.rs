@@ -213,3 +213,75 @@ pub fn init_project(project_root: &Path, name: Option<&str>, template: Option<&s
     Ok(InitResult { files_created: files, template: None })
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_init_creates_package_json() {
+        let tmp = std::env::temp_dir().join("init-test-default");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let result = init_project(&tmp, None, None).unwrap();
+        assert!(result.files_created.contains(&"package.json".to_string()));
+        assert!(result.template.is_none());
+        assert!(tmp.join("package.json").exists());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn custom_name_written_to_package_json() {
+        let tmp = std::env::temp_dir().join("init-test-named");
+        let _ = std::fs::remove_dir_all(&tmp);
+        init_project(&tmp, Some("my-app"), None).unwrap();
+        let content = std::fs::read_to_string(tmp.join("package.json")).unwrap();
+        assert!(content.contains("\"my-app\""));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn existing_package_json_returns_error() {
+        let tmp = std::env::temp_dir().join("init-test-exists");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("package.json"), "{}").unwrap();
+        let result = init_project(&tmp, None, None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("already exists"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn react_template_creates_expected_files() {
+        let tmp = std::env::temp_dir().join("init-test-react");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let result = init_project(&tmp, Some("my-react-app"), Some("react")).unwrap();
+        assert_eq!(result.template, Some("react".to_string()));
+        assert!(result.files_created.iter().any(|f| f == "src/App.tsx"));
+        assert!(result.files_created.iter().any(|f| f == "tsconfig.json"));
+        assert!(result.files_created.iter().any(|f| f == ".gitignore"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn unknown_template_returns_error() {
+        let tmp = std::env::temp_dir().join("init-test-unknown-tmpl");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let result = init_project(&tmp, None, Some("angular"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unknown template"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn next_template_has_next_dependency() {
+        let tmp = std::env::temp_dir().join("init-test-next");
+        let _ = std::fs::remove_dir_all(&tmp);
+        init_project(&tmp, Some("my-next-app"), Some("next")).unwrap();
+        let content = std::fs::read_to_string(tmp.join("package.json")).unwrap();
+        assert!(content.contains("\"next\""));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
