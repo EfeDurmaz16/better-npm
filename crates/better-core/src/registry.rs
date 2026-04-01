@@ -351,3 +351,74 @@ fn write_registry_config(config: &RegistryConfig) -> Result<(), String> {
         .map_err(|e| format!("Failed to write registries.json: {}", e))?;
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_config(entries: &[(&str, Option<&str>)]) -> RegistryConfig {
+        RegistryConfig {
+            registries: entries.iter().enumerate().map(|(i, (url, scope))| RegistryEntry {
+                url: url.to_string(),
+                scope: scope.map(|s| s.to_string()),
+                token_env: None,
+                priority: (i as u64 + 1) * 10,
+            }).collect(),
+        }
+    }
+
+    #[test]
+    fn resolve_registry_public_package_uses_default() {
+        let config = make_config(&[
+            ("https://registry.npmjs.org", None),
+        ]);
+        let (url, _) = resolve_registry(&config, "lodash");
+        assert_eq!(url, "https://registry.npmjs.org");
+    }
+
+    #[test]
+    fn resolve_registry_scoped_package_uses_scope_registry() {
+        let config = make_config(&[
+            ("https://registry.mycompany.com", Some("@mycompany")),
+            ("https://registry.npmjs.org", None),
+        ]);
+        let (url, _) = resolve_registry(&config, "@mycompany/utils");
+        assert_eq!(url, "https://registry.mycompany.com");
+    }
+
+    #[test]
+    fn resolve_registry_unknown_scope_falls_back_to_default() {
+        let config = make_config(&[
+            ("https://registry.mycompany.com", Some("@mycompany")),
+            ("https://registry.npmjs.org", None),
+        ]);
+        let (url, _) = resolve_registry(&config, "@other/pkg");
+        assert_eq!(url, "https://registry.npmjs.org");
+    }
+
+    #[test]
+    fn registry_chain_active_returns_primary() {
+        let chain = RegistryChain::new("https://registry.npmjs.org");
+        assert_eq!(chain.active(), "https://registry.npmjs.org");
+    }
+
+    #[test]
+    fn registry_chain_failover_advances_to_mirror() {
+        let chain = RegistryChain::new("https://registry.npmjs.org");
+        let next = chain.failover();
+        assert!(next.is_some());
+        assert_ne!(chain.active(), "https://registry.npmjs.org");
+    }
+
+    #[test]
+    fn registry_chain_reset_returns_to_primary() {
+        let chain = RegistryChain::new("https://registry.npmjs.org");
+        chain.failover();
+        chain.reset();
+        assert_eq!(chain.active(), "https://registry.npmjs.org");
+    }
+}
