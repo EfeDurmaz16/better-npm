@@ -1,5 +1,5 @@
 use super::discovery::OspError;
-use super::manifest::ServiceManifest;
+use super::manifest::{ServiceManifest, ProviderEndpoints};
 use super::vault::{Vault, ServiceStatus};
 
 /// Rotate credentials for a provisioned service.
@@ -57,4 +57,54 @@ pub fn rotate_credentials(
     updated.status = ServiceStatus::Active;
 
     vault.update_entry(updated)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_manifest_no_rotate() -> ServiceManifest {
+        ServiceManifest {
+            manifest_id: "test-manifest".to_string(),
+            manifest_version: 1,
+            previous_version: None,
+            osp_spec_version: Some("1.0".to_string()),
+            provider_id: "test.provider.com".to_string(),
+            display_name: "Test Provider".to_string(),
+            provider_url: None,
+            provider_public_key: None,
+            offerings: vec![],
+            accepted_payment_methods: None,
+            trust_tier_required: None,
+            endpoints: ProviderEndpoints {
+                provision: "/provision".to_string(),
+                deprovision: "/deprovision".to_string(),
+                credentials: "/credentials".to_string(),
+                rotate: None,
+                status: "/status".to_string(),
+                usage: None,
+                health: "/health".to_string(),
+            },
+            extensions: None,
+            effective_at: None,
+            provider_signature: "sig".to_string(),
+        }
+    }
+
+    #[test]
+    fn rotate_no_rotate_endpoint_returns_vault_error() {
+        let mut vault = Vault::open().unwrap();
+        let manifest = make_manifest_no_rotate();
+        let result = rotate_credentials(&mut vault, &manifest, "test.provider.com", "postgres");
+        assert!(result.is_err());
+        if let Err(OspError::VaultError(msg)) = result {
+            assert!(msg.contains("does not support credential rotation"));
+        } else {
+            panic!("Expected VaultError");
+        }
+    }
 }

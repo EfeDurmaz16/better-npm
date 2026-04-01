@@ -63,3 +63,42 @@ pub fn update_service_status(
     updated.status = new_status;
     vault.update_entry(updated)
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn list_services_returns_vec() {
+        let vault = Vault::open().unwrap();
+        let entries = list_services(&vault);
+        // Just verify it returns a Vec without panicking
+        let _ = entries.len();
+    }
+
+    #[test]
+    fn service_status_missing_returns_err() {
+        let vault = Vault::open().unwrap();
+        let result = service_status(&vault, "nonexistent-provider", "nonexistent-offering");
+        assert!(result.is_err());
+        if let Err(OspError::ResourceNotFound(msg)) = result {
+            assert!(msg.contains("nonexistent-provider"));
+        }
+    }
+
+    #[test]
+    fn update_service_status_missing_returns_err() {
+        let mut vault = Vault::open().unwrap();
+        let result = update_service_status(
+            &mut vault,
+            "nonexistent-provider",
+            "nonexistent-offering",
+            ServiceStatus::Active,
+        );
+        assert!(result.is_err());
+    }
+}

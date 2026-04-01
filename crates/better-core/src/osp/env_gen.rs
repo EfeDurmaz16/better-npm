@@ -54,3 +54,56 @@ pub fn write_env_file(
         .map_err(|e| OspError::VaultError(format!("Cannot write {}: {}", output_path.display(), e)))?;
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generate_env_missing_template_returns_err() {
+        let vault = super::Vault::open().unwrap();
+        let key = [0u8; 32];
+        let result = generate_env(
+            std::path::Path::new("/nonexistent/.env.osp"),
+            &vault,
+            &key,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn generate_env_plain_pairs_no_osp_uris() {
+        let tmp = std::env::temp_dir().join("env-gen-test-plain");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let template = tmp.join(".env.osp");
+        std::fs::write(&template, "# comment\nFOO=bar\nBAZ=qux\n").unwrap();
+
+        let vault = super::Vault::open().unwrap();
+        let key = [0u8; 32];
+        let pairs = generate_env(&template, &vault, &key).unwrap();
+        assert_eq!(pairs.len(), 2);
+        assert!(pairs.iter().any(|(k, v)| k == "FOO" && v == "bar"));
+        assert!(pairs.iter().any(|(k, v)| k == "BAZ" && v == "qux"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn write_env_file_creates_file_with_pairs() {
+        let tmp = std::env::temp_dir().join("env-gen-test-write");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let output = tmp.join(".env");
+        let pairs = vec![
+            ("KEY_ONE".to_string(), "value1".to_string()),
+            ("KEY_TWO".to_string(), "value with spaces".to_string()),
+        ];
+        write_env_file(&output, &pairs).unwrap();
+        let content = std::fs::read_to_string(&output).unwrap();
+        assert!(content.contains("KEY_ONE=value1"));
+        assert!(content.contains("KEY_TWO=\"value with spaces\""));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}

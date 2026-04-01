@@ -52,3 +52,50 @@ impl McpTransport for StdioTransport {
             .map_err(|e| format!("failed to flush stdout: {}", e))
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stdio_transport_new_does_not_panic() {
+        let _t = StdioTransport::new();
+    }
+
+    #[test]
+    fn json_rpc_response_serializes_result() {
+        let resp = JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: Some(serde_json::json!(42)),
+            result: Some(serde_json::json!({"status": "ok"})),
+            error: None,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"jsonrpc\":\"2.0\""));
+        assert!(json.contains("\"status\":\"ok\""));
+        // error field is skipped when None
+        assert!(!json.contains("\"error\""));
+    }
+
+    #[test]
+    fn json_rpc_response_serializes_error() {
+        let resp = JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: Some(serde_json::json!(1)),
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32601,
+                message: "Method not found".to_string(),
+                data: None,
+            }),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("-32601"));
+        assert!(json.contains("Method not found"));
+        assert!(!json.contains("\"result\""));
+    }
+}
