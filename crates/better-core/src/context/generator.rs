@@ -129,3 +129,40 @@ struct WorkItem {
     package_root: std::path::PathBuf,
     cache_path: std::path::PathBuf,
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generate_all_empty_dir_returns_ok() {
+        let tmp = std::env::temp_dir().join("ctx-gen-test-empty");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let cache = std::env::temp_dir().join("ctx-gen-test-cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let result = generate_all(&tmp, &cache, false);
+        assert!(result.is_ok());
+        let report = result.unwrap();
+        assert_eq!(report.generated, 0);
+        assert_eq!(report.cached, 0);
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    #[test]
+    fn generate_all_creates_better_context_dir() {
+        let tmp = std::env::temp_dir().join("ctx-gen-test-dir");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let cache = std::env::temp_dir().join("ctx-gen-test-dir-cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let _ = generate_all(&tmp, &cache, false);
+        // .better/context dir should be created
+        assert!(tmp.join(".better").join("context").exists());
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+}

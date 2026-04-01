@@ -153,3 +153,65 @@ fn generate_variations(query: &str) -> Vec<String> {
 
     variations
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generate_variations_hyphenated_word() {
+        let v = generate_variations("some-package");
+        assert!(v.contains(&"some_package".to_string()));
+        assert!(v.contains(&"somepackage".to_string()));
+    }
+
+    #[test]
+    fn generate_variations_underscored_word() {
+        let v = generate_variations("some_package");
+        assert!(v.contains(&"some-package".to_string()));
+    }
+
+    #[test]
+    fn generate_variations_plain_word_adds_prefixes() {
+        let v = generate_variations("requests");
+        assert!(v.contains(&"python-requests".to_string()));
+        assert!(v.contains(&"pyrequests".to_string()));
+    }
+
+    #[test]
+    fn generate_variations_multi_word() {
+        let v = generate_variations("http client");
+        assert!(v.contains(&"http-client".to_string()));
+        assert!(v.contains(&"http_client".to_string()));
+    }
+
+    #[test]
+    fn parse_pypi_package_valid_json() {
+        let json = r#"{
+            "info": {
+                "name": "requests",
+                "version": "2.28.0",
+                "summary": "HTTP library",
+                "license": "Apache-2.0",
+                "keywords": "http,client",
+                "maintainer": "kennethreitz",
+                "classifiers": []
+            }
+        }"#;
+        let pkg = parse_pypi_package(json).unwrap();
+        assert_eq!(pkg.name, "requests");
+        assert_eq!(pkg.version, "2.28.0");
+        assert_eq!(pkg.ecosystem, "python");
+        assert_eq!(pkg.license, Some("Apache-2.0".to_string()));
+    }
+
+    #[test]
+    fn parse_pypi_package_missing_info_returns_err() {
+        let result = parse_pypi_package(r#"{"urls": []}"#);
+        assert!(result.is_err());
+    }
+}

@@ -128,3 +128,53 @@ pub fn check_org_budget(
 
     Ok(check)
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn budget_check_serde_roundtrip() {
+        let check = BudgetCheck {
+            allowed: true,
+            remaining_budget: "100.00".to_string(),
+            requires_approval: false,
+            reason: None,
+        };
+        let json = serde_json::to_string(&check).unwrap();
+        let back: BudgetCheck = serde_json::from_str(&json).unwrap();
+        assert!(back.allowed);
+        assert_eq!(back.remaining_budget, "100.00");
+        assert!(!back.requires_approval);
+    }
+
+    #[test]
+    fn org_role_serde_roundtrip() {
+        let role = OrgRole::Developer;
+        let json = serde_json::to_string(&role).unwrap();
+        let back: OrgRole = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, OrgRole::Developer));
+    }
+
+    #[test]
+    fn org_config_serde_roundtrip() {
+        let config = OrgConfig {
+            org_id: "org-1".to_string(),
+            org_name: "Acme Corp".to_string(),
+            monthly_budget: "500.00".to_string(),
+            currency: "USD".to_string(),
+            approval_required_above: Some("100.00".to_string()),
+            allowed_payment_targets: None,
+            blocked_payment_targets: None,
+            members: vec![],
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let back: OrgConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.org_id, "org-1");
+        assert_eq!(back.currency, "USD");
+    }
+}

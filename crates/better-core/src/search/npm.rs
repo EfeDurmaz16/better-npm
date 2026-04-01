@@ -142,3 +142,63 @@ fn urlencoded(s: &str) -> String {
         })
         .collect()
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn urlencoded_replaces_spaces_with_plus() {
+        assert_eq!(urlencoded("hello world"), "hello+world");
+    }
+
+    #[test]
+    fn urlencoded_escapes_special_chars() {
+        assert_eq!(urlencoded("a&b=c"), "a%26b%3Dc");
+    }
+
+    #[test]
+    fn parse_npm_search_response_valid_json() {
+        let json = r#"{
+            "objects": [
+                {
+                    "package": {
+                        "name": "lodash",
+                        "version": "4.17.21",
+                        "description": "A utility library",
+                        "date": "2021-01-01",
+                        "license": "MIT",
+                        "keywords": ["util"],
+                        "maintainers": [{"name": "jdalton"}]
+                    },
+                    "score": {"final": 0.9},
+                    "downloads": {"weekly": 50000000}
+                }
+            ]
+        }"#;
+        let results = parse_npm_search_response(json).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "lodash");
+        assert_eq!(results[0].version, "4.17.21");
+        assert_eq!(results[0].ecosystem, "npm");
+        assert_eq!(results[0].downloads_weekly, 50000000);
+    }
+
+    #[test]
+    fn parse_npm_search_response_missing_objects_returns_err() {
+        let result = parse_npm_search_response(r#"{"total": 0}"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_npm_search_response_types_package_detected() {
+        let json = r#"{"objects": [{"package": {"name": "@types/node", "version": "18.0.0", "description": ""}, "score": {"final": 0.5}}]}"#;
+        let results = parse_npm_search_response(json).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].has_types);
+    }
+}
