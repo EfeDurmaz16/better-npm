@@ -3,6 +3,11 @@
 
 pub mod supply_chain;
 pub mod audit_fix;
+pub mod signals;
+pub mod scoring;
+
+pub use signals::PackageSignals;
+pub use scoring::{ReputationScore, Grade, ScoreBreakdown, ReputationFlag, FlagType, FlagSeverity, compute_score};
 
 use serde::Serialize;
 
@@ -30,14 +35,7 @@ pub struct IntelligenceSignals {
     pub typosquat_risk: f64,        // 0-1
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub enum DownloadTrend {
-    Surging,    // >50% growth
-    Growing,    // 10-50% growth
-    Stable,     // ±10%
-    Declining,  // -10 to -50%
-    Abandoned,  // <-50% or 0 downloads
-}
+pub use signals::DownloadTrend;
 
 impl PackageIntelligence {
     /// Compute overall grade from weighted signals.
@@ -50,6 +48,7 @@ impl PackageIntelligence {
             DownloadTrend::Stable => 15.0,
             DownloadTrend::Declining => 8.0,
             DownloadTrend::Abandoned => 0.0,
+            DownloadTrend::Anomalous => 5.0,
         };
         let freshness = if signals.last_release_days_ago < 90 {
             15.0
