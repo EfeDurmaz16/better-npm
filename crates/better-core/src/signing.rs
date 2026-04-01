@@ -238,3 +238,60 @@ fn current_iso_time() -> String {
     let year = 1970 + days / 365;
     format!("{}-01-01T00:00:00Z", year) // simplified
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generate_key_pair_produces_nonempty_keys() {
+        let kp = generate_key_pair();
+        assert!(!kp.private_key.is_empty());
+        assert!(!kp.public_key.is_empty());
+        // Keys should be different
+        assert_ne!(kp.private_key, kp.public_key);
+    }
+
+    #[test]
+    fn sign_and_verify_roundtrip() {
+        let kp = generate_key_pair();
+        let sig = sign_package("lodash", "4.17.21", "abc123hash", &kp.private_key, "test-signer").unwrap();
+        let valid = verify_signature(&sig, "abc123hash").unwrap();
+        assert!(valid);
+    }
+
+    #[test]
+    fn verify_wrong_hash_returns_false() {
+        let kp = generate_key_pair();
+        let sig = sign_package("lodash", "4.17.21", "abc123hash", &kp.private_key, "test-signer").unwrap();
+        let valid = verify_signature(&sig, "different_hash").unwrap();
+        assert!(!valid);
+    }
+
+    #[test]
+    fn sign_with_invalid_key_returns_error() {
+        let result = sign_package("lodash", "1.0.0", "hash", "not-base64!!!", "test");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn signature_has_correct_algorithm() {
+        let kp = generate_key_pair();
+        let sig = sign_package("express", "4.18.2", "hash456", &kp.private_key, "ci").unwrap();
+        assert_eq!(sig.algorithm, "ed25519");
+        assert_eq!(sig.package, "express");
+        assert_eq!(sig.version, "4.18.2");
+    }
+
+    #[test]
+    fn two_key_pairs_are_different() {
+        let kp1 = generate_key_pair();
+        let kp2 = generate_key_pair();
+        // Very unlikely to be equal with proper entropy
+        assert_ne!(kp1.public_key, kp2.public_key);
+    }
+}
