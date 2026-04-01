@@ -129,3 +129,39 @@ pub fn sort_json_keys(value: &serde_json::Value) -> serde_json::Value {
         other => other.clone(),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sort_json_keys_sorts_alphabetically() {
+        let json = serde_json::json!({"z": 3, "a": 1, "m": 2});
+        let sorted = sort_json_keys(&json);
+        let keys: Vec<&str> = sorted.as_object().unwrap().keys().map(|k| k.as_str()).collect();
+        assert_eq!(keys, vec!["a", "m", "z"]);
+    }
+
+    #[test]
+    fn sort_json_keys_handles_nested_objects() {
+        let json = serde_json::json!({"b": {"z": 1, "a": 2}, "a": 3});
+        let sorted = sort_json_keys(&json);
+        let outer_keys: Vec<&str> = sorted.as_object().unwrap().keys().map(|k| k.as_str()).collect();
+        assert_eq!(outer_keys, vec!["a", "b"]);
+        let inner_keys: Vec<&str> = sorted["b"].as_object().unwrap().keys().map(|k| k.as_str()).collect();
+        assert_eq!(inner_keys, vec!["a", "z"]);
+    }
+
+    #[test]
+    fn sort_json_keys_handles_arrays() {
+        let json = serde_json::json!([{"b": 2, "a": 1}]);
+        let sorted = sort_json_keys(&json);
+        let arr = sorted.as_array().unwrap();
+        let keys: Vec<&str> = arr[0].as_object().unwrap().keys().map(|k| k.as_str()).collect();
+        assert_eq!(keys, vec!["a", "b"]);
+    }
+}

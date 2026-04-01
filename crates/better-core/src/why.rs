@@ -220,3 +220,35 @@ fn extract_dep_names(entry_json: &str) -> Vec<String> {
     names
 }
 
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trace_missing_lockfile_errors() {
+        let result = trace_dependency(
+            std::path::Path::new("/nonexistent"),
+            std::path::Path::new("/nonexistent/package-lock.json"),
+            "lodash",
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_lockfile_graph_missing_packages_errors() {
+        let result = parse_lockfile_graph("{}");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_lockfile_graph_parses_simple_package() {
+        let json = r#"{"packages":{"node_modules/lodash":{"name":"lodash","version":"4.17.21","dependencies":{}}}}"#;
+        let graph = parse_lockfile_graph(json).unwrap();
+        assert!(!graph.is_empty());
+    }
+}

@@ -158,3 +158,42 @@ fn compute_sha512_hex(data: &[u8]) -> String {
         h, h.rotate_left(8), h.rotate_right(8), h.rotate_left(16),
         h.rotate_right(16), h.rotate_left(24), h.rotate_right(24), h ^ 0xdeadbeef)
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_registry() -> DecentralizedRegistry {
+        DecentralizedRegistry {
+            name: "test".to_string(),
+            protocol: RegistryProtocol::Ipfs,
+            gateway: "https://ipfs.io".to_string(),
+            index_cid: None,
+        }
+    }
+
+    #[test]
+    fn federation_empty_returns_none() {
+        let fed = RegistryFederation::new(vec![]);
+        assert!(fed.resolve("lodash", "4.17.21").is_none());
+    }
+
+    #[test]
+    fn federation_unreachable_registry_returns_none() {
+        let fed = RegistryFederation::new(vec![test_registry()]);
+        // fetch will fail (no real network), so resolve returns None
+        assert!(fed.resolve("lodash", "4.17.21").is_none());
+    }
+
+    #[test]
+    fn compute_sha512_hex_deterministic() {
+        let h1 = compute_sha512_hex(b"hello");
+        let h2 = compute_sha512_hex(b"hello");
+        assert_eq!(h1, h2);
+        assert_eq!(h1.len(), 128); // 16 hex chars × 8
+    }
+}
