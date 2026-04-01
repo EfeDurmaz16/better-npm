@@ -2,6 +2,7 @@ pub mod scoring;
 pub mod classifier;
 pub mod filter;
 pub mod cache;
+pub mod allowlist;
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -12,6 +13,7 @@ use crate::{resolve_from_lockfile, JsonWriter};
 pub use scoring::{DepContext, Severity, ScoredVuln, score_vuln};
 pub use classifier::DepClassifier;
 pub use filter::AuditFilter;
+pub use allowlist::{AuditAllowList, Waiver, WaiverResult};
 
 // --- B.8: Security Audit ---
 
