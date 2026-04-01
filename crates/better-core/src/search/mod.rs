@@ -62,3 +62,43 @@ pub fn search(
         search_ms: start.elapsed().as_millis() as u64,
     })
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_result_serde() {
+        let result = SearchResult {
+            packages: vec![],
+            query: "lodash".to_string(),
+            total: 0,
+            search_ms: 5,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"query\":\"lodash\""));
+    }
+
+    #[test]
+    fn search_package_has_types_field() {
+        let pkg = SearchPackage {
+            name: "@types/node".to_string(),
+            ecosystem: "npm".to_string(),
+            version: "18.0.0".to_string(),
+            description: "".to_string(),
+            score: 0.9,
+            downloads_weekly: 1000000,
+            last_publish: "2024-01-01".to_string(),
+            license: None,
+            maintainers: 1,
+            has_types: true,
+            keywords: vec![],
+        };
+        let json = serde_json::to_string(&pkg).unwrap();
+        assert!(json.contains("has_types"));
+    }
+}

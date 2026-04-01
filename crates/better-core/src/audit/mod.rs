@@ -426,3 +426,46 @@ fn is_leap(year: u32) -> bool {
     (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
 }
 
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_leap_year_checks() {
+        assert!(is_leap(2000));
+        assert!(is_leap(2024));
+        assert!(!is_leap(1900));
+        assert!(!is_leap(2023));
+    }
+
+    #[test]
+    fn today_date_iso_returns_valid_format() {
+        let date = today_date_iso();
+        assert_eq!(date.len(), 10);
+        assert_eq!(&date[4..5], "-");
+        assert_eq!(&date[7..8], "-");
+    }
+
+    #[test]
+    fn smart_audit_with_allowlist_no_vulns() {
+        let raw: Vec<AuditVulnerability> = vec![];
+        let report = smart_audit_with_allowlist(
+            &raw,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &AuditFilter::default(),
+            None,
+            Some("2026-01-01"),
+        );
+        assert_eq!(report.total, 0);
+        assert_eq!(report.risk_level, "none");
+    }
+}

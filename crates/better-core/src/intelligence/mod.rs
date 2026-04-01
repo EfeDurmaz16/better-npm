@@ -135,3 +135,53 @@ pub fn predict_maintenance_risk(signals: &IntelligenceSignals) -> &'static str {
     }
     "low"
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use signals::DownloadTrend;
+
+    fn make_signals(days_ago: u64, maintenance: f64) -> IntelligenceSignals {
+        IntelligenceSignals {
+            download_trend: DownloadTrend::Stable,
+            maintenance_activity: maintenance,
+            security_history: 1.0,
+            bus_factor: 2,
+            age_days: 1000,
+            release_frequency_days: 30.0,
+            last_release_days_ago: days_ago,
+            open_issues: None,
+            typosquat_risk: 0.0,
+        }
+    }
+
+    #[test]
+    fn predict_maintenance_risk_low_for_active() {
+        let signals = make_signals(30, 0.9);
+        assert_eq!(predict_maintenance_risk(&signals), "low");
+    }
+
+    #[test]
+    fn predict_maintenance_risk_high_for_stale() {
+        let signals = make_signals(400, 0.9);
+        assert_eq!(predict_maintenance_risk(&signals), "high");
+    }
+
+    #[test]
+    fn check_typosquat_exact_name_returns_zero() {
+        let known = vec!["lodash".to_string(), "express".to_string()];
+        // Exact match is distance 0, so skipped (d > 0 check) — returns 0
+        assert_eq!(check_typosquat("lodash", &known), 0.0);
+    }
+
+    #[test]
+    fn check_typosquat_one_char_diff_returns_high_risk() {
+        let known = vec!["lodash".to_string()];
+        let risk = check_typosquat("lodesh", &known);
+        assert!((risk - 0.9).abs() < 0.01);
+    }
+}
