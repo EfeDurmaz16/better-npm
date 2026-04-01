@@ -119,6 +119,9 @@ pub use exit_codes::*;
 pub mod upgrade;
 pub use upgrade::*;
 
+pub mod cid;
+pub use cid::*;
+
 pub mod unused;
 pub use unused::*;
 
