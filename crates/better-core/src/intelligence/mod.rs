@@ -6,10 +6,12 @@ pub mod audit_fix;
 pub mod signals;
 pub mod scoring;
 pub mod impact;
+pub mod predict;
 
 pub use signals::PackageSignals;
 pub use scoring::{ReputationScore, Grade, ScoreBreakdown, ReputationFlag, FlagType, FlagSeverity, compute_score};
 pub use impact::{ImpactAnalysis, UsageAnalysis, RemovalImpact, AlternativePackage, ImpactRisk, MigrationEffort, analyze_impact};
+pub use predict::{MaintenancePrediction, MaintenanceStatus, PredictionSignal, Trend, Action, predict_maintenance};
 
 use serde::Serialize;
 

@@ -258,6 +258,11 @@ fn classify_risk(files: usize, dependents: usize, exports: usize) -> ImpactRisk 
 // Known alternatives database (static, curated)
 // ---------------------------------------------------------------------------
 
+/// Public alias used by `predict.rs`.
+pub fn known_alternatives_pub(package: &str) -> Vec<AlternativePackage> {
+    known_alternatives(package)
+}
+
 fn known_alternatives(package: &str) -> Vec<AlternativePackage> {
     match package {
         "moment" => vec![
