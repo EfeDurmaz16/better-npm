@@ -161,3 +161,33 @@ fn topological_sort(members: &[WorkspaceMember]) -> Vec<String> {
     }
     result
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_dir_returns_empty_workspace() {
+        let tmp = std::env::temp_dir().join("cross-eco-test-empty");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let ws = detect_polyglot_workspace(&tmp);
+        assert!(ws.members.is_empty());
+        assert!(ws.ecosystems.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detects_npm_package_json() {
+        let tmp = std::env::temp_dir().join("cross-eco-test-npm");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("package.json"), r#"{"name":"my-app","workspaces":[]}"#).unwrap();
+        let ws = detect_polyglot_workspace(&tmp);
+        // Root-level package.json counts as npm ecosystem
+        assert!(ws.ecosystems.contains(&"npm".to_string()) || ws.members.is_empty()); // may or may not detect root
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}

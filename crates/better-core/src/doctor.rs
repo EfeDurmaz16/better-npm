@@ -108,3 +108,31 @@ pub fn run_doctor(project_root: &Path, threshold: i32) -> Result<DoctorReport, S
     Ok(DoctorReport { score, threshold, findings })
 }
 
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_node_modules_gives_critical_finding() {
+        let tmp = std::env::temp_dir().join("doctor-test-nonm");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let report = run_doctor(&tmp, 70).unwrap();
+        assert!(report.findings.iter().any(|f| f.id == "missing-node-modules"));
+        assert!(report.score < 100);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn empty_node_modules_runs_ok() {
+        let tmp = std::env::temp_dir().join("doctor-test-empty-nm");
+        std::fs::create_dir_all(tmp.join("node_modules")).unwrap();
+        let report = run_doctor(&tmp, 70).unwrap();
+        assert!(report.score >= 0);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}

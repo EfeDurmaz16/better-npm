@@ -172,3 +172,39 @@ fn scan_project(root: &PathBuf) -> Option<ProjectScan> {
 
     None
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scan_empty_roots_returns_zero_projects() {
+        let report = scan_projects(&[]);
+        assert_eq!(report.projects_scanned, 0);
+        assert!(report.shared_packages.is_empty());
+    }
+
+    #[test]
+    fn scan_dir_without_project_files_returns_zero() {
+        let tmp = std::env::temp_dir().join("cross-project-test-empty");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let report = scan_projects(&[tmp.clone()]);
+        assert_eq!(report.projects_scanned, 0);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn scan_npm_project_with_lockfile_is_detected() {
+        let tmp = std::env::temp_dir().join("cross-project-test-npm");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("package.json"), r#"{"name":"app","dependencies":{}}"#).unwrap();
+        std::fs::write(tmp.join("package-lock.json"), r#"{"lockfileVersion":3,"packages":{}}"#).unwrap();
+        let report = scan_projects(&[tmp.clone()]);
+        assert_eq!(report.projects_scanned, 1);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}

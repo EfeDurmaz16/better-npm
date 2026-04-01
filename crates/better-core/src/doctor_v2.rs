@@ -257,3 +257,30 @@ fn dir_size_approx(dir: &Path) -> u64 {
     }
     total
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn doctor_v2_empty_project_runs_ok() {
+        let tmp = std::env::temp_dir().join("doctorv2-test-empty");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let result = run_doctor_v2(&tmp);
+        assert!(result.is_ok());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn doctor_v2_has_overall_score() {
+        let tmp = std::env::temp_dir().join("doctorv2-test-checks");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let report = run_doctor_v2(&tmp).unwrap();
+        assert!(report.overall_score <= 100);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
