@@ -37,3 +37,28 @@ pub fn check_dedupe(root: &Path) -> Result<DedupeReport, String> {
     })
 }
 
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_dedupe_missing_node_modules_errors() {
+        let result = check_dedupe(std::path::Path::new("/nonexistent-dedupe-project"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn check_dedupe_empty_node_modules_no_duplicates() {
+        let tmp = std::env::temp_dir().join("dedupe-test-empty");
+        std::fs::create_dir_all(tmp.join("node_modules")).unwrap();
+        let report = check_dedupe(&tmp).unwrap();
+        assert_eq!(report.total_duplicates, 0);
+        assert_eq!(report.deduplicatable, 0);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
