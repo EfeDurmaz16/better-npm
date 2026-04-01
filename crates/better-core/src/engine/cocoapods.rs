@@ -174,7 +174,7 @@ impl PackageEngine for CocoaPodsEngine {
 /// Parse the PODS section of Podfile.lock.
 ///
 /// Format:
-/// ```
+/// ```text
 /// PODS:
 ///   - Alamofire (5.8.1)
 ///   - AFNetworking (4.0.1):
