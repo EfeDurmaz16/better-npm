@@ -101,6 +101,12 @@ pub use dedupe_fix::*;
 pub mod offline;
 pub use offline::*;
 
+pub mod ci;
+pub use ci::*;
+
+pub mod diff;
+pub use diff::*;
+
 pub mod unused;
 pub use unused::*;
 
