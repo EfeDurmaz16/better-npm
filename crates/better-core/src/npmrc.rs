@@ -86,3 +86,62 @@ fn find_auth_token<'a>(config: &'a NpmrcConfig, registry_url: &str) -> Option<&'
     None
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::NpmrcConfig;
+    use std::io::Write;
+
+    fn config_from(npmrc: &str) -> NpmrcConfig {
+        let mut c = NpmrcConfig::default();
+        parse_npmrc_content(npmrc, &mut c);
+        c
+    }
+
+    #[test]
+    fn parse_registry_line() {
+        let c = config_from("registry=https://my.registry.com/\n");
+        assert_eq!(c.default_registry, "https://my.registry.com/");
+    }
+
+    #[test]
+    fn parse_scoped_registry() {
+        let c = config_from("@myco:registry=https://registry.myco.com/\n");
+        assert_eq!(c.scoped_registries.len(), 1);
+        assert_eq!(c.scoped_registries[0].0, "@myco");
+        assert_eq!(c.scoped_registries[0].1, "https://registry.myco.com/");
+    }
+
+    #[test]
+    fn parse_auth_token() {
+        let c = config_from("//registry.npmjs.org/:_authToken=abc123\n");
+        assert_eq!(c.auth_tokens.len(), 1);
+        assert_eq!(c.auth_tokens[0].1, "abc123");
+    }
+
+    #[test]
+    fn registry_for_scoped_pkg_returns_scoped() {
+        let mut c = NpmrcConfig::default();
+        c.scoped_registries.push(("@myco".to_string(), "https://registry.myco.com/".to_string()));
+        let (url, _) = registry_for_package(&c, "@myco/utils");
+        assert_eq!(url, "https://registry.myco.com/");
+    }
+
+    #[test]
+    fn registry_for_unscoped_returns_default() {
+        let c = NpmrcConfig::default();
+        let (url, _) = registry_for_package(&c, "lodash");
+        assert!(url.contains("npmjs.org"));
+    }
+
+    #[test]
+    fn parse_ignores_comments() {
+        let c = config_from("# this is a comment\n; also a comment\nregistry=https://my.example.com/\n");
+        assert_eq!(c.default_registry, "https://my.example.com/");
+    }
+}
+

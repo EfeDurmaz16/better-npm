@@ -91,3 +91,65 @@ pub fn verify_lock_metadata(project_root: &Path) -> Result<LockVerifyResult, Str
     Ok(LockVerifyResult { ok, key_matches, lockfile_matches, expected, current })
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_lock(root: &Path, name: &str, content: &[u8]) {
+        std::fs::create_dir_all(root).unwrap();
+        let mut f = std::fs::File::create(root.join(name)).unwrap();
+        f.write_all(content).unwrap();
+    }
+
+    #[test]
+    fn generate_lock_metadata_no_lockfile_errors() {
+        let tmp = std::env::temp_dir().join("lock-test-nofile");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let result = generate_lock_metadata(&tmp);
+        assert!(result.is_err());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn generate_lock_metadata_creates_better_lock_json() {
+        let tmp = std::env::temp_dir().join("lock-test-generate");
+        write_lock(&tmp, "package-lock.json", b"{\"lockfileVersion\":3}");
+        let meta = generate_lock_metadata(&tmp).unwrap();
+        assert!(!meta.key.is_empty());
+        assert!(!meta.lockfile_hash.is_empty());
+        assert_eq!(meta.lockfile_file, "package-lock.json");
+        assert!(tmp.join("better.lock.json").exists());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn verify_lock_metadata_matches_after_generate() {
+        let tmp = std::env::temp_dir().join("lock-test-verify");
+        write_lock(&tmp, "package-lock.json", b"{\"lockfileVersion\":3,\"packages\":{}}");
+        generate_lock_metadata(&tmp).unwrap();
+        let verify = verify_lock_metadata(&tmp).unwrap();
+        assert!(verify.ok);
+        assert!(verify.key_matches);
+        assert!(verify.lockfile_matches);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn verify_lock_metadata_fails_if_lockfile_changes() {
+        let tmp = std::env::temp_dir().join("lock-test-changed");
+        write_lock(&tmp, "package-lock.json", b"{\"lockfileVersion\":3}");
+        generate_lock_metadata(&tmp).unwrap();
+        // Modify the lockfile after generating metadata
+        write_lock(&tmp, "package-lock.json", b"{\"lockfileVersion\":3,\"modified\":true}");
+        let verify = verify_lock_metadata(&tmp).unwrap();
+        assert!(!verify.ok);
+        assert!(!verify.lockfile_matches);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
+

@@ -171,3 +171,50 @@ fn extract_engines_node(json: &str) -> Option<String> {
 
     extract_field(&format!("{{{}}}", engines_body), "node")
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn satisfies_wildcard_always_true() {
+        assert!(satisfies("20.0.0", "*"));
+        assert!(satisfies("18.0.0", ""));
+    }
+
+    #[test]
+    fn satisfies_gte_operator() {
+        assert!(satisfies("20.0.0", ">=18"));
+        assert!(!satisfies("16.0.0", ">=18"));
+    }
+
+    #[test]
+    fn satisfies_gt_operator() {
+        assert!(satisfies("20.0.0", ">18"));
+        assert!(!satisfies("18.0.0", ">18"));
+    }
+
+    #[test]
+    fn satisfies_exact_major_match() {
+        // Without an operator, only major version must match
+        assert!(satisfies("18.5.0", "18.0.0"));
+        assert!(!satisfies("20.0.0", "18.0.0"));
+    }
+
+    #[test]
+    fn satisfies_or_range() {
+        assert!(satisfies("16.0.0", ">=16 || >=18"));
+        assert!(satisfies("20.0.0", ">=16 || >=18"));
+        assert!(!satisfies("14.0.0", ">=16 || >=18"));
+    }
+
+    #[test]
+    fn satisfies_caret_range() {
+        assert!(satisfies("18.5.0", "^18.0.0"));
+        assert!(!satisfies("19.0.0", "^18.0.0"));
+    }
+}
