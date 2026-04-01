@@ -190,3 +190,32 @@ impl PluginRegistry {
 impl Default for PluginRegistry {
     fn default() -> Self { Self::new() }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registry_new_does_not_panic() {
+        let _r = PluginRegistry::new();
+    }
+
+    #[test]
+    fn list_plugins_empty_dir_returns_empty() {
+        let tmp = std::env::temp_dir().join("plugin-test-empty");
+        let r = PluginRegistry { plugins_dir: tmp.clone() };
+        assert!(r.list().is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn load_all_missing_dir_returns_empty() {
+        let r = PluginRegistry { plugins_dir: std::path::PathBuf::from("/nonexistent-plugin-dir") };
+        let engines = r.load_all();
+        assert!(engines.is_empty());
+    }
+}

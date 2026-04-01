@@ -128,3 +128,57 @@ fn write_script_policy(project_root: &Path, policy: &ScriptPolicy) -> Result<(),
         .map_err(|e| format!("Failed to write policy: {}", e))
 }
 
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_policy_allows_scripts() {
+        let policy = load_script_policy(std::path::Path::new("/nonexistent-scripts-project"));
+        assert_eq!(policy.default_policy, "allow");
+    }
+
+    #[test]
+    fn blocked_package_is_blocked() {
+        let policy = ScriptPolicy {
+            default_policy: "allow".to_string(),
+            allowed_packages: vec![],
+            blocked_packages: vec!["evil-pkg".to_string()],
+            allowed_script_types: vec!["postinstall".to_string()],
+            trusted_scopes: vec![],
+        };
+        let (decision, _) = check_script_permission(&policy, "evil-pkg", "postinstall");
+        assert_eq!(decision, "blocked");
+    }
+
+    #[test]
+    fn allowed_package_is_allowed() {
+        let policy = ScriptPolicy {
+            default_policy: "deny".to_string(),
+            allowed_packages: vec!["safe-pkg".to_string()],
+            blocked_packages: vec![],
+            allowed_script_types: vec![],
+            trusted_scopes: vec![],
+        };
+        let (decision, _) = check_script_permission(&policy, "safe-pkg", "postinstall");
+        assert_eq!(decision, "allowed");
+    }
+
+    #[test]
+    fn trusted_scope_allows_scoped_package() {
+        let policy = ScriptPolicy {
+            default_policy: "deny".to_string(),
+            allowed_packages: vec![],
+            blocked_packages: vec![],
+            allowed_script_types: vec![],
+            trusted_scopes: vec!["@myco".to_string()],
+        };
+        let (decision, _) = check_script_permission(&policy, "@myco/utils", "postinstall");
+        assert_eq!(decision, "allowed");
+    }
+}
