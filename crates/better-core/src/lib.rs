@@ -107,6 +107,12 @@ pub use ci::*;
 pub mod diff;
 pub use diff::*;
 
+pub mod env_manager;
+pub use env_manager::*;
+
+pub mod costs;
+pub use costs::*;
+
 pub mod unused;
 pub use unused::*;
 
