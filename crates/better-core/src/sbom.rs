@@ -500,3 +500,77 @@ fn simple_uuid() -> String {
         ((seed >> 74).wrapping_mul(0xDEAD_BEEF) & 0xFFFF_FFFF_FFFF) as u64,
     )
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_report(components: Vec<SbomComponent>) -> SbomReport {
+        SbomReport {
+            format: "cyclonedx".to_string(),
+            components,
+            project_name: "my-app".to_string(),
+            project_version: "1.0.0".to_string(),
+        }
+    }
+
+    fn make_component(name: &str, version: &str) -> SbomComponent {
+        SbomComponent {
+            name: name.to_string(),
+            version: version.to_string(),
+            license: "MIT".to_string(),
+            purl: format!("pkg:npm/{}@{}", name, version),
+            integrity: "sha512-abc".to_string(),
+        }
+    }
+
+    #[test]
+    fn cyclonedx_json_contains_bom_format() {
+        let report = make_report(vec![make_component("lodash", "4.17.21")]);
+        let json = write_cyclonedx_json(&report);
+        assert!(json.contains("CycloneDX"));
+        assert!(json.contains("1.6"));
+    }
+
+    #[test]
+    fn cyclonedx_json_contains_component_purl() {
+        let report = make_report(vec![make_component("express", "4.18.2")]);
+        let json = write_cyclonedx_json(&report);
+        assert!(json.contains("pkg:npm/express@4.18.2"));
+        assert!(json.contains("express"));
+    }
+
+    #[test]
+    fn spdx_json_contains_spdx_version() {
+        let report = make_report(vec![make_component("react", "18.0.0")]);
+        let json = write_spdx_json(&report);
+        assert!(json.contains("SPDX"));
+        assert!(json.contains("react"));
+    }
+
+    #[test]
+    fn spdx_json_contains_package_license() {
+        let report = make_report(vec![make_component("lodash", "4.17.21")]);
+        let json = write_spdx_json(&report);
+        assert!(json.contains("MIT"));
+    }
+
+    #[test]
+    fn build_environment_capture_has_os() {
+        let env = BuildEnvironment::capture();
+        assert!(!env.os.is_empty());
+        assert!(!env.arch.is_empty());
+    }
+
+    #[test]
+    fn empty_report_generates_valid_cyclonedx() {
+        let report = make_report(vec![]);
+        let json = write_cyclonedx_json(&report);
+        assert!(json.contains("CycloneDX"));
+        assert!(json.contains("my-app"));
+    }
+}
