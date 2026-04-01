@@ -145,3 +145,63 @@ pub fn review_dependencies(project_root: &Path) -> Result<DependencyReview, Stri
         },
     })
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_pkg_json(root: &std::path::Path, content: &str) {
+        std::fs::create_dir_all(root).unwrap();
+        let mut f = std::fs::File::create(root.join("package.json")).unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn review_empty_deps_passes_clean() {
+        let tmp = std::env::temp_dir().join("review-test-empty");
+        write_pkg_json(&tmp, r#"{"name":"app","version":"1.0.0","dependencies":{}}"#);
+        let review = review_dependencies(&tmp).unwrap();
+        assert_eq!(review.total_deps, 0);
+        assert_eq!(review.overall_health.security_rating, "clean");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn review_deprecated_package_flagged() {
+        let tmp = std::env::temp_dir().join("review-test-deprecated");
+        write_pkg_json(&tmp, r#"{"name":"app","version":"1.0.0","dependencies":{"request":"^2.88.0"}}"#);
+        let review = review_dependencies(&tmp).unwrap();
+        assert!(review.suggestions.iter().any(|s| s.packages.contains(&"request".to_string())));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn review_consolidation_suggested() {
+        let tmp = std::env::temp_dir().join("review-test-consolidate");
+        write_pkg_json(&tmp, r#"{"name":"app","version":"1.0.0","dependencies":{"moment":"^2.0.0","dayjs":"^1.0.0"}}"#);
+        let review = review_dependencies(&tmp).unwrap();
+        assert!(review.suggestions.iter().any(|s| matches!(s.category, SuggestionCategory::Consolidate)));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn review_missing_package_json_returns_error() {
+        let result = review_dependencies(std::path::Path::new("/nonexistent-review-project"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn review_score_decreases_with_more_issues() {
+        let tmp = std::env::temp_dir().join("review-test-score");
+        // request is deprecated, moment+dayjs triggers consolidation
+        write_pkg_json(&tmp, r#"{"name":"app","version":"1.0.0","dependencies":{"request":"^2","moment":"^2","dayjs":"^1","node-uuid":"^1","tslint":"^5"}}"#);
+        let review = review_dependencies(&tmp).unwrap();
+        assert!(review.overall_health.score < 100);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}

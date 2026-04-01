@@ -122,3 +122,47 @@ fn get_breaking_changes(from: &str, to: &str) -> Vec<String> {
         ],
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn known_migration_has_steps() {
+        let plan = plan_migration("moment", "dayjs", std::path::Path::new("/tmp")).unwrap();
+        assert!(!plan.steps.is_empty());
+        assert_eq!(plan.from, "moment");
+        assert_eq!(plan.to, "dayjs");
+    }
+
+    #[test]
+    fn known_migration_has_breaking_changes() {
+        let plan = plan_migration("moment", "dayjs", std::path::Path::new("/tmp")).unwrap();
+        assert!(!plan.breaking_changes.is_empty());
+        assert!(matches!(plan.estimated_effort, MigrationEffort::Medium | MigrationEffort::High));
+    }
+
+    #[test]
+    fn unknown_migration_has_generic_step() {
+        let plan = plan_migration("some-lib", "other-lib", std::path::Path::new("/tmp")).unwrap();
+        assert_eq!(plan.steps.len(), 1);
+        assert!(plan.steps[0].commands.iter().any(|c| c.contains("other-lib")));
+    }
+
+    #[test]
+    fn request_to_got_has_multiple_breaking_changes() {
+        let plan = plan_migration("request", "got", std::path::Path::new("/tmp")).unwrap();
+        assert!(plan.breaking_changes.len() >= 2);
+    }
+
+    #[test]
+    fn tslint_to_eslint_migration_is_known() {
+        let plan = plan_migration("tslint", "eslint", std::path::Path::new("/tmp")).unwrap();
+        assert!(!plan.breaking_changes.is_empty());
+        assert!(plan.breaking_changes.iter().any(|b| b.contains("eslint") || b.contains("tslint")));
+    }
+}

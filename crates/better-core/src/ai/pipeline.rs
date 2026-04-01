@@ -272,3 +272,54 @@ pub fn standard_pipeline(include_deploy: bool) -> Pipeline {
         rollback_on_failure: true,
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn standard_pipeline_without_deploy_has_4_stages() {
+        let p = standard_pipeline(false);
+        assert_eq!(p.stages.len(), 4);
+        assert!(!p.stages.iter().any(|s| s.name == "deploy"));
+    }
+
+    #[test]
+    fn standard_pipeline_with_deploy_has_5_stages() {
+        let p = standard_pipeline(true);
+        assert_eq!(p.stages.len(), 5);
+        assert!(p.stages.iter().any(|s| s.name == "deploy"));
+    }
+
+    #[test]
+    fn execute_pipeline_returns_results() {
+        let p = standard_pipeline(false);
+        // Pipeline may stop early if a step fails (blocking=true); just assert no panic
+        let result = execute_pipeline(&p, std::path::Path::new("/tmp"));
+        assert!(!result.stages.is_empty());
+    }
+
+    #[test]
+    fn stage_depends_on_unfinished_is_skipped() {
+        let p = Pipeline {
+            name: "test-pipeline".to_string(),
+            stages: vec![
+                PipelineStage {
+                    name: "build".to_string(),
+                    action: PipelineAction::Build,
+                    depends_on: vec!["install".to_string()], // install never ran
+                    timeout_secs: 10,
+                    retries: 0,
+                },
+            ],
+            gates: vec![],
+            rollback_on_failure: false,
+        };
+        let result = execute_pipeline(&p, std::path::Path::new("/tmp"));
+        assert!(result.stages.iter().any(|r| matches!(r.status, StageStatus::Skipped)));
+    }
+}

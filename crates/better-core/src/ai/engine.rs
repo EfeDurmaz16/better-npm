@@ -188,3 +188,70 @@ fn standard_tools() -> Vec<AiTool> {
         AiTool { name: "migrate".to_string(), description: "Migrate from one package to another".to_string(), parameters: serde_json::json!({"from": "string", "to": "string"}) },
     ]
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_context() -> ProjectContext {
+        ProjectContext {
+            ecosystems: vec!["npm".to_string()],
+            existing_deps: vec![],
+            framework: None,
+            osp_services: vec![],
+            file_structure: vec![],
+        }
+    }
+
+    #[test]
+    fn from_env_returns_err_with_no_api_keys() {
+        // Remove API keys from environment
+        std::env::remove_var("ANTHROPIC_API_KEY");
+        std::env::remove_var("OPENAI_API_KEY");
+        std::env::remove_var("BETTER_AI_ENDPOINT");
+        let result = AiEngine::from_env();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn from_env_uses_anthropic_key() {
+        std::env::set_var("ANTHROPIC_API_KEY", "test-key-123");
+        let engine = AiEngine::from_env().unwrap();
+        assert!(matches!(engine.provider, AiProvider::Claude { .. }));
+        assert!(engine.context_budget > 0);
+        std::env::remove_var("ANTHROPIC_API_KEY");
+    }
+
+    #[test]
+    fn standard_tools_has_install_and_audit() {
+        let tools = standard_tools();
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"install"));
+        assert!(names.contains(&"audit"));
+        assert!(names.contains(&"migrate"));
+    }
+
+    #[test]
+    fn project_context_serialization() {
+        let ctx = empty_context();
+        let json = serde_json::to_string(&AiRequest {
+            intent: "add a database".to_string(),
+            project_context: ctx,
+            available_tools: vec![],
+        }).unwrap();
+        assert!(json.contains("database"));
+    }
+
+    #[test]
+    fn ai_plan_deserialization() {
+        let json = r#"{"explanation":"install pg","steps":[{"step_number":1,"description":"install","tool_call":{"tool":"install","arguments":{}},"expected_result":"ok"}],"estimated_time":"<1s","requires_confirmation":false}"#;
+        let plan: AiPlan = serde_json::from_str(json).unwrap();
+        assert_eq!(plan.steps.len(), 1);
+        assert_eq!(plan.steps[0].tool_call.tool, "install");
+        assert!(!plan.requires_confirmation);
+    }
+}

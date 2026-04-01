@@ -124,3 +124,40 @@ pub struct StepResult {
     pub output: String,
     pub duration_ms: u64,
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_project_plan_has_install_step() {
+        let plan = AgentOrchestrator::plan_new_project(std::path::Path::new("/tmp"));
+        assert!(!plan.steps.is_empty());
+        assert!(plan.steps.iter().any(|s| s.args.contains(&"install".to_string())));
+    }
+
+    #[test]
+    fn ci_plan_has_audit_step() {
+        let plan = AgentOrchestrator::plan_ci(std::path::Path::new("/tmp"));
+        assert!(plan.steps.iter().any(|s| s.args.iter().any(|a| a.contains("audit"))));
+    }
+
+    #[test]
+    fn dry_run_execute_all_succeed() {
+        let plan = AgentOrchestrator::plan_new_project(std::path::Path::new("/tmp"));
+        let results = AgentOrchestrator::execute(&plan, std::path::Path::new("/tmp"), true);
+        assert_eq!(results.len(), plan.steps.len());
+        assert!(results.iter().all(|r| r.success));
+    }
+
+    #[test]
+    fn plan_name_is_set() {
+        let plan = AgentOrchestrator::plan_ci(std::path::Path::new("/tmp"));
+        assert!(!plan.name.is_empty());
+        assert_eq!(plan.name, "ci-pipeline");
+    }
+}
