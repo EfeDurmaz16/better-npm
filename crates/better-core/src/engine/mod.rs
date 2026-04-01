@@ -281,3 +281,46 @@ impl EngineRegistry {
         members
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn engine_registry_lists_expected_engines() {
+        let reg = EngineRegistry::new();
+        let names = reg.list();
+        assert!(names.contains(&"npm"));
+        assert!(names.contains(&"cargo"));
+        assert!(names.contains(&"go"));
+        assert!(names.contains(&"python"));
+    }
+
+    #[test]
+    fn engine_registry_get_npm() {
+        let reg = EngineRegistry::new();
+        let engine = reg.get("npm");
+        assert!(engine.is_some());
+        assert_eq!(engine.unwrap().name(), "npm");
+    }
+
+    #[test]
+    fn engine_registry_get_unknown_returns_none() {
+        let reg = EngineRegistry::new();
+        assert!(reg.get("unknown-engine-xyz").is_none());
+    }
+
+    #[test]
+    fn engine_registry_detect_empty_dir_no_engines() {
+        let tmp = std::env::temp_dir().join("engine-reg-test-empty");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let reg = EngineRegistry::new();
+        let detected = reg.detect(&tmp);
+        assert!(detected.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
