@@ -60,3 +60,44 @@ impl PackageEngine for PhpEngine {
 
     fn outdated(&self, _: &Path) -> Result<Vec<OutdatedPackage>, EngineError> { Ok(vec![]) }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::PackageEngine;
+
+    #[test]
+    fn name_is_php() {
+        assert_eq!(PhpEngine.name(), "php");
+    }
+
+    #[test]
+    fn detect_false_without_composer_json() {
+        let tmp = std::env::temp_dir().join("php-engine-test-nofile");
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert!(!PhpEngine.detect(&tmp));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detect_true_with_composer_json() {
+        let tmp = std::env::temp_dir().join("php-engine-test-hasfile");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("composer.json"), r#"{"name":"test/pkg"}"#).unwrap();
+        assert!(PhpEngine.detect(&tmp));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_no_composer_lock_returns_empty() {
+        let tmp = std::env::temp_dir().join("php-engine-test-nolock");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let graph = PhpEngine.resolve(&tmp).unwrap();
+        assert!(graph.packages.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}

@@ -253,3 +253,53 @@ fn check_go_outdated(project_root: &Path) -> Result<Vec<OutdatedPackage>, Engine
 
     Ok(outdated)
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::PackageEngine;
+
+    #[test]
+    fn name_is_go() {
+        assert_eq!(GoEngine.name(), "go");
+    }
+
+    #[test]
+    fn detect_false_without_go_mod() {
+        let tmp = std::env::temp_dir().join("go-engine-test-nomod");
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert!(!GoEngine.detect(&tmp));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detect_true_with_go_mod() {
+        let tmp = std::env::temp_dir().join("go-engine-test-hasmod");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("go.mod"), "module example.com/foo\ngo 1.21\n").unwrap();
+        assert!(GoEngine.detect(&tmp));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_parses_require_block() {
+        let tmp = std::env::temp_dir().join("go-engine-test-resolve");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("go.mod"), "module example.com/foo\ngo 1.21\nrequire (\n\tgithub.com/stretchr/testify v1.8.4\n)\n").unwrap();
+        let graph = GoEngine.resolve(&tmp).unwrap();
+        assert_eq!(graph.packages.len(), 1);
+        assert_eq!(graph.packages[0].name, "github.com/stretchr/testify");
+        assert_eq!(graph.packages[0].version, "1.8.4");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_missing_go_mod_errors() {
+        let result = GoEngine.resolve(std::path::Path::new("/nonexistent-go-project-xyz"));
+        assert!(result.is_err());
+    }
+}

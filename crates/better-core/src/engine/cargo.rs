@@ -361,3 +361,45 @@ fn classify_update(current: &str, latest: &str) -> String {
         "patch".to_string()
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::PackageEngine;
+
+    #[test]
+    fn name_is_cargo() {
+        assert_eq!(CargoEngine.name(), "cargo");
+    }
+
+    #[test]
+    fn detect_false_without_cargo_toml() {
+        let tmp = std::env::temp_dir().join("cargo-engine-test-nofile");
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert!(!CargoEngine.detect(&tmp));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detect_true_with_cargo_toml() {
+        let tmp = std::env::temp_dir().join("cargo-engine-test-hasfile");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("Cargo.toml"), "[package]\nname = \"test\"\n").unwrap();
+        assert!(CargoEngine.detect(&tmp));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_missing_cargo_lock_returns_empty() {
+        let tmp = std::env::temp_dir().join("cargo-engine-test-nolock");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("Cargo.toml"), "[package]\nname = \"test\"\n").unwrap();
+        let graph = CargoEngine.resolve(&tmp).unwrap();
+        assert!(graph.packages.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}

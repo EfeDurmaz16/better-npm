@@ -177,3 +177,44 @@ fn check_nuget_outdated(project_root: &Path) -> Result<Vec<OutdatedPackage>, Eng
     }
     Ok(outdated)
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::PackageEngine;
+
+    #[test]
+    fn name_is_dotnet() {
+        assert_eq!(DotNetEngine.name(), "dotnet");
+    }
+
+    #[test]
+    fn detect_false_empty_dir() {
+        let tmp = std::env::temp_dir().join("dotnet-engine-test-nofile");
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert!(!DotNetEngine.detect(&tmp));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detect_true_with_packages_lock_json() {
+        let tmp = std::env::temp_dir().join("dotnet-engine-test-lock");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("packages.lock.json"), r#"{"version":1,"dependencies":{}}"#).unwrap();
+        assert!(DotNetEngine.detect(&tmp));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_no_lockfile_empty_dir_returns_empty() {
+        let tmp = std::env::temp_dir().join("dotnet-engine-test-noproj");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let graph = DotNetEngine.resolve(&tmp).unwrap();
+        assert!(graph.packages.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}

@@ -218,3 +218,48 @@ impl PackageEngine for SwiftEngine {
         Ok(vec![])
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::PackageEngine;
+
+    #[test]
+    fn name_is_swift() {
+        assert_eq!(SwiftEngine.name(), "swift");
+    }
+
+    #[test]
+    fn detect_false_without_package_swift() {
+        let tmp = std::env::temp_dir().join("swift-engine-test-nofile");
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert!(!SwiftEngine.detect(&tmp));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detect_true_with_package_swift() {
+        let tmp = std::env::temp_dir().join("swift-engine-test-hasfile");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("Package.swift"), "// swift-tools-version:5.9\n").unwrap();
+        assert!(SwiftEngine.detect(&tmp));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_no_package_resolved_graceful() {
+        let tmp = std::env::temp_dir().join("swift-engine-test-nolock");
+        std::fs::create_dir_all(&tmp).unwrap();
+        // Without Package.resolved, swift CLI is invoked which may not be present.
+        // Accept either empty graph (swift missing) or error.
+        match SwiftEngine.resolve(&tmp) {
+            Ok(graph) => assert!(graph.packages.is_empty()),
+            Err(_) => {} // expected when swift CLI is not installed
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}

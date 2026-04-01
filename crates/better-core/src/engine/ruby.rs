@@ -143,3 +143,44 @@ fn check_gem_outdated(project_root: &Path) -> Result<Vec<OutdatedPackage>, Engin
     }
     Ok(outdated)
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::PackageEngine;
+
+    #[test]
+    fn name_is_ruby() {
+        assert_eq!(RubyEngine.name(), "ruby");
+    }
+
+    #[test]
+    fn detect_false_without_gemfile() {
+        let tmp = std::env::temp_dir().join("ruby-engine-test-nofile");
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert!(!RubyEngine.detect(&tmp));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detect_true_with_gemfile() {
+        let tmp = std::env::temp_dir().join("ruby-engine-test-hasfile");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("Gemfile"), "source 'https://rubygems.org'\n").unwrap();
+        assert!(RubyEngine.detect(&tmp));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_no_gemfile_lock_returns_empty() {
+        let tmp = std::env::temp_dir().join("ruby-engine-test-nolock");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let graph = RubyEngine.resolve(&tmp).unwrap();
+        assert!(graph.packages.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}

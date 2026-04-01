@@ -171,3 +171,51 @@ impl InstallProgress {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_non_tty_does_not_panic() {
+        let _p = InstallProgress::new(false, false);
+    }
+
+    #[test]
+    fn new_json_progress_does_not_panic() {
+        let _p = InstallProgress::new(false, true);
+    }
+
+    #[test]
+    fn set_totals_and_increment_no_panic() {
+        let p = InstallProgress::new(false, false);
+        p.set_resolve_total(10);
+        p.inc_resolve();
+        p.finish_resolve();
+    }
+
+    #[test]
+    fn fetch_progress_methods_no_panic() {
+        let p = InstallProgress::new(false, false);
+        p.set_fetch_total(5);
+        p.inc_fetch();
+        p.inc_fetch_bytes(1024);
+        p.set_fetch_msg("downloading");
+        p.finish_fetch();
+    }
+
+    #[test]
+    fn extract_and_link_no_panic() {
+        let p = InstallProgress::new(false, false);
+        p.set_extract_total(3);
+        p.inc_extract();
+        p.finish_extract();
+        p.set_link_total(2);
+        p.inc_link();
+        p.finish_link();
+    }
+}

@@ -150,3 +150,50 @@ impl PackageEngine for NpmEngine {
             .collect())
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::PackageEngine;
+
+    #[test]
+    fn name_is_npm() {
+        assert_eq!(NpmEngine.name(), "npm");
+    }
+
+    #[test]
+    fn manifest_files_contains_package_json() {
+        assert!(NpmEngine.manifest_files().contains(&"package.json"));
+    }
+
+    #[test]
+    fn detect_false_without_package_json() {
+        let tmp = std::env::temp_dir().join("npm-engine-test-nopkg");
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert!(!NpmEngine.detect(&tmp));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detect_true_with_package_json() {
+        let tmp = std::env::temp_dir().join("npm-engine-test-haspkg");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("package.json"), r#"{"name":"test"}"#).unwrap();
+        assert!(NpmEngine.detect(&tmp));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_missing_lockfile_errors() {
+        let tmp = std::env::temp_dir().join("npm-engine-test-nolock");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("package.json"), r#"{"name":"test"}"#).unwrap();
+        let result = NpmEngine.resolve(&tmp);
+        assert!(result.is_err());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
