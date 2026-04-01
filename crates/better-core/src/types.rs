@@ -686,3 +686,44 @@ pub struct SbomReport {
     pub project_name: String,
     pub project_version: String,
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn node_layout_from_arg_hoist() {
+        assert_eq!(NodeLayout::from_arg("hoist"), Some(NodeLayout::Hoist));
+        assert_eq!(NodeLayout::from_arg("hoisted"), Some(NodeLayout::Hoist));
+        assert_eq!(NodeLayout::from_arg("flat"), Some(NodeLayout::Hoist));
+        assert_eq!(NodeLayout::from_arg("strict"), Some(NodeLayout::Strict));
+        assert_eq!(NodeLayout::from_arg("pnpm"), Some(NodeLayout::Strict));
+        assert_eq!(NodeLayout::from_arg("unknown"), None);
+    }
+
+    #[test]
+    fn node_layout_as_str() {
+        assert_eq!(NodeLayout::Hoist.as_str(), "hoist");
+        assert_eq!(NodeLayout::Strict.as_str(), "strict");
+    }
+
+    #[test]
+    fn link_strategy_from_arg() {
+        assert!(matches!(LinkStrategy::from_arg("auto"), Some(LinkStrategy::Auto)));
+        assert!(matches!(LinkStrategy::from_arg("hardlink"), Some(LinkStrategy::Hardlink)));
+        assert!(matches!(LinkStrategy::from_arg("copy"), Some(LinkStrategy::Copy)));
+        assert!(LinkStrategy::from_arg("invalid").is_none());
+    }
+
+    #[test]
+    fn materialize_profile_from_arg() {
+        assert!(matches!(MaterializeProfile::from_arg("auto"), Some(MaterializeProfile::Auto)));
+        assert!(matches!(MaterializeProfile::from_arg("io-heavy"), Some(MaterializeProfile::IoHeavy)));
+        assert!(matches!(MaterializeProfile::from_arg("small-files"), Some(MaterializeProfile::SmallFiles)));
+        assert!(MaterializeProfile::from_arg("bogus").is_none());
+    }
+}

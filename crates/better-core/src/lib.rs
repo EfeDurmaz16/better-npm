@@ -1021,3 +1021,73 @@ pub fn package_name_from_path(rel_path: &str) -> String {
     "unknown".to_string()
 }
 
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_json_field_basic() {
+        let json = r#"{"name":"lodash","version":"4.17.21"}"#;
+        assert_eq!(extract_json_field(json, "name"), Some("lodash".to_string()));
+        assert_eq!(extract_json_field(json, "version"), Some("4.17.21".to_string()));
+    }
+
+    #[test]
+    fn extract_json_field_missing_returns_none() {
+        let json = r#"{"name":"lodash"}"#;
+        assert_eq!(extract_json_field(json, "nonexistent"), None);
+    }
+
+    #[test]
+    fn package_name_from_path_simple() {
+        assert_eq!(package_name_from_path("node_modules/lodash"), "lodash");
+    }
+
+    #[test]
+    fn package_name_from_path_scoped() {
+        assert_eq!(package_name_from_path("node_modules/@types/node"), "@types/node");
+    }
+
+    #[test]
+    fn depth_from_path_zero() {
+        let p = std::path::Path::new("/project/src/index.js");
+        assert_eq!(depth_from_path(p), 0);
+    }
+
+    #[test]
+    fn depth_from_path_one() {
+        let p = std::path::Path::new("/project/node_modules/lodash/index.js");
+        assert_eq!(depth_from_path(p), 1);
+    }
+
+    #[test]
+    fn percentile_p95_empty_returns_zero() {
+        assert_eq!(percentile_p95(vec![]), 0);
+    }
+
+    #[test]
+    fn percentile_p95_sorted() {
+        let vals: Vec<u64> = (1..=100).collect();
+        let p95 = percentile_p95(vals);
+        assert_eq!(p95, 95);
+    }
+
+    #[test]
+    fn is_scope_dir_detects_at_sign() {
+        let p = std::path::Path::new("/node_modules/@types");
+        assert!(is_scope_dir(p));
+        let p2 = std::path::Path::new("/node_modules/lodash");
+        assert!(!is_scope_dir(p2));
+    }
+
+    #[test]
+    fn chrono_now_returns_nonempty_string() {
+        let now = chrono_now();
+        assert!(!now.is_empty());
+    }
+}
