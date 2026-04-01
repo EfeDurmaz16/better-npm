@@ -95,6 +95,9 @@ pub use materialize::*;
 pub mod delta;
 pub use delta::*;
 
+pub mod dedupe_fix;
+pub use dedupe_fix::*;
+
 pub mod unused;
 pub use unused::*;
 
