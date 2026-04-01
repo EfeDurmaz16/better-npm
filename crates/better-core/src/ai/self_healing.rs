@@ -95,3 +95,74 @@ impl SelfHealingEngine {
         actions
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_file(path: &std::path::Path, content: &[u8]) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        let mut f = std::fs::File::create(path).unwrap();
+        f.write_all(content).unwrap();
+    }
+
+    #[test]
+    fn empty_project_no_actions() {
+        let tmp = std::env::temp_dir().join("heal-test-empty");
+        std::fs::create_dir_all(&tmp).unwrap();
+        // No package.json, no lockfile → no actions
+        let actions = SelfHealingEngine::heal(&tmp, true);
+        assert!(actions.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn missing_lockfile_detected() {
+        let tmp = std::env::temp_dir().join("heal-test-missing-lock");
+        write_file(&tmp.join("package.json"), b"{}");
+        let actions = SelfHealingEngine::heal(&tmp, true);
+        assert!(actions.iter().any(|a| a.issue.contains("lockfile")));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn node_modules_missing_with_lockfile_detected() {
+        let tmp = std::env::temp_dir().join("heal-test-nm-missing");
+        write_file(&tmp.join("package.json"), b"{}");
+        write_file(&tmp.join("package-lock.json"), b"{}");
+        // node_modules intentionally absent
+        let actions = SelfHealingEngine::heal(&tmp, true);
+        assert!(actions.iter().any(|a| a.issue.contains("node_modules")));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn deprecated_in_lockfile_flagged() {
+        let tmp = std::env::temp_dir().join("heal-test-deprecated");
+        write_file(&tmp.join("package.json"), b"{}");
+        write_file(&tmp.join("package-lock.json"), b"{\"deprecated\": \"use new-pkg\"}");
+        std::fs::create_dir_all(tmp.join("node_modules")).unwrap();
+        let actions = SelfHealingEngine::heal(&tmp, true);
+        assert!(actions.iter().any(|a| a.issue.contains("Deprecated")));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn env_example_copied_when_not_dry_run() {
+        let tmp = std::env::temp_dir().join("heal-test-env");
+        write_file(&tmp.join(".env.example"), b"SECRET=changeme");
+        let _ = std::fs::remove_file(tmp.join(".env")); // ensure .env absent
+        let actions = SelfHealingEngine::heal(&tmp, false);
+        assert!(actions.iter().any(|a| a.issue.contains(".env")));
+        // The copy should have been applied
+        assert!(actions.iter().any(|a| a.applied));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}

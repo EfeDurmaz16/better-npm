@@ -182,3 +182,60 @@ fn read_npm_deps(pkg_path: &Path) -> Option<HashMap<String, String>> {
     }
     Some(deps)
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_pkg(dir: &std::path::Path, content: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        let mut f = std::fs::File::create(dir.join("package.json")).unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn empty_dir_returns_zero_projects() {
+        let tmp = std::env::temp_dir().join("insights-test-empty");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let insights = analyze_org(&tmp).unwrap();
+        assert_eq!(insights.projects_analyzed, 0);
+        assert_eq!(insights.standardization_score, 100);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn single_project_no_inconsistencies() {
+        let tmp = std::env::temp_dir().join("insights-test-single");
+        write_pkg(&tmp, r#"{"name":"app","version":"1.0.0","dependencies":{"lodash":"^4.17.21"}}"#);
+        let insights = analyze_org(&tmp).unwrap();
+        // Single project → no inconsistencies by definition
+        assert!(insights.version_inconsistencies.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn version_inconsistency_detected_across_projects() {
+        let tmp = std::env::temp_dir().join("insights-test-inconsistent");
+        write_pkg(&tmp.join("app-a"), r#"{"name":"app-a","version":"1.0.0","dependencies":{"lodash":"4.17.20"}}"#);
+        write_pkg(&tmp.join("app-b"), r#"{"name":"app-b","version":"1.0.0","dependencies":{"lodash":"4.17.21"}}"#);
+        let insights = analyze_org(&tmp).unwrap();
+        assert!(!insights.version_inconsistencies.is_empty());
+        assert!(insights.version_inconsistencies.iter().any(|i| i.package == "lodash"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn consolidation_opportunity_detected() {
+        let tmp = std::env::temp_dir().join("insights-test-consolidate");
+        write_pkg(&tmp.join("app-a"), r#"{"name":"app-a","version":"1.0.0","dependencies":{"moment":"^2.0.0"}}"#);
+        write_pkg(&tmp.join("app-b"), r#"{"name":"app-b","version":"1.0.0","dependencies":{"dayjs":"^1.0.0"}}"#);
+        let insights = analyze_org(&tmp).unwrap();
+        assert!(!insights.consolidation_opportunities.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
