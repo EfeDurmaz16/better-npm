@@ -711,3 +711,75 @@ pub fn write_materialize_json(
     w.out.push('\n');
     w.finish()
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_pkg(nm: &Path, name: &str, content: &str) {
+        let dir = nm.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut f = std::fs::File::create(dir.join("package.json")).unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        let mut f2 = std::fs::File::create(dir.join("index.js")).unwrap();
+        f2.write_all(b"module.exports = {};").unwrap();
+    }
+
+    #[test]
+    fn analyze_missing_node_modules_returns_error() {
+        let result = analyze(Path::new("/nonexistent-analyze-project"), false);
+        assert!(result.is_err());
+        assert!(result.err().unwrap().contains("node_modules_not_found"));
+    }
+
+    #[test]
+    fn analyze_empty_node_modules() {
+        let tmp = std::env::temp_dir().join("analyze-test-empty");
+        let nm = tmp.join("node_modules");
+        std::fs::create_dir_all(&nm).unwrap();
+        let report = analyze(&tmp, false).unwrap();
+        assert_eq!(report.packages.len(), 0);
+        assert_eq!(report.totals.package_count, 0);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn analyze_single_package() {
+        let tmp = std::env::temp_dir().join("analyze-test-single");
+        let nm = tmp.join("node_modules");
+        write_pkg(&nm, "lodash", r#"{"name":"lodash","version":"4.17.21"}"#);
+        let report = analyze(&tmp, false).unwrap();
+        assert_eq!(report.packages.len(), 1);
+        assert_eq!(report.packages[0].name, "lodash");
+        assert_eq!(report.packages[0].version, "4.17.21");
+        assert!(report.totals.file_count > 0);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn analyze_multiple_packages_counts_correctly() {
+        let tmp = std::env::temp_dir().join("analyze-test-multi");
+        let nm = tmp.join("node_modules");
+        write_pkg(&nm, "express", r#"{"name":"express","version":"4.18.2"}"#);
+        write_pkg(&nm, "lodash", r#"{"name":"lodash","version":"4.17.21"}"#);
+        write_pkg(&nm, "chalk", r#"{"name":"chalk","version":"5.0.0"}"#);
+        let report = analyze(&tmp, false).unwrap();
+        assert_eq!(report.packages.len(), 3);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn analyze_logical_bytes_nonzero_for_files() {
+        let tmp = std::env::temp_dir().join("analyze-test-bytes");
+        let nm = tmp.join("node_modules");
+        write_pkg(&nm, "react", r#"{"name":"react","version":"18.0.0"}"#);
+        let report = analyze(&tmp, false).unwrap();
+        assert!(report.totals.logical > 0);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
