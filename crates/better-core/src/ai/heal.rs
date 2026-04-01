@@ -137,3 +137,58 @@ pub fn needs_healing(project_root: &Path) -> Vec<String> {
 
     issues
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_file(path: &std::path::Path, content: &[u8]) {
+        if let Some(p) = path.parent() { std::fs::create_dir_all(p).unwrap(); }
+        let mut f = std::fs::File::create(path).unwrap();
+        f.write_all(content).unwrap();
+    }
+
+    #[test]
+    fn needs_healing_empty_dir_no_issues() {
+        let tmp = std::env::temp_dir().join("heal2-test-empty");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let issues = needs_healing(&tmp);
+        assert!(issues.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn needs_healing_missing_node_modules() {
+        let tmp = std::env::temp_dir().join("heal2-test-nm");
+        write_file(&tmp.join("package.json"), b"{}");
+        write_file(&tmp.join("package-lock.json"), b"{}");
+        let issues = needs_healing(&tmp);
+        assert!(issues.iter().any(|i| i.contains("node_modules")));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn needs_healing_missing_lockfile() {
+        let tmp = std::env::temp_dir().join("heal2-test-nolock");
+        write_file(&tmp.join("package.json"), b"{}");
+        // No lockfile, no node_modules
+        let issues = needs_healing(&tmp);
+        assert!(issues.iter().any(|i| i.contains("lockfile") || i.contains("lock")));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn heal_project_dry_run_no_changes() {
+        let tmp = std::env::temp_dir().join("heal2-test-dry");
+        write_file(&tmp.join("package.json"), b"{}");
+        let report = heal_project(&tmp, true).unwrap();
+        // Dry run should not apply anything
+        assert_eq!(report.fixed_count, 0);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}

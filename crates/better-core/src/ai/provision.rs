@@ -132,3 +132,54 @@ fn detect_service_needs(project_root: &Path) -> Result<Vec<String>, String> {
 
     Ok(needs)
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_pkg_json(root: &std::path::Path, content: &str) {
+        std::fs::create_dir_all(root).unwrap();
+        let mut f = std::fs::File::create(root.join("package.json")).unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn no_dependencies_no_recommendations() {
+        let tmp = std::env::temp_dir().join("provision-test-empty");
+        write_pkg_json(&tmp, r#"{"name":"app","version":"1.0.0","dependencies":{}}"#);
+        let recs = recommend_services(&tmp).unwrap();
+        assert!(recs.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn database_dep_suggests_db_service() {
+        let tmp = std::env::temp_dir().join("provision-test-db");
+        write_pkg_json(&tmp, r#"{"name":"app","version":"1.0.0","dependencies":{"pg":"^8.0.0"}}"#);
+        let recs = recommend_services(&tmp).unwrap();
+        assert!(recs.iter().any(|r| r.service_type == "database"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn redis_dep_suggests_cache_service() {
+        let tmp = std::env::temp_dir().join("provision-test-cache");
+        write_pkg_json(&tmp, r#"{"name":"app","version":"1.0.0","dependencies":{"redis":"^4.0.0"}}"#);
+        let recs = recommend_services(&tmp).unwrap();
+        assert!(recs.iter().any(|r| r.service_type == "cache"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn missing_package_json_returns_empty() {
+        // When package.json is absent, detect_service_needs returns Ok([])
+        let result = recommend_services(std::path::Path::new("/nonexistent-provision-project"));
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+}
