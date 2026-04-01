@@ -100,3 +100,31 @@ fn gc_walk(dir: &Path, cutoff: &std::time::SystemTime, dry_run: bool, removed: &
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_stats_empty_dir_returns_zeros() {
+        let tmp = std::env::temp_dir().join("cache-stats-test-empty");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let stats = cache_stats(&tmp).unwrap();
+        assert_eq!(stats.total_bytes, 0);
+        assert_eq!(stats.package_count, 0);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn cache_gc_dry_run_no_deletion() {
+        let tmp = std::env::temp_dir().join("cache-gc-test-dry");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let report = cache_gc(&tmp, 30, true).unwrap();
+        assert_eq!(report.removed, 0);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}

@@ -120,3 +120,51 @@ fn dirs_next_or_home() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/tmp"))
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn put_and_get_roundtrip() {
+        let tmp = std::env::temp_dir().join("audit-cache-test");
+        let cache = OsvCache::with_dir(tmp.clone());
+        cache.put("test-key", r#"{"data":"test"}"#).unwrap();
+        let result = cache.get("test-key");
+        assert_eq!(result.as_deref(), Some(r#"{"data":"test"}"#));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn get_missing_returns_none() {
+        let tmp = std::env::temp_dir().join("audit-cache-test-miss");
+        let cache = OsvCache::with_dir(tmp.clone());
+        assert!(cache.get("nonexistent-key").is_none());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn clear_removes_entries() {
+        let tmp = std::env::temp_dir().join("audit-cache-test-clear");
+        let cache = OsvCache::with_dir(tmp.clone());
+        cache.put("key1", "data1").unwrap();
+        cache.put("key2", "data2").unwrap();
+        let count = cache.clear().unwrap();
+        assert_eq!(count, 2);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn invalidate_removes_specific_entry() {
+        let tmp = std::env::temp_dir().join("audit-cache-test-inv");
+        let cache = OsvCache::with_dir(tmp.clone());
+        cache.put("to-remove", "data").unwrap();
+        cache.invalidate("to-remove");
+        assert!(cache.get("to-remove").is_none());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
