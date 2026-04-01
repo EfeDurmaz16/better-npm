@@ -240,3 +240,55 @@ fn parse_iso_to_epoch(iso: &str) -> Option<u64> {
     let days = (year - 1970) * 365 + (year - 1969) / 4 + (month - 1) * 30 + day;
     Some(days * 86400 + hour * 3600 + min * 60 + sec)
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_path_contains_name_and_version() {
+        let p = cache_path("npm", "lodash", "4.17.21");
+        let s = p.to_string_lossy();
+        assert!(s.contains("lodash@4.17.21.md"));
+        assert!(s.contains("npm"));
+    }
+
+    #[test]
+    fn cache_path_escapes_slash_in_name() {
+        let p = cache_path("npm", "@types/node", "18.0.0");
+        let s = p.to_string_lossy();
+        assert!(s.contains("@types__node@18.0.0.md"));
+    }
+
+    #[test]
+    fn read_cached_returns_none_for_missing() {
+        let result = read_cached("npm", "nonexistent-pkg-xyz", "99.99.99");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn write_and_read_cached_roundtrip() {
+        write_cached("npm", "test-cache-pkg", "1.0.0-test", "# Test content\n", false).unwrap();
+        let result = read_cached("npm", "test-cache-pkg", "1.0.0-test");
+        assert_eq!(result, Some("# Test content\n".to_string()));
+        // Clean up
+        let p = cache_path("npm", "test-cache-pkg", "1.0.0-test");
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn parse_iso_to_epoch_valid() {
+        let epoch = parse_iso_to_epoch("2024-01-15T12:30:45.000Z");
+        assert!(epoch.is_some());
+        assert!(epoch.unwrap() > 0);
+    }
+
+    #[test]
+    fn parse_iso_to_epoch_short_string_returns_none() {
+        assert!(parse_iso_to_epoch("2024").is_none());
+    }
+}

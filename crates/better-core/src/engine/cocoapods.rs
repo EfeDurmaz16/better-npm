@@ -238,3 +238,54 @@ fn fetch_cocoapods_latest(
         .and_then(|n| n.as_str())
         .map(|s| s.to_string())
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detect_returns_false_no_podfile() {
+        let tmp = std::env::temp_dir().join("cocoapods-test-no-detect");
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert!(!CocoaPodsEngine.detect(&tmp));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detect_returns_true_with_podfile() {
+        let tmp = std::env::temp_dir().join("cocoapods-test-detect");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("Podfile"), "platform :ios, '15.0'\n").unwrap();
+        assert!(CocoaPodsEngine.detect(&tmp));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_returns_err_no_podfile_lock() {
+        let tmp = std::env::temp_dir().join("cocoapods-test-no-lock");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("Podfile"), "platform :ios, '15.0'\n").unwrap();
+        let result = CocoaPodsEngine.resolve(&tmp);
+        assert!(result.is_err());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_parses_podfile_lock() {
+        let tmp = std::env::temp_dir().join("cocoapods-test-resolve");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("Podfile"), "platform :ios, '15.0'\n").unwrap();
+        let lock = "PODS:\n  - Alamofire (5.8.1)\n  - SDWebImage (5.18.1):\n    - SDWebImage/Core (= 5.18.1)\n\nDEPENDENCIES:\n  - Alamofire (~> 5.0)\n";
+        std::fs::write(tmp.join("Podfile.lock"), lock).unwrap();
+        let graph = CocoaPodsEngine.resolve(&tmp).unwrap();
+        assert_eq!(graph.packages.len(), 2);
+        let names: Vec<&str> = graph.packages.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"Alamofire"));
+        assert!(names.contains(&"SDWebImage"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
