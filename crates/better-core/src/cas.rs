@@ -575,3 +575,118 @@ pub fn materialize_from_file_cas(
     Ok(stats)
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn setup_pkg_dir(root: &Path, files: &[(&str, &[u8])]) {
+        fs::create_dir_all(root).unwrap();
+        for (name, content) in files {
+            let path = root.join(name);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            let mut f = fs::File::create(&path).unwrap();
+            f.write_all(content).unwrap();
+        }
+    }
+
+    #[test]
+    fn ingest_single_file_package() {
+        let tmp = std::env::temp_dir().join("cas-test-ingest");
+        let store = tmp.join("store");
+        let pkg = tmp.join("pkg");
+        setup_pkg_dir(&pkg, &[("index.js", b"console.log('hello')")]);
+
+        let result = ingest_to_file_cas(&store, "sha256", "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234", &pkg).unwrap();
+        assert_eq!(result.total_files, 1);
+        assert_eq!(result.new_files, 1);
+        assert!(!result.reused);
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn ingest_idempotent_returns_reused() {
+        let tmp = std::env::temp_dir().join("cas-test-idempotent");
+        let store = tmp.join("store");
+        let pkg = tmp.join("pkg");
+        setup_pkg_dir(&pkg, &[("index.js", b"module.exports = {}")]);
+
+        let hex = "a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4";
+        ingest_to_file_cas(&store, "sha256", hex, &pkg).unwrap();
+        // Second ingest should return reused=true
+        let result2 = ingest_to_file_cas(&store, "sha256", hex, &pkg).unwrap();
+        assert!(result2.reused);
+        assert_eq!(result2.new_files, 0);
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn ingest_multiple_files() {
+        let tmp = std::env::temp_dir().join("cas-test-multi");
+        let store = tmp.join("store");
+        let pkg = tmp.join("pkg");
+        setup_pkg_dir(&pkg, &[
+            ("index.js", b"exports.a = 1;"),
+            ("utils.js", b"exports.b = 2;"),
+            ("lib/helper.js", b"exports.c = 3;"),
+        ]);
+
+        let hex = "b2c3d4e5b2c3d4e5b2c3d4e5b2c3d4e5b2c3d4e5b2c3d4e5b2c3d4e5b2c3d4e5";
+        let result = ingest_to_file_cas(&store, "sha256", hex, &pkg).unwrap();
+        assert_eq!(result.total_files, 3);
+        assert_eq!(result.new_files, 3);
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn materialize_missing_manifest_returns_ok_false() {
+        let tmp = std::env::temp_dir().join("cas-test-mat-missing");
+        let store = tmp.join("store");
+        let dest = tmp.join("dest");
+        fs::create_dir_all(&dest).unwrap();
+
+        let result = materialize_from_file_cas(
+            &store, "sha256",
+            "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+            &dest,
+            crate::types::LinkStrategy::Hardlink,
+        ).unwrap();
+        assert!(!result.ok);
+        assert_eq!(result.files, 0);
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn ingest_and_materialize_roundtrip() {
+        let tmp = std::env::temp_dir().join("cas-test-roundtrip");
+        let store = tmp.join("store");
+        let pkg = tmp.join("pkg");
+        let dest = tmp.join("dest");
+        setup_pkg_dir(&pkg, &[("main.js", b"const x = 42;")]);
+
+        let hex = "c3d4e5f6c3d4e5f6c3d4e5f6c3d4e5f6c3d4e5f6c3d4e5f6c3d4e5f6c3d4e5f6";
+        let ingest = ingest_to_file_cas(&store, "sha256", hex, &pkg).unwrap();
+        assert_eq!(ingest.total_files, 1);
+
+        fs::create_dir_all(&dest).unwrap();
+        let mat = materialize_from_file_cas(
+            &store, "sha256", hex, &dest,
+            crate::types::LinkStrategy::Copy,
+        ).unwrap();
+        assert!(mat.ok);
+        assert_eq!(mat.files, 1);
+        assert!(dest.join("main.js").exists());
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+}
