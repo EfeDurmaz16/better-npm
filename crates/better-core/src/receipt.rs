@@ -202,3 +202,60 @@ fn compute_sha256(input: &str) -> String {
     let result = hasher.finalize();
     format!("sha256:{:x}", result)
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_pkg(name: &str, version: &str) -> ResolvedPackage {
+        ResolvedPackage {
+            name: name.to_string(),
+            version: version.to_string(),
+            rel_path: format!("node_modules/{}", name),
+            resolved_url: String::new(),
+            integrity: String::new(),
+        }
+    }
+
+    #[test]
+    fn write_and_list_receipts() {
+        let tmp = std::env::temp_dir().join("receipt-test-write");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let pkgs = vec![make_pkg("lodash", "4.17.21")];
+        write_install_receipt(&tmp, &pkgs, Some(95), None, &[]).unwrap();
+        let receipts = list_receipts(&tmp).unwrap();
+        assert!(!receipts.is_empty());
+        assert_eq!(receipts[0].packages_installed, 1);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn list_receipts_no_receipt_file_returns_empty() {
+        let tmp = std::env::temp_dir().join("receipt-test-none");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let receipts = list_receipts(&tmp).unwrap();
+        assert!(receipts.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn verify_receipt_no_receipt_returns_err() {
+        let tmp = std::env::temp_dir().join("receipt-test-verify-none");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let result = verify_receipt(&tmp);
+        assert!(result.is_err()); // no receipt file → error
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn sha256_fn_produces_deterministic_hash() {
+        let h1 = compute_sha256("hello");
+        let h2 = compute_sha256("hello");
+        assert_eq!(h1, h2);
+        assert!(h1.starts_with("sha256:"));
+    }
+}

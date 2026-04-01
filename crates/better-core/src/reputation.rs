@@ -210,3 +210,57 @@ pub fn run_reputation(packages: &[(String, String)]) -> String {
 const _: fn() = || {
     let _: HashMap<String, String> = HashMap::new();
 };
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grade_high_score_is_a() {
+        assert_eq!(ReputationScore::grade(9.5), "A");
+    }
+
+    #[test]
+    fn grade_low_score_is_f() {
+        assert_eq!(ReputationScore::grade(1.0), "F");
+    }
+
+    #[test]
+    fn grade_mid_score_is_b() {
+        assert_eq!(ReputationScore::grade(7.5), "B");
+    }
+
+    #[test]
+    fn recommendation_trusted_for_high_score() {
+        let r = ReputationScore::recommendation(9.0);
+        assert!(r.contains("Trusted"));
+    }
+
+    #[test]
+    fn recommendation_avoid_for_low_score() {
+        let r = ReputationScore::recommendation(2.0);
+        assert!(r.contains("Avoid"));
+    }
+
+    #[test]
+    fn score_downloads_high_volume() {
+        assert_eq!(score_downloads(2_000_000), 2.0);
+        assert_eq!(score_downloads(50), 0.0);
+    }
+
+    #[test]
+    fn score_freshness_recent_is_2() {
+        assert_eq!(score_freshness(30), 2.0);
+        assert_eq!(score_freshness(400), 1.0); // 366-730 days → 1.0
+    }
+
+    #[test]
+    fn score_license_mit_is_2() {
+        assert_eq!(score_license(Some("MIT")), 2.0);
+        assert_eq!(score_license(None), 0.5);
+    }
+}
