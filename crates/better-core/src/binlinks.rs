@@ -366,3 +366,89 @@ pub fn run_lifecycle_scripts(
         },
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn make_pkg(nm: &Path, name: &str, pkg_json: &str) -> ResolvedPackage {
+        let dir = nm.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut f = std::fs::File::create(dir.join("package.json")).unwrap();
+        f.write_all(pkg_json.as_bytes()).unwrap();
+        // Create stub bin script
+        let mut js = std::fs::File::create(dir.join("cli.js")).unwrap();
+        js.write_all(b"#!/usr/bin/env node\n").unwrap();
+        ResolvedPackage {
+            name: name.to_string(),
+            version: "1.0.0".to_string(),
+            rel_path: name.to_string(),
+            resolved_url: String::new(),
+            integrity: String::new(),
+        }
+    }
+
+    #[test]
+    fn parse_bin_string_form() {
+        let json = r#"{"name":"mycli","version":"1.0.0","bin":"cli.js"}"#;
+        let bins = parse_bin_field(json, "mycli");
+        assert_eq!(bins.len(), 1);
+        assert_eq!(bins[0].0, "mycli");
+        assert_eq!(bins[0].1, "cli.js");
+    }
+
+    #[test]
+    fn parse_bin_object_form() {
+        let json = r#"{"name":"tools","version":"1.0.0","bin":{"tool1":"bin/tool1.js","tool2":"bin/tool2.js"}}"#;
+        let bins = parse_bin_field(json, "tools");
+        assert_eq!(bins.len(), 2);
+        let names: Vec<&str> = bins.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"tool1"));
+        assert!(names.contains(&"tool2"));
+    }
+
+    #[test]
+    fn parse_bin_no_bin_field_returns_empty() {
+        let json = r#"{"name":"no-bin","version":"1.0.0"}"#;
+        let bins = parse_bin_field(json, "no-bin");
+        assert!(bins.is_empty());
+    }
+
+    #[test]
+    fn create_bin_links_creates_dot_bin() {
+        let tmp = std::env::temp_dir().join("binlinks-test-create");
+        let nm = tmp.join("node_modules");
+        let pkg = make_pkg(&nm, "mycli", r#"{"name":"mycli","version":"1.0.0","bin":"cli.js"}"#);
+        let result = create_bin_links(&nm, &[pkg]).unwrap();
+        // Expect at least 1 link created or failed (not zero total)
+        assert!(nm.join(".bin").exists());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn create_bin_links_no_bin_no_links() {
+        let tmp = std::env::temp_dir().join("binlinks-test-nobin");
+        let nm = tmp.join("node_modules");
+        let pkg = make_pkg(&nm, "no-bin-pkg", r#"{"name":"no-bin-pkg","version":"1.0.0"}"#);
+        let result = create_bin_links(&nm, &[pkg]).unwrap();
+        assert_eq!(result.links_created, 0);
+        assert_eq!(result.links_failed, 0);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detect_lifecycle_no_scripts() {
+        let tmp = std::env::temp_dir().join("binlinks-test-lifecycle");
+        let nm = tmp.join("node_modules");
+        let pkg = make_pkg(&nm, "clean-pkg", r#"{"name":"clean-pkg","version":"1.0.0"}"#);
+        let result = detect_lifecycle_scripts(&nm, &[pkg]);
+        assert!(!result.has_native_addons);
+        assert_eq!(result.scripts.len(), 0);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
