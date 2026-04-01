@@ -113,6 +113,12 @@ pub use env_manager::*;
 pub mod costs;
 pub use costs::*;
 
+pub mod exit_codes;
+pub use exit_codes::*;
+
+pub mod upgrade;
+pub use upgrade::*;
+
 pub mod unused;
 pub use unused::*;
 
