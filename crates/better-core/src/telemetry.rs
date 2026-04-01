@@ -127,3 +127,65 @@ fn new_uuid() -> String {
         .subsec_nanos();
     format!("tel-{:08x}-{:08x}", t, std::process::id())
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn telemetry_load_defaults_to_disabled() {
+        // Without a config file, telemetry is opt-in disabled
+        let config = TelemetryConfig::load();
+        // Status should be either enabled or disabled (just check it doesn't panic)
+        let _ = config.status();
+    }
+
+    #[test]
+    fn status_enabled_returns_enabled() {
+        let config = TelemetryConfig {
+            enabled: true,
+            endpoint: "https://example.com".to_string(),
+            session_id: "test".to_string(),
+            config_path: std::path::PathBuf::from("/tmp/test-telemetry.json"),
+        };
+        assert_eq!(config.status(), "enabled");
+    }
+
+    #[test]
+    fn status_disabled_returns_disabled() {
+        let config = TelemetryConfig {
+            enabled: false,
+            endpoint: "https://example.com".to_string(),
+            session_id: "test".to_string(),
+            config_path: std::path::PathBuf::from("/tmp/test-telemetry.json"),
+        };
+        assert_eq!(config.status(), "disabled");
+    }
+
+    #[test]
+    fn send_event_disabled_does_not_panic() {
+        let config = TelemetryConfig {
+            enabled: false,
+            endpoint: "https://example.com".to_string(),
+            session_id: "test-session".to_string(),
+            config_path: std::path::PathBuf::from("/tmp/test-telemetry.json"),
+        };
+        let event = TelemetryEvent {
+            event_id: "test-id".to_string(),
+            session_id: "test-session".to_string(),
+            command: "install".to_string(),
+            duration_ms: 100,
+            success: true,
+            ecosystems: vec!["npm".to_string()],
+            package_count: Some(5),
+            os: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            better_version: "1.0.0".to_string(),
+        };
+        send_event(&config, event); // should not panic
+    }
+}

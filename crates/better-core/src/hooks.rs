@@ -116,3 +116,52 @@ pub fn hooks_install(project_root: &Path) -> Result<HooksInstallResult, String> 
     Ok(HooksInstallResult { hooks_installed, from_config, hooks: installed })
 }
 
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn valid_conventional_commit_accepted() {
+        assert!(validate_conventional_commit("feat: add new feature").is_ok());
+        assert!(validate_conventional_commit("fix(auth): resolve login issue").is_ok());
+    }
+
+    #[test]
+    fn invalid_type_rejected() {
+        let r = validate_conventional_commit("blah: something");
+        assert!(r.is_err());
+        assert!(r.unwrap_err().contains("Invalid commit type"));
+    }
+
+    #[test]
+    fn empty_message_rejected() {
+        assert!(validate_conventional_commit("").is_err());
+    }
+
+    #[test]
+    fn missing_colon_rejected() {
+        let r = validate_conventional_commit("feat add feature");
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn missing_description_rejected() {
+        let r = validate_conventional_commit("feat:");
+        assert!(r.is_err());
+        assert!(r.unwrap_err().contains("Missing description"));
+    }
+
+    #[test]
+    fn hooks_install_not_a_git_repo_errors() {
+        let tmp = std::env::temp_dir().join("hooks-test-nogit");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let result = hooks_install(&tmp);
+        assert!(result.is_err());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
