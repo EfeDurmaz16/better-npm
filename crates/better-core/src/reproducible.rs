@@ -160,3 +160,71 @@ fn sha256_hex(data: &[u8]) -> String {
     }
     format!("{:016x}{:016x}{:016x}{:016x}", h, h.rotate_left(13), h.rotate_right(7), h ^ 0xdeadbeef)
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_lock(root: &Path, content: &str) {
+        std::fs::create_dir_all(root).unwrap();
+        let mut f = std::fs::File::create(root.join("package-lock.json")).unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+    }
+
+    const LOCK: &str = r#"{
+        "lockfileVersion": 3,
+        "packages": {
+            "node_modules/lodash": {
+                "version": "4.17.21",
+                "integrity": "sha512-abc",
+                "resolved": "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"
+            }
+        }
+    }"#;
+
+    #[test]
+    fn generate_manifest_reads_lockfile() {
+        let root = std::env::temp_dir().join("repro-manifest");
+        write_lock(&root, LOCK);
+        let manifest = generate_manifest(&root, "1.0.0").unwrap();
+        assert!(!manifest.lockfile_hash.is_empty());
+        assert_eq!(manifest.packages.len(), 1);
+        assert_eq!(manifest.packages[0].name, "lodash");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn verify_identical_manifests_is_reproducible() {
+        let root = std::env::temp_dir().join("repro-identical");
+        write_lock(&root, LOCK);
+        let baseline = generate_manifest(&root, "1.0.0").unwrap();
+        let report = verify_reproducibility(&baseline, &root, "1.0.0").unwrap();
+        assert!(report.reproducible);
+        assert!(report.differences.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn verify_changed_integrity_not_reproducible() {
+        let root = std::env::temp_dir().join("repro-changed");
+        write_lock(&root, LOCK);
+        let mut baseline = generate_manifest(&root, "1.0.0").unwrap();
+        // Tamper baseline integrity so it differs from what's on disk
+        baseline.packages[0].integrity = "sha512-tampered".to_string();
+        let report = verify_reproducibility(&baseline, &root, "1.0.0").unwrap();
+        assert!(!report.reproducible);
+        assert!(!report.differences.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn missing_lockfile_returns_error() {
+        let result = generate_manifest(Path::new("/nonexistent-project"), "1.0.0");
+        assert!(result.is_err());
+    }
+}
