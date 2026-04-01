@@ -75,3 +75,30 @@ pub fn check_deprecations(args: &[String]) -> Vec<DeprecationNotice> {
     }
     out
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn schema_version_is_defined() {
+        assert!(!SCHEMA_VERSION.is_empty());
+    }
+
+    #[test]
+    fn check_deprecations_no_known_flags_returns_empty() {
+        let args = vec!["--install".to_string(), "--audit".to_string()];
+        let notices = check_deprecations(&args);
+        assert!(notices.is_empty()); // no known deprecated flags yet
+    }
+
+    #[test]
+    fn check_deprecations_empty_args_returns_empty() {
+        let notices = check_deprecations(&[]);
+        assert!(notices.is_empty());
+    }
+}
