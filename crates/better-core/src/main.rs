@@ -43,6 +43,8 @@ use better_core::{
     GlobalFlags,
     // v0.7 suggest
     suggest_deps, write_suggest_json,
+    // v0.5 CI cache pack
+    pack_cache, unpack_cache,
 };
 use better_core::engine::EngineRegistry;
 use better_core::context;
@@ -111,6 +113,15 @@ enum Command {
         cache_root: PathBuf,
         max_age: u64,
         dry_run: bool,
+    },
+    CachePack {
+        cache_root: PathBuf,
+        output: PathBuf,
+        compression: i32,
+    },
+    CacheUnpack {
+        cache_root: PathBuf,
+        input: PathBuf,
     },
     OsvCacheStats,
     OsvCacheClear,
@@ -794,6 +805,16 @@ fn parse_args() -> (Command, GlobalFlags) {
                 }
             } else if positional.first().map(|s| s.as_str()) == Some("gc") {
                 Command::CacheGc { cache_root: cr, max_age, dry_run }
+            } else if positional.first().map(|s| s.as_str()) == Some("pack") {
+                let output = positional.get(1).cloned()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from("better-ci-cache.tar.zst"));
+                Command::CachePack { cache_root: cr, output, compression: 3 }
+            } else if positional.first().map(|s| s.as_str()) == Some("unpack") {
+                let input = positional.get(1).cloned()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from("better-ci-cache.tar.zst"));
+                Command::CacheUnpack { cache_root: cr, input }
             } else {
                 Command::CacheStats { cache_root: cr }
             }
@@ -3055,6 +3076,45 @@ fn main() {
                     std::process::exit(1);
                 }
             }
+        }
+
+        Command::CachePack { cache_root, output, compression } => {
+            let store_dir = cache_root.join("store");
+            let result = pack_cache(&store_dir, &output, compression);
+            let mut w = JsonWriter::new();
+            w.begin_object();
+            w.key("ok"); w.value_bool(result.ok);
+            w.key("kind"); w.value_string("better.cache.pack");
+            w.key("outputPath"); w.value_string(&result.output_path);
+            w.key("entries"); w.value_u64(result.entries);
+            w.key("compressedBytes"); w.value_u64(result.compressed_bytes);
+            w.key("uncompressedBytes"); w.value_u64(result.uncompressed_bytes);
+            w.key("manifestHash"); w.value_string(&result.manifest_hash);
+            if let Some(reason) = result.reason.as_deref() {
+                w.key("reason"); w.value_string(reason);
+            }
+            w.end_object(); w.out.push('\n');
+            print!("{}", w.finish());
+            if !result.ok { std::process::exit(1); }
+        }
+
+        Command::CacheUnpack { cache_root, input } => {
+            let store_dir = cache_root.join("store");
+            let result = unpack_cache(&input, &store_dir);
+            let mut w = JsonWriter::new();
+            w.begin_object();
+            w.key("ok"); w.value_bool(result.ok);
+            w.key("kind"); w.value_string("better.cache.unpack");
+            w.key("inputPath"); w.value_string(&result.input_path);
+            w.key("entries"); w.value_u64(result.entries);
+            w.key("uncompressedBytes"); w.value_u64(result.uncompressed_bytes);
+            w.key("manifestOk"); w.value_bool(result.manifest_ok);
+            if let Some(reason) = result.reason.as_deref() {
+                w.key("reason"); w.value_string(reason);
+            }
+            w.end_object(); w.out.push('\n');
+            print!("{}", w.finish());
+            if !result.ok { std::process::exit(1); }
         }
 
         Command::Audit { project_root, lockfile, min_severity, strict, add_ignore, ignore_reason } => {

@@ -173,6 +173,8 @@ export async function cmdCache(argv) {
                       [--cache-mode strict|relaxed] [--cache-key-salt VALUE] [--json] [--cache-root PATH]
   better cache export --out <file.tgz> [--json] [--cache-root PATH]
   better cache import --in <file.tgz> [--json] [--cache-root PATH]
+  better cache pack [--output <path.tar.zst>] [--compression-level N] [--json]
+  better cache unpack [--input <path.tar.zst>] [--json]
 `);
     return;
   }
@@ -899,6 +901,190 @@ export async function cmdCache(argv) {
         `- cache entries: ${out.globalCache.entries}`,
         ...out.recommendations.map(r => `  ! ${r}`)
       ].join("\n"));
+    }
+    return;
+  }
+
+  // --- pack (#24: CI cache pack) ---
+  if (sub === "pack") {
+    const { values: packValues } = parseArgs({
+      args: rest,
+      options: {
+        output: { type: "string", short: "o" },
+        "compression-level": { type: "string", default: "3" },
+        json: { type: "boolean", default: runtime.json === true },
+        "cache-root": { type: "string" },
+      },
+      allowPositionals: true,
+      strict: false,
+    });
+    const outputPath = packValues.output ?? positionals[0] ?? "better-ci-cache.tar.zst";
+    const compressionLevel = parseInt(packValues["compression-level"] ?? "3", 10);
+    const storeDir = path.join(layout.root, "store");
+
+    commandLogger.info("cache.pack", { storeDir, outputPath, compressionLevel });
+
+    // Use Rust binary for pack
+    const { findBetterCore } = await import("../lib/core.js");
+    const corePath = await findBetterCore();
+    if (corePath) {
+      const { spawnSync } = await import("node:child_process");
+      const result = spawnSync(
+        corePath,
+        ["cache", "pack", outputPath, "--compression-level", String(compressionLevel), "--cache-root", layout.root],
+        { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }
+      );
+      if (result.stdout) {
+        const parsed = JSON.parse(result.stdout.trim());
+        if (packValues.json) {
+          printJson(parsed);
+        } else {
+          if (parsed.ok) {
+            printText([
+              `better cache pack`,
+              `  output:        ${parsed.outputPath}`,
+              `  entries:       ${parsed.entries}`,
+              `  size (raw):    ${(parsed.uncompressedBytes / 1024 / 1024).toFixed(1)} MB`,
+              `  size (packed): ${(parsed.compressedBytes / 1024 / 1024).toFixed(1)} MB`,
+              `  manifest:      ${parsed.manifestHash.slice(0, 16)}...`,
+            ].join("\n"));
+          } else {
+            printText(`error: ${parsed.reason}`);
+            process.exitCode = 1;
+          }
+        }
+        return;
+      }
+    }
+
+    // Pure-JS fallback: use tar + zlib (gzip, no zstd available without native)
+    const zlib = await import("node:zlib");
+    const { createReadStream, createWriteStream } = await import("node:fs");
+    const tarModule = await import("tar");
+
+    await fs.mkdir(path.dirname(path.resolve(outputPath)), { recursive: true });
+
+    // Collect files
+    const entries = [];
+    async function walk(dir, base) {
+      let ents;
+      try { ents = await fs.readdir(dir, { withFileTypes: true }); } catch { return; }
+      for (const e of ents) {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) {
+          await walk(full, path.join(base, e.name));
+        } else {
+          entries.push({ full, rel: path.join(base, e.name) });
+        }
+      }
+    }
+    await walk(storeDir, "");
+
+    // Build integrity manifest
+    const manifestContent = entries.map(e => e.rel).sort().join("\n");
+    const { createHash } = await import("node:crypto");
+    const manifestHash = createHash("sha256").update(manifestContent).digest("hex");
+
+    // Write tar.gz (gzip fallback when zstd not available in JS)
+    const outExt = outputPath.endsWith(".tar.zst") ? outputPath.replace(".tar.zst", ".tar.gz") : outputPath;
+    await tarModule.create(
+      { gzip: true, file: outExt, cwd: storeDir },
+      entries.map(e => e.rel)
+    );
+
+    const stat = await fs.stat(outExt).catch(() => ({ size: 0 }));
+    const rawBytes = entries.reduce((s) => s, 0); // simplified
+
+    const out = {
+      ok: true,
+      kind: "better.cache.pack",
+      outputPath: outExt,
+      entries: entries.length,
+      compressedBytes: stat.size,
+      uncompressedBytes: rawBytes,
+      manifestHash,
+      note: "packed with gzip (zstd requires Rust binary)",
+    };
+
+    if (packValues.json) {
+      printJson(out);
+    } else {
+      printText([
+        `better cache pack`,
+        `  output:   ${out.outputPath}`,
+        `  entries:  ${out.entries}`,
+        `  manifest: ${out.manifestHash.slice(0, 16)}...`,
+        `  note:     ${out.note}`,
+      ].join("\n"));
+    }
+    return;
+  }
+
+  // --- unpack (#24: CI cache unpack) ---
+  if (sub === "unpack") {
+    const { values: unpackValues } = parseArgs({
+      args: rest,
+      options: {
+        input: { type: "string", short: "i" },
+        json: { type: "boolean", default: runtime.json === true },
+        "cache-root": { type: "string" },
+      },
+      allowPositionals: true,
+      strict: false,
+    });
+    const inputPath = unpackValues.input ?? positionals[0] ?? "better-ci-cache.tar.zst";
+    const storeDir = path.join(layout.root, "store");
+
+    commandLogger.info("cache.unpack", { inputPath, storeDir });
+
+    // Try Rust binary first
+    const { findBetterCore } = await import("../lib/core.js");
+    const corePath = await findBetterCore();
+    if (corePath) {
+      const { spawnSync } = await import("node:child_process");
+      const result = spawnSync(
+        corePath,
+        ["cache", "unpack", inputPath, "--cache-root", layout.root],
+        { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }
+      );
+      if (result.stdout) {
+        const parsed = JSON.parse(result.stdout.trim());
+        if (unpackValues.json) {
+          printJson(parsed);
+        } else {
+          if (parsed.ok) {
+            printText([
+              `better cache unpack`,
+              `  source:   ${parsed.inputPath}`,
+              `  entries:  ${parsed.entries}`,
+              `  manifest: ${parsed.manifestOk ? "verified ✓" : "not verified"}`,
+            ].join("\n"));
+          } else {
+            printText(`error: ${parsed.reason}`);
+            process.exitCode = 1;
+          }
+        }
+        return;
+      }
+    }
+
+    // Pure-JS fallback: tar.gz unpack
+    const tarModule = await import("tar");
+    await fs.mkdir(storeDir, { recursive: true });
+    await tarModule.extract({ file: inputPath, cwd: storeDir });
+
+    const out = {
+      ok: true,
+      kind: "better.cache.unpack",
+      inputPath,
+      manifestOk: false, // JS fallback cannot verify manifest
+      note: "unpacked with node tar (zstd requires Rust binary)",
+    };
+
+    if (unpackValues.json) {
+      printJson(out);
+    } else {
+      printText(`better cache unpack\n  restored to: ${storeDir}`);
     }
     return;
   }

@@ -178,6 +178,9 @@ pub mod ai;
 pub mod deploy;
 pub mod intelligence;
 
+pub mod ci_pack;
+pub use ci_pack::*;
+
 pub mod schema;
 pub mod cli_compat;
 pub mod telemetry;
