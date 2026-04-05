@@ -46,6 +46,7 @@ Commands:
   mcp                  Start MCP server for AI agent integration
   search <query>       Search packages across npm and PyPI
   completions <shell>  Generate shell completions (bash, zsh, fish, powershell)
+  provider init <n>    Scaffold an OSP provider (open-service-protocol)
   lint|test|dev|build  Script aliases for better run
   agent <command>      Agent mode: --json --no-color, semantic exit codes
   watch                Watch package.json for changes and auto-react
@@ -466,6 +467,9 @@ export async function runCli(argv) {
         break;
       case "plugin":
         await (await import("./commands/plugin.js")).cmdPlugin(rest);
+        break;
+      case "provider":
+        await (await import("./commands/provider.js")).cmdProvider(rest);
         break;
       case "registry":
         await (await import("./commands/registry.js")).cmdRegistry(rest);

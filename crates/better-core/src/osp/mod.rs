@@ -8,3 +8,4 @@ pub mod services;
 pub mod env_gen;
 pub mod rotate;
 pub mod deprovision;
+pub mod provider_sdk;

@@ -200,6 +200,12 @@ enum Command {
         project_root: PathBuf,
         subcommand: String,
     },
+    Provider {
+        subcommand: String,
+        name: String,
+        service_type: String,
+        domain: String,
+    },
     Shell { project_root: PathBuf },
     Migrate {
         project_root: PathBuf,
@@ -920,6 +926,16 @@ fn parse_args() -> (Command, GlobalFlags) {
             let subcmd = positional.first().cloned().unwrap_or_else(|| "list".to_string());
             let plugin_arg = positional.get(1).cloned();
             Command::Plugin { subcommand: subcmd, plugin_arg }
+        },
+        "provider" => {
+            let subcmd = positional.first().cloned().unwrap_or_else(|| "help".to_string());
+            let provider_name = positional.get(1).cloned().unwrap_or_default();
+            Command::Provider {
+                subcommand: subcmd,
+                name: provider_name,
+                service_type: positional.get(2).cloned().unwrap_or_else(|| "other".to_string()),
+                domain: positional.get(3).cloned().unwrap_or_default(),
+            }
         },
         "reputation" => {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
@@ -2106,6 +2122,54 @@ fn main() {
                             println!("  {} v{} — {}", p.name, p.version, p.description);
                         }
                     }
+                }
+            }
+        }
+        Command::Provider { subcommand, name, service_type, domain } => {
+            use better_core::osp::provider_sdk::{scaffold_provider, ProviderScaffoldOpts};
+            match subcommand.as_str() {
+                "init" => {
+                    if name.is_empty() {
+                        eprintln!("error: 'provider init' requires a provider name");
+                        eprintln!("usage: better provider init <name> [<type>] [<domain>]");
+                        std::process::exit(2);
+                    }
+                    let effective_domain = if domain.is_empty() {
+                        format!("{}.example.com", name)
+                    } else {
+                        domain.clone()
+                    };
+                    let opts = ProviderScaffoldOpts {
+                        name: name.clone(),
+                        service_type: service_type.clone(),
+                        domain: effective_domain,
+                        output_dir: None,
+                    };
+                    let result = scaffold_provider(&opts);
+                    let mut w = JsonWriter::new();
+                    w.begin_object();
+                    w.key("ok"); w.value_bool(result.ok);
+                    w.key("kind"); w.value_string("better.provider.init");
+                    w.key("outputDir"); w.value_string(&result.output_dir);
+                    w.key("filesCreated"); w.begin_array();
+                    for f in &result.files_created { w.value_string(f); }
+                    w.end_array();
+                    if let Some(reason) = result.reason.as_deref() {
+                        w.key("reason"); w.value_string(reason);
+                    }
+                    w.end_object(); w.out.push('\n');
+                    print!("{}", w.finish());
+                    if !result.ok { std::process::exit(1); }
+                }
+                _ => {
+                    eprintln!("better provider — OSP provider toolkit");
+                    eprintln!("");
+                    eprintln!("Subcommands:");
+                    eprintln!("  init <name> [type] [domain]  Scaffold a new OSP provider");
+                    eprintln!("");
+                    eprintln!("Examples:");
+                    eprintln!("  better provider init my-db-service database db.example.com");
+                    eprintln!("  better provider init my-cache cache cache.example.com");
                 }
             }
         }
