@@ -206,6 +206,18 @@ enum Command {
         service_type: String,
         domain: String,
     },
+    Deploy {
+        project_root: PathBuf,
+        subcommand: String,
+        env: String,
+    },
+    Preview {
+        project_root: PathBuf,
+        subcommand: String,
+        branch: String,
+        pr_number: Option<u32>,
+        ttl: u64,
+    },
     Shell { project_root: PathBuf },
     Migrate {
         project_root: PathBuf,
@@ -926,6 +938,19 @@ fn parse_args() -> (Command, GlobalFlags) {
             let subcmd = positional.first().cloned().unwrap_or_else(|| "list".to_string());
             let plugin_arg = positional.get(1).cloned();
             Command::Plugin { subcommand: subcmd, plugin_arg }
+        },
+        "deploy" => {
+            let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
+            let subcmd = positional.first().cloned().unwrap_or_else(|| "run".to_string());
+            let env_name = positional.get(1).cloned().unwrap_or_else(|| "production".to_string());
+            Command::Deploy { project_root: pr, subcommand: subcmd, env: env_name }
+        },
+        "preview" => {
+            let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
+            let subcmd = positional.first().cloned().unwrap_or_else(|| "list".to_string());
+            let branch = positional.get(1).cloned().unwrap_or_default();
+            let pr_number: Option<u32> = positional.get(2).and_then(|s| s.parse().ok());
+            Command::Preview { project_root: pr, subcommand: subcmd, branch, pr_number, ttl: 86400 }
         },
         "provider" => {
             let subcmd = positional.first().cloned().unwrap_or_else(|| "help".to_string());
@@ -2173,6 +2198,90 @@ fn main() {
                 }
             }
         }
+        Command::Deploy { project_root, subcommand, env } => {
+            use better_core::deploy::provision::pre_deploy_provision;
+            match subcommand.as_str() {
+                "provision" => {
+                    let result = pre_deploy_provision(&project_root, &env);
+                    let mut w = JsonWriter::new();
+                    w.begin_object();
+                    w.key("ok"); w.value_bool(result.ok);
+                    w.key("kind"); w.value_string("better.deploy.provision");
+                    w.key("envVarsInjected"); w.value_u64(result.env_vars_injected as u64);
+                    w.key("servicesProvisioned"); w.value_u64(result.services_provisioned.len() as u64);
+                    w.key("totalMonthlyCostUsd"); w.value_string(&format!("{:.2}", result.total_cost_estimate.monthly_usd));
+                    w.key("envPath"); w.value_string(&result.env_path);
+                    if let Some(reason) = result.reason.as_deref() {
+                        w.key("reason"); w.value_string(reason);
+                    }
+                    w.end_object(); w.out.push('\n');
+                    print!("{}", w.finish());
+                    if !result.ok { std::process::exit(1); }
+                }
+                _ => {
+                    eprintln!("better deploy — deploy with OSP provisioning");
+                    eprintln!("  better deploy provision [--env production]");
+                }
+            }
+        }
+
+        Command::Preview { project_root, subcommand, branch, pr_number, ttl } => {
+            use better_core::deploy::preview::{create_preview, cleanup_expired_previews, list_previews};
+            match subcommand.as_str() {
+                "create" => {
+                    let result = create_preview(&project_root, &branch, pr_number, ttl);
+                    let mut w = JsonWriter::new();
+                    w.begin_object();
+                    w.key("ok"); w.value_bool(result.ok);
+                    w.key("kind"); w.value_string("better.preview.create");
+                    if let Some(ref p) = result.preview {
+                        w.key("previewId"); w.value_string(&p.preview_id);
+                        w.key("branch"); w.value_string(&p.branch);
+                        if let Some(ref url) = p.url { w.key("url"); w.value_string(url); }
+                        w.key("services"); w.value_u64(p.services.len() as u64);
+                        w.key("expiresAt"); w.value_u64(p.expires_at);
+                    }
+                    if let Some(reason) = result.reason.as_deref() {
+                        w.key("reason"); w.value_string(reason);
+                    }
+                    w.end_object(); w.out.push('\n');
+                    print!("{}", w.finish());
+                    if !result.ok { std::process::exit(1); }
+                }
+                "cleanup" => {
+                    let result = cleanup_expired_previews();
+                    let mut w = JsonWriter::new();
+                    w.begin_object();
+                    w.key("ok"); w.value_bool(result.ok);
+                    w.key("kind"); w.value_string("better.preview.cleanup");
+                    w.key("cleaned"); w.value_u64(result.cleaned as u64);
+                    w.end_object(); w.out.push('\n');
+                    print!("{}", w.finish());
+                }
+                "list" | _ => {
+                    let previews = list_previews();
+                    let mut w = JsonWriter::new();
+                    w.begin_object();
+                    w.key("ok"); w.value_bool(true);
+                    w.key("kind"); w.value_string("better.preview.list");
+                    w.key("count"); w.value_u64(previews.len() as u64);
+                    w.key("previews"); w.begin_array();
+                    for p in &previews {
+                        w.begin_object();
+                        w.key("previewId"); w.value_string(&p.preview_id);
+                        w.key("branch"); w.value_string(&p.branch);
+                        w.key("status"); w.value_string(&p.status);
+                        if let Some(ref url) = p.url { w.key("url"); w.value_string(url); }
+                        w.key("expiresAt"); w.value_u64(p.expires_at);
+                        w.end_object();
+                    }
+                    w.end_array();
+                    w.end_object(); w.out.push('\n');
+                    print!("{}", w.finish());
+                }
+            }
+        }
+
         Command::Reputation { packages, project_root } => {
             // If no packages specified, read from package.json dependencies
             let pkgs = if packages.is_empty() {

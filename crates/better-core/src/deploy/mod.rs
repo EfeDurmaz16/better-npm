@@ -3,6 +3,8 @@
 
 pub mod detect;
 pub mod platforms;
+pub mod provision;
+pub mod preview;
 
 pub use detect::{detect_framework, Framework, DeployPlatform, FrameworkDetection};
 

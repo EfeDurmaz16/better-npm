@@ -83,8 +83,29 @@ Options:
   // Execute steps
   try {
     if (values.provision) {
-      if (!values.json) printText("Provisioning OSP services...");
-      // Would call: better provision <service>
+      if (!values.json) printText("Provisioning OSP services from .env.osp...");
+      const { findBetterCore } = await import("../lib/core.js");
+      const corePath = await findBetterCore();
+      if (corePath) {
+        const provResult = spawnSync(
+          corePath,
+          ["deploy", "provision", "--project-root", projectRoot, "--env", values.env],
+          { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }
+        );
+        if (provResult.stdout) {
+          try {
+            const parsed = JSON.parse(provResult.stdout.trim());
+            if (!parsed.ok) throw new Error(parsed.reason ?? "provisioning failed");
+            if (!values.json && parsed.services_provisioned?.length > 0) {
+              printText(`  Provisioned: ${parsed.services_provisioned.map(s => s.service).join(", ")}`);
+            }
+          } catch (e) {
+            if (!values.json) printText(`  [warn] provision result parse error: ${e.message}`);
+          }
+        }
+      } else if (!values.json) {
+        printText("  [warn] Rust binary not found — skipping OSP provisioning");
+      }
     }
 
     if (!values.json) printText("Installing dependencies...");
