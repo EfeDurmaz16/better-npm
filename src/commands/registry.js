@@ -145,6 +145,43 @@ Options:
       else { printText(`${Object.keys(cfg.registries).length} registry/registries configured. Default: ${cfg.default}`); }
       break;
     }
+    case "mirror-probe":
+    case "mirror":
+    case "mirror-select": {
+      const { probeMirrors } = await import("../lib/mirrorSelect.js");
+      const select = sub === "mirror-select" || argv.includes("--select");
+      const result = await probeMirrors({ select, timeout: 5000 });
+      if (useJson) {
+        printJson(result);
+      } else {
+        if (select && result.selected) {
+          printText([
+            `better registry mirror-select`,
+            `  selected: ${result.selectedName} (${result.selected})`,
+            `  saved:    ${result.saved ? "yes" : "no"}`,
+            ``,
+            `Mirror probe results:`,
+            ...result.mirrors.map((m) =>
+              m.ok
+                ? `  ${m.name.padEnd(20)} ${String(m.latencyMs).padStart(6)}ms  ${m.url}`
+                : `  ${m.name.padEnd(20)}    FAIL  ${m.error ?? ""}`
+            ),
+          ].join("\n"));
+        } else {
+          printText([
+            `better registry mirror-probe`,
+            ``,
+            `Mirror latency results:`,
+            ...result.mirrors.map((m) =>
+              m.ok
+                ? `  ${m.name.padEnd(20)} ${String(m.latencyMs).padStart(6)}ms  ${m.url}`
+                : `  ${m.name.padEnd(20)}    FAIL  ${m.error ?? ""}`
+            ),
+          ].join("\n"));
+        }
+      }
+      break;
+    }
     default:
       printText(`Unknown subcommand: ${sub}. Run 'better registry --help' for usage.`);
       process.exitCode = 1;

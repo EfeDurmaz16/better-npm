@@ -181,6 +181,9 @@ pub mod intelligence;
 pub mod ci_pack;
 pub use ci_pack::*;
 
+pub mod mirror;
+pub use mirror::{probe_mirrors, select_and_save, load_best_mirror, effective_registry, MirrorProbeResult, MirrorSelectResult};
+
 pub mod schema;
 pub mod cli_compat;
 pub mod telemetry;

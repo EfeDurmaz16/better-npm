@@ -1597,6 +1597,68 @@ fn main() {
                         }
                     }
                 }
+                "mirror-probe" | "mirror" | "mirror-select" => {
+                    use better_core::mirror::{probe_mirrors, select_and_save};
+                    let select = subcommand.contains("select") || registry_url.as_deref() == Some("--select");
+                    if select {
+                        let result = select_and_save(5000);
+                        let mut w = JsonWriter::new();
+                        w.begin_object();
+                        w.key("ok"); w.value_bool(result.ok);
+                        w.key("kind"); w.value_string("better.registry.mirrorSelect");
+                        if let Some(ref url) = result.selected {
+                            w.key("selected"); w.value_string(url);
+                        }
+                        if let Some(ref name) = result.selected_name {
+                            w.key("selectedName"); w.value_string(name);
+                        }
+                        w.key("saved"); w.value_bool(result.saved);
+                        w.key("mirrors"); w.begin_array();
+                        for m in &result.all {
+                            w.begin_object();
+                            w.key("name"); w.value_string(&m.name);
+                            w.key("url"); w.value_string(&m.url);
+                            w.key("ok"); w.value_bool(m.ok);
+                            if let Some(ms) = m.latency_ms {
+                                w.key("latencyMs"); w.value_u64(ms);
+                            }
+                            if let Some(ref e) = m.error {
+                                w.key("error"); w.value_string(e);
+                            }
+                            w.end_object();
+                        }
+                        w.end_array();
+                        if let Some(reason) = result.reason.as_deref() {
+                            w.key("reason"); w.value_string(reason);
+                        }
+                        w.end_object(); w.out.push('\n');
+                        print!("{}", w.finish());
+                        if !result.ok { std::process::exit(1); }
+                    } else {
+                        let results = probe_mirrors(&[], 5000);
+                        let mut w = JsonWriter::new();
+                        w.begin_object();
+                        w.key("ok"); w.value_bool(true);
+                        w.key("kind"); w.value_string("better.registry.mirrorProbe");
+                        w.key("mirrors"); w.begin_array();
+                        for m in &results {
+                            w.begin_object();
+                            w.key("name"); w.value_string(&m.name);
+                            w.key("url"); w.value_string(&m.url);
+                            w.key("ok"); w.value_bool(m.ok);
+                            if let Some(ms) = m.latency_ms {
+                                w.key("latencyMs"); w.value_u64(ms);
+                            }
+                            if let Some(ref e) = m.error {
+                                w.key("error"); w.value_string(e);
+                            }
+                            w.end_object();
+                        }
+                        w.end_array();
+                        w.end_object(); w.out.push('\n');
+                        print!("{}", w.finish());
+                    }
+                }
                 other => {
                     eprintln!("error: unknown registry subcommand: {other}");
                     std::process::exit(2);

@@ -18,6 +18,7 @@
  */
 
 import https from "node:https";
+import { effectiveRegistry } from "../lib/mirrorSelect.js";
 
 const DEFAULT_CONCURRENCY = 32;
 const DEFAULT_REGISTRY = "https://registry.npmjs.org";
@@ -121,7 +122,7 @@ export class ParallelResolver {
    */
   constructor(opts = {}) {
     this.concurrency = opts.concurrency ?? DEFAULT_CONCURRENCY;
-    this.registry = (opts.registry ?? DEFAULT_REGISTRY).replace(/\/$/, "");
+    this.registry = (opts.registry ?? effectiveRegistry()).replace(/\/$/, "");
     this.timeoutMs = opts.timeoutMs ?? 8000;
 
     // In-flight deduplication: name → Promise<packument>
