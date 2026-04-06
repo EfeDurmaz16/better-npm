@@ -2,43 +2,46 @@
   "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
   "name": "Better Lock",
   "scopeName": "source.better-lock",
-  "fileTypes": ["better.lock.json"],
   "patterns": [
-    { "include": "#string" },
-    { "include": "#number" },
-    { "include": "#boolean" },
-    { "include": "#null" },
-    { "include": "#key" },
-    { "include": "#ecosystem-section" }
+    { "include": "#keys" },
+    { "include": "#versions" },
+    { "include": "#integrity" },
+    { "include": "#urls" },
+    { "include": "#booleans" },
+    { "include": "#numbers" }
   ],
   "repository": {
-    "string": {
-      "name": "string.quoted.double.better-lock",
-      "begin": "\"",
-      "end": "\"",
-      "patterns": [
-        { "name": "constant.character.escape.better-lock", "match": "\\\\." }
-      ]
+    "keys": {
+      "match": "\"(name|version|resolved|integrity|dependencies|engines|ecosystem|packages|lockfileVersion|requires|dev|optional|peer|bundled|bin|scripts|license|funding)\"\\s*:",
+      "captures": {
+        "1": { "name": "keyword.other.better-lock" }
+      }
     },
-    "number": {
-      "name": "constant.numeric.better-lock",
-      "match": "-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?"
+    "versions": {
+      "match": "\"(\\d+\\.\\d+\\.\\d+[^\"]*?)\"",
+      "captures": {
+        "1": { "name": "constant.numeric.version.better-lock" }
+      }
     },
-    "boolean": {
-      "name": "constant.language.boolean.better-lock",
-      "match": "\\b(?:true|false)\\b"
+    "integrity": {
+      "match": "\"(sha(256|384|512)-[A-Za-z0-9+/=]+)\"",
+      "captures": {
+        "1": { "name": "string.quoted.integrity.better-lock" }
+      }
     },
-    "null": {
-      "name": "constant.language.null.better-lock",
-      "match": "\\bnull\\b"
+    "urls": {
+      "match": "\"(https?://[^\"]+)\"",
+      "captures": {
+        "1": { "name": "string.quoted.url.better-lock" }
+      }
     },
-    "key": {
-      "name": "support.type.property-name.better-lock",
-      "match": "\"(?:name|version|resolved|integrity|requires|dependencies|ecosystem|lockfileVersion|schemaVersion)\""
+    "booleans": {
+      "match": "\\b(true|false)\\b",
+      "name": "constant.language.boolean.better-lock"
     },
-    "ecosystem-section": {
-      "name": "keyword.control.ecosystem.better-lock",
-      "match": "\"(?:npm|python|cargo|go|ruby|php|dotnet|swift|cocoapods)\""
+    "numbers": {
+      "match": "\\b([0-9]+)\\b",
+      "name": "constant.numeric.integer.better-lock"
     }
   }
 }

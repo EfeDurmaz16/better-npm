@@ -1,10 +1,9 @@
 {
   "name": "better-vscode",
   "displayName": "better — Universal Package Manager",
-  "description": "Dependency insights, audit warnings, and OSP integration for the better package manager",
+  "description": "Dependency insights, audit warnings, and OSP integration for better npm",
   "version": "1.0.0",
   "publisher": "nicepkg",
-  "license": "MIT",
   "engines": { "vscode": "^1.85.0" },
   "categories": ["Other", "Linters"],
   "activationEvents": [
@@ -12,39 +11,75 @@
     "workspaceContains:pyproject.toml",
     "workspaceContains:Cargo.toml",
     "workspaceContains:go.mod",
-    "workspaceContains:better.lock.json"
+    "workspaceContains:better.lock"
   ],
   "main": "./dist/extension.js",
   "contributes": {
-    "languages": [{
-      "id": "betterlock",
-      "aliases": ["Better Lock", "betterlock"],
-      "filenames": ["better.lock.json"],
-      "configuration": "./language-configuration.json"
-    }],
-    "commands": [
-      { "command": "better.audit", "title": "Better: Run Audit" },
-      { "command": "better.outdated", "title": "Better: Check for Updates" },
-      { "command": "better.context", "title": "Better: Show Package Context" },
-      { "command": "better.install", "title": "Better: Install Dependencies" }
+    "languages": [
+      {
+        "id": "betterlock",
+        "aliases": ["Better Lock"],
+        "filenames": ["better.lock.json"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "betterlock",
+        "scopeName": "source.better-lock",
+        "path": "./syntaxes/better-lock.tmLanguage.json"
+      }
     ],
     "views": {
-      "explorer": [{
-        "id": "betterDeps",
-        "name": "Dependencies (better)",
-        "when": "better.projectDetected"
-      }]
+      "explorer": [
+        {
+          "id": "betterDeps",
+          "name": "Dependencies",
+          "when": "better.projectDetected"
+        },
+        {
+          "id": "betterOsp",
+          "name": "OSP Services",
+          "when": "better.ospConfigured"
+        }
+      ]
+    },
+    "commands": [
+      { "command": "better.audit", "title": "Better: Run Audit" },
+      { "command": "better.update", "title": "Better: Update Package" },
+      { "command": "better.context", "title": "Better: Show Package Context" },
+      { "command": "better.provision", "title": "Better: Provision OSP Service" }
+    ],
+    "configuration": {
+      "title": "Better Package Manager",
+      "properties": {
+        "better.binaryPath": {
+          "type": "string",
+          "default": "better",
+          "description": "Path to the better binary"
+        },
+        "better.auditOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run audit automatically when package.json is saved"
+        },
+        "better.showVersionHints": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show inline version update hints in package.json"
+        }
+      }
     }
   },
   "scripts": {
     "compile": "tsc -p tsconfig.json",
     "watch": "tsc -watch -p tsconfig.json",
-    "package": "vsce package"
+    "package": "npx vsce package",
+    "lint": "eslint src --ext .ts"
   },
   "devDependencies": {
-    "@types/vscode": "^1.85.0",
     "@types/node": "^20.0.0",
-    "typescript": "^5.3.0",
-    "@vscode/vsce": "^2.22.0"
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.0.0"
   }
 }
