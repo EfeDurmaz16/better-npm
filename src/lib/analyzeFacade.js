@@ -35,6 +35,24 @@ export async function analyzeWithBestEngine(projectRoot, opts = {}) {
     }
   }
 
+  if (coreMode === "off") {
+    // --no-core: return a minimal stub so callers can still run scoring/threshold logic.
+    // Populate projectRoot so downstream code (getLockfileStaleReason, findings) can run.
+    return {
+      analysis: {
+        ok: true,
+        packages: [],
+        packageCount: 0,
+        lockfileVersion: 0,
+        projectRoot,
+        engine: "none",
+        schemaVersion: 1
+      },
+      engine: "none",
+      corePath: null
+    };
+  }
+
   throw new Error(
     'better-core binary not found. Install via:\n  curl -fsSL https://raw.githubusercontent.com/EfeDurmaz16/better-npm/main/scripts/install.sh | sh'
   );

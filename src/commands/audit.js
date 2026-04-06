@@ -368,7 +368,7 @@ Options:
     if (!scanResult.ok) throw new Error(`OSV API error: ${scanResult.reason}`);
 
     const graph = buildVulnGraph(scanResult.results, mergedDepTree);
-    return finalizeAudit({ graph, uniquePackages, projectRoot, lockfile: "workspace", jsonOutput, minSeverity, severityOrder, failOn, values, logger, auditConfig, smartResult: null });
+    return await finalizeAudit({ graph, uniquePackages, projectRoot, lockfile: "workspace", jsonOutput, minSeverity, severityOrder, failOn, values, logger, auditConfig, smartResult: null });
   }
 
   // Step 1: Resolve packages from lockfile
@@ -445,10 +445,10 @@ Options:
     }
   }
 
-  return finalizeAudit({ graph, uniquePackages, projectRoot, lockfile, jsonOutput, minSeverity, severityOrder, failOn, values, logger, auditConfig, smartResult });
+  return await finalizeAudit({ graph, uniquePackages, projectRoot, lockfile, jsonOutput, minSeverity, severityOrder, failOn, values, logger, auditConfig, smartResult });
 }
 
-function finalizeAudit({ graph, uniquePackages, projectRoot, lockfile, jsonOutput, minSeverity, severityOrder, failOn, values, logger, auditConfig, smartResult }) {
+async function finalizeAudit({ graph, uniquePackages, projectRoot, lockfile, jsonOutput, minSeverity, severityOrder, failOn, values, logger, auditConfig, smartResult }) {
   // Filter by severity
   const minIdx = severityOrder[minSeverity];
   const filteredVulns = [];

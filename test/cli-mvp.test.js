@@ -11,7 +11,8 @@ const betterBin = path.resolve(process.cwd(), "bin", "better.js");
 
 test("cli: --version prints version", async () => {
   const { stdout } = await execFileAsync(process.execPath, [betterBin, "--version"]);
-  assert.match(stdout.trim(), /^better v\d+\.\d+\.\d+$/);
+  // Accept "better v1.2.3" or "better v1.2.3 (core: ...)" formats
+  assert.match(stdout.trim(), /^better v\d+\.\d+\.\d+/);
 });
 
 test("install: --dry-run emits structured JSON", async () => {

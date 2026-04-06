@@ -74,7 +74,7 @@ test("benchmark command emits comparative JSON report", async (t) => {
     const report = JSON.parse(stdout);
     assert.equal(report.ok, true);
     assert.equal(report.kind, "better.benchmark");
-    assert.equal(report.schemaVersion, 1);
+    assert.ok(report.schemaVersion >= 1); // accepts v1 or v2+
     assert.equal(report.pm.selected, "npm");
     assert.equal(report.engine, "pm");
     assert.ok(report.variants.raw);

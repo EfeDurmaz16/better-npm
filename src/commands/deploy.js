@@ -72,10 +72,36 @@ Options:
   steps.push({ step: "deploy", status: "pending", platform: values.platform || "auto" });
 
   if (values["dry-run"]) {
-    const result = { ok: true, kind: "better.deploy", dryRun: true, steps, env: values.env, projectRoot };
+    // Detect framework from package.json for the dry-run report
+    let framework = null;
+    let platform = values.platform || null;
+    try {
+      const fs = await import("node:fs/promises");
+      const pkgJson = JSON.parse(await fs.readFile(path.join(projectRoot, "package.json"), "utf8"));
+      const allDeps = { ...pkgJson.dependencies, ...pkgJson.devDependencies };
+      if (allDeps.next) { framework = "next"; platform = platform || "vercel"; }
+      else if (allDeps.nuxt) { framework = "nuxt"; platform = platform || "vercel"; }
+      else if (allDeps["@remix-run/react"] || allDeps.remix) { framework = "remix"; platform = platform || "fly"; }
+      else if (allDeps.gatsby) { framework = "gatsby"; platform = platform || "netlify"; }
+      else if (allDeps.astro) { framework = "astro"; platform = platform || "netlify"; }
+      else if (allDeps.svelte || allDeps["@sveltejs/kit"]) { framework = "svelte"; platform = platform || "vercel"; }
+      else if (allDeps.express || allDeps.fastify || allDeps.koa) { framework = "node"; platform = platform || "railway"; }
+    } catch { /* non-fatal */ }
+    const result = {
+      ok: true,
+      kind: "better.deploy",
+      dryRun: true,
+      framework,
+      platform: platform || "auto",
+      steps,
+      env: values.env,
+      projectRoot
+    };
     if (values.json) { printJson(result); }
     else {
-      printText(`Deploy plan for ${projectRoot}:\n${steps.map(s => `  ${s.step}${s.platform ? ` → ${s.platform}` : ""}`).join("\n")}`);
+      const fw = framework ? ` (${framework})` : "";
+      const pt = platform ? ` → ${platform}` : "";
+      printText(`Deploy plan for ${projectRoot}${fw}${pt}:\n${steps.map(s => `  ${s.step}${s.platform ? ` → ${s.platform}` : ""}`).join("\n")}`);
     }
     return;
   }
