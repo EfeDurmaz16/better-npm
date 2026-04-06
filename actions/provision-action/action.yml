@@ -1,0 +1,25 @@
+name: 'better provision'
+description: 'Provision OSP services for CI/CD environments'
+inputs:
+  env:
+    description: 'Target environment (preview, staging, production)'
+    required: false
+    default: 'preview'
+  project-root:
+    description: 'Path to the project root'
+    required: false
+    default: '.'
+  sardis-token:
+    description: 'Sardis authentication token'
+    required: false
+outputs:
+  services:
+    description: 'JSON array of provisioned services'
+  env-file:
+    description: 'Path to generated .env file'
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
+branding:
+  icon: 'server'
+  color: 'green'

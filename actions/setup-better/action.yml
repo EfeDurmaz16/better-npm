@@ -1,0 +1,17 @@
+name: 'Setup better'
+description: 'Install the better universal package manager'
+inputs:
+  version:
+    description: 'Version to install (default: latest)'
+    required: false
+    default: 'latest'
+  token:
+    description: 'GitHub token for authenticated downloads'
+    required: false
+    default: ${{ github.token }}
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
+branding:
+  icon: 'package'
+  color: 'blue'

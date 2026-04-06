@@ -1,0 +1,28 @@
+name: 'better audit'
+description: 'Run better audit and post results to GitHub Actions summary'
+inputs:
+  severity:
+    description: 'Minimum severity to report (critical, high, moderate, low)'
+    required: false
+    default: 'moderate'
+  fail-on-vuln:
+    description: 'Fail the action if vulnerabilities are found'
+    required: false
+    default: 'true'
+  project-root:
+    description: 'Path to the project root'
+    required: false
+    default: '.'
+outputs:
+  vulnerabilities:
+    description: 'Number of vulnerabilities found'
+  critical:
+    description: 'Number of critical vulnerabilities'
+  high:
+    description: 'Number of high vulnerabilities'
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
+branding:
+  icon: 'shield'
+  color: 'red'
