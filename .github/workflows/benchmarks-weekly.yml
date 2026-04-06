@@ -1,0 +1,72 @@
+name: Weekly Benchmarks
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Monday 6am UTC
+  workflow_dispatch:
+    inputs:
+      tools:
+        description: 'Comma-separated list of tools to benchmark'
+        required: false
+        default: 'better,npm,pnpm'
+      rounds:
+        description: 'Number of rounds per scenario'
+        required: false
+        default: '3'
+
+permissions:
+  contents: write
+  pages: write
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install better
+        run: npm install -g better-npm@latest
+
+      - name: Install pnpm
+        run: npm install -g pnpm@latest
+
+      - name: Run benchmarks
+        run: |
+          node benchmarks/runner.mjs \
+            --tools "${{ github.event.inputs.tools || 'better,npm,pnpm' }}" \
+            --rounds "${{ github.event.inputs.rounds || '3' }}" \
+            --output benchmarks/results.json
+
+      - name: Generate charts
+        run: |
+          node benchmarks/generate-charts.mjs \
+            --input benchmarks/results.json \
+            --output-dir docs/site/public/benchmarks
+
+      - name: Check for regression
+        run: |
+          if [ -f benchmarks/results-baseline.json ]; then
+            node scripts/benchmark-compare.mjs benchmarks/results-baseline.json benchmarks/results.json
+          else
+            echo "No baseline found — setting current run as baseline"
+            cp benchmarks/results.json benchmarks/results-baseline.json
+          fi
+
+      - name: Commit results
+        run: |
+          git config user.name "better-bot"
+          git config user.email "bot@better.sh"
+          git add benchmarks/results.json docs/site/public/benchmarks/ docs/site/src/content/docs/benchmarks.mdx
+          git diff --cached --quiet || git commit -m "chore(benchmarks): update weekly benchmark results [skip ci]"
+          git push
