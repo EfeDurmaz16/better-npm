@@ -5,6 +5,28 @@ import { VERSION } from "../version.js";
 import { execFileSync } from "node:child_process";
 
 export async function cmdUpgrade(argv) {
+  // Delegate --smart to the intelligence-based upgrade command
+  if (argv.includes("--smart")) {
+    const { cmdUpgradeSmart } = await import("./upgrade-smart.js");
+    return cmdUpgradeSmart(argv.filter(a => a !== "--smart"));
+  }
+
+  if (argv.includes("--help") || argv.includes("-h")) {
+    printText(`Usage:
+  better upgrade [options]
+
+Upgrade better itself to the latest version, or upgrade dependencies with --smart.
+
+Options:
+  --smart          Use AI-assisted changelog analysis to upgrade dependencies
+  --check-only     Only check if an update is available
+  --force          Force upgrade even if already on latest
+  --json           Machine-readable JSON output
+  -h, --help       Show this help
+`);
+    return;
+  }
+
   const { values } = parseArgs({
     args: argv,
     options: {
