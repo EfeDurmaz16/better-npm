@@ -483,10 +483,14 @@ export async function cmdInstall(argv) {
                  [--parity-check auto|off|warn|strict]
                  [--strict] [--hoist] [--node-layout strict|hoist]
                  [--workspace PKG | -w PKG] [--workspace-concurrency N] [--workspace-topo]
+                 [--lazy]
                  [-- --<pm-specific flags>]
 
 Offline options:
   --offline              Install from cache only — skip all network requests (fails if package not in CAS)
+
+Lazy mode options:
+  --lazy                 Resolve + fetch to CAS without creating node_modules; writes .better-lazy.json
 
 Workspace options:
   --workspace, -w PKG    Install only specific workspace package (can repeat)
@@ -543,7 +547,9 @@ Workspace options:
       workspace: { type: "string", multiple: true },
       w: { type: "string", multiple: true },
       "workspace-concurrency": { type: "string", default: "4" },
-      "workspace-topo": { type: "boolean", default: true }
+      "workspace-topo": { type: "boolean", default: true },
+      // Lazy mode: resolve + fetch to CAS without materialising node_modules
+      lazy: { type: "boolean", default: false }
     },
     allowPositionals: true,
     strict: false
@@ -607,7 +613,8 @@ Workspace options:
     "workspace",
     "w",
     "workspace-concurrency",
-    "workspace-topo"
+    "workspace-topo",
+    "lazy"
   ]);
   const passIndex = positionals.indexOf("--");
   const passthroughPositionals = passIndex >= 0 ? positionals.slice(passIndex + 1) : positionals;
@@ -905,6 +912,70 @@ Workspace options:
       enabled: true,
       readOnly: cacheReadOnly
     };
+  }
+
+  // Lazy mode: resolve + fetch to CAS, write manifest, skip materialisation
+  const lazyMode = values.lazy === true;
+  if (lazyMode) {
+    progress("lazy mode: resolving and fetching without materialising node_modules");
+    const cacheRoot = layout.root;
+    const corePath = await findBetterCore();
+    if (!corePath) {
+      throw new Error("better-core binary not found; --lazy requires the Rust core");
+    }
+    const addon = tryLoadNapiAddon();
+    if (!addon) {
+      throw new Error("NAPI addon not found; --lazy requires the NAPI bridge");
+    }
+    const lockfilePath = path.join(projectRoot, "package-lock.json");
+    // 1. Resolve
+    const resolved = await (async () => {
+      try {
+        const r = addon.resolve(lockfilePath);
+        return Array.isArray(r?.packages) ? r.packages : [];
+      } catch {
+        return [];
+      }
+    })();
+    // 2. Fetch to CAS (without extracting to node_modules)
+    let fetchedCount = 0;
+    try {
+      const fetchResult = addon.fetchAndExtract(lockfilePath, cacheRoot);
+      fetchedCount = fetchResult?.packagesFetched ?? 0;
+    } catch {
+      // non-fatal: manifest still written; packages may be absent from CAS
+    }
+    // 3. Write .better-lazy.json manifest
+    const manifestPath = path.join(projectRoot, ".better-lazy.json");
+    const isoNow = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+    const lazyPkgs = resolved.map(p => ({
+      name: p.name ?? "",
+      version: p.version ?? "",
+      rel_path: p.relPath ?? `node_modules/${p.name}`,
+      cas_path: path.join(cacheRoot, "unpacked"),
+      integrity: p.integrity ?? "",
+      has_scripts: false,
+      bin: {}
+    }));
+    await fs.writeFile(
+      manifestPath,
+      JSON.stringify({ version: 1, created_at: isoNow, cache_root: cacheRoot, packages: lazyPkgs }, null, 2) + "\n"
+    );
+    if (values.json) {
+      printJson({
+        ok: true,
+        kind: "better.install.lazy",
+        schemaVersion: 1,
+        lazy: true,
+        projectRoot,
+        manifestPath,
+        packages: lazyPkgs.length,
+        fetched: fetchedCount
+      });
+    } else {
+      printText(`lazy: wrote ${lazyPkgs.length} package entries to .better-lazy.json (${fetchedCount} fetched to CAS)`);
+    }
+    return;
   }
 
   if (dryRun) {

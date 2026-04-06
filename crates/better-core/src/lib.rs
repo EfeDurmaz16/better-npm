@@ -98,6 +98,9 @@ pub use delta::*;
 pub mod dedupe_fix;
 pub use dedupe_fix::*;
 
+pub mod lazy;
+pub use lazy::*;
+
 pub mod offline;
 pub use offline::*;
 
