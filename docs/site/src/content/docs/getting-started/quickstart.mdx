@@ -1,0 +1,56 @@
+---
+title: Quick Start
+description: Get started with better in 5 minutes
+---
+
+## Initialize a project
+
+```sh
+# In a new directory
+better init
+
+# Creates: package.json, .gitignore, .nvmrc
+```
+
+## Install dependencies
+
+```sh
+better install
+# or: better i
+```
+
+## Audit for vulnerabilities
+
+```sh
+better audit
+```
+
+## Check for outdated packages
+
+```sh
+better outdated
+```
+
+## Smart upgrade
+
+```sh
+# Safe upgrades only (no breaking changes)
+better upgrade --smart
+
+# Include major version upgrades
+better upgrade --smart --include-major
+```
+
+## Run a script
+
+```sh
+better run test
+better run build
+```
+
+## Get help
+
+```sh
+better --help
+better <command> --help
+```

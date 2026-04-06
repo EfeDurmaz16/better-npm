@@ -1,0 +1,21 @@
+---
+title: Migrating from pnpm
+description: Move from pnpm to better
+---
+
+## Command Mapping
+
+| pnpm | better | Notes |
+|------|--------|-------|
+| `pnpm install` | `better install` | |
+| `pnpm add PKG` | `better add PKG` | |
+| `pnpm remove PKG` | `better remove PKG` | |
+| `pnpm run SCRIPT` | `better run SCRIPT` | |
+| `pnpm audit` | `better audit` | |
+| `pnpm dlx` | `better exec` | |
+| `pnpm workspace` | `better workspace` | |
+
+## Workspace Migration
+
+better supports pnpm workspaces via `pnpm-workspace.yaml` detection.
+Existing workspace configs work without changes.

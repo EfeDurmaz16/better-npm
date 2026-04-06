@@ -1,0 +1,110 @@
+---
+title: JSON API Reference
+description: Machine-readable JSON output schema for all better commands
+---
+
+All better commands support `--json` for machine-readable output.
+
+## Envelope Format
+
+```json
+{
+  "ok": true,
+  "kind": "better.<command>",
+  "schemaVersion": 2,
+  ...command-specific fields...
+}
+```
+
+## Commands
+
+### better audit
+
+```json
+{
+  "ok": true,
+  "kind": "better.audit",
+  "schemaVersion": 2,
+  "vulnerabilities": [
+    {
+      "id": "GHSA-xxxx-xxxx-xxxx",
+      "name": "lodash",
+      "version": "4.17.15",
+      "severity": "high",
+      "title": "Prototype pollution",
+      "context": "production",
+      "score": 7.4
+    }
+  ],
+  "summary": { "critical": 0, "high": 1, "moderate": 2, "low": 0 },
+  "policyPass": true
+}
+```
+
+### better install
+
+```json
+{
+  "ok": true,
+  "kind": "better.install",
+  "schemaVersion": 2,
+  "packages": 42,
+  "added": 3,
+  "removed": 0,
+  "duration_ms": 1234
+}
+```
+
+### better outdated
+
+```json
+{
+  "ok": true,
+  "kind": "better.outdated",
+  "packages": [
+    {
+      "name": "typescript",
+      "current": "5.2.0",
+      "latest": "5.4.0",
+      "wanted": "5.4.0",
+      "type": "devDependencies"
+    }
+  ]
+}
+```
+
+### better upgrade --smart
+
+```json
+{
+  "ok": true,
+  "kind": "better.upgrade-smart",
+  "upgrades": [
+    { "name": "axios", "current": "^1.4.0", "latest": "1.7.0", "safety": "safe" }
+  ],
+  "applied": 1,
+  "skipped": 0
+}
+```
+
+### better doctor
+
+```json
+{
+  "ok": true,
+  "kind": "better.doctor",
+  "schemaVersion": 2,
+  "issues": [],
+  "healthScore": { "score": 95, "grade": "A" }
+}
+```
+
+## Error Response
+
+```json
+{
+  "ok": false,
+  "kind": "better.<command>",
+  "error": "description of what went wrong"
+}
+```

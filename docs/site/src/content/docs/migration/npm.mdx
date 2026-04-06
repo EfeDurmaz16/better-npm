@@ -1,0 +1,42 @@
+---
+title: Migrating from npm
+description: Drop-in replacement for npm
+---
+
+better is designed as a drop-in replacement for npm. Most commands work identically.
+
+## Command Mapping
+
+| npm | better | Notes |
+|-----|--------|-------|
+| `npm install` | `better install` | Faster with CAS deduplication |
+| `npm install PKG` | `better add PKG` | |
+| `npm uninstall PKG` | `better remove PKG` | |
+| `npm run SCRIPT` | `better run SCRIPT` | |
+| `npm audit` | `better audit` | Context-aware severity |
+| `npm outdated` | `better outdated` | |
+| `npm init` | `better init` | Creates more files |
+| `npm publish` | `better publish` | Supports provenance |
+| `npm ci` | `better ci` | |
+
+## Migration Steps
+
+1. Install better: `npm install -g better-npm`
+2. Run `better doctor` to check compatibility
+3. Replace `npm` with `better` in your scripts and CI
+
+## CI/CD Migration
+
+```yaml
+# Before
+- run: npm ci
+
+# After
+- uses: nicepkg/setup-better@v1
+- run: better ci
+```
+
+## Lockfile
+
+better uses `package-lock.json` by default for compatibility.
+It also generates `better.lock` with integrity proofs and CAS paths.

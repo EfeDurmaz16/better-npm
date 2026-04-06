@@ -1,0 +1,46 @@
+---
+title: Installation
+description: Install better on your system
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+## Install better
+
+<Tabs>
+  <TabItem label="npm" icon="seti:npm">
+    ```sh
+    npm install -g better-npm
+    ```
+  </TabItem>
+  <TabItem label="Homebrew" icon="apple">
+    ```sh
+    brew install nicepkg/tap/better
+    ```
+  </TabItem>
+  <TabItem label="curl" icon="linux">
+    ```sh
+    curl -fsSL https://better.sh/install.sh | sh
+    ```
+  </TabItem>
+</Tabs>
+
+## Verify Installation
+
+```sh
+better --version
+# better v1.0.0
+```
+
+## Requirements
+
+- **Node.js** 18.0.0 or higher (for CLI only)
+- **Git** (optional, for changelog and version features)
+
+## Next Steps
+
+- Follow the [Quick Start](/getting-started/quickstart/) guide
+- Or migrate from your existing tool:
+  - [From npm](/migration/npm/)
+  - [From pnpm](/migration/pnpm/)
+  - [From yarn](/migration/yarn/)

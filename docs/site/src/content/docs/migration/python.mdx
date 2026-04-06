@@ -1,0 +1,24 @@
+---
+title: Migrating from pip/uv
+description: Universal Python package management with better
+---
+
+## Supported Python Tools
+
+better detects Python projects and routes to the appropriate engine.
+
+| pip/uv | better | Notes |
+|--------|--------|-------|
+| `pip install` | `better install` | Auto-detects Python project |
+| `uv add PKG` | `better add PKG` | |
+| `pip list` | `better list` | |
+| `pip-audit` | `better audit` | |
+| `pipreqs` | `better sbom-gen` | |
+
+## Detection
+
+better detects Python projects via:
+- `pyproject.toml`
+- `requirements.txt`
+- `setup.py`
+- `Pipfile`

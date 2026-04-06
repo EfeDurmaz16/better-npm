@@ -1,0 +1,19 @@
+---
+title: Migrating from yarn
+description: Move from yarn to better
+---
+
+## Command Mapping
+
+| yarn | better | Notes |
+|------|--------|-------|
+| `yarn install` | `better install` | |
+| `yarn add PKG` | `better add PKG` | |
+| `yarn remove PKG` | `better remove PKG` | |
+| `yarn run SCRIPT` | `better run SCRIPT` | |
+| `yarn audit` | `better audit` | |
+| `yarn workspace` | `better workspace` | |
+
+## Berry (yarn 2+) Migration
+
+better reads `.yarnrc.yml` for registry configuration.

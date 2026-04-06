@@ -1,0 +1,17 @@
+---
+title: Migrating from cargo
+description: Use better for Rust projects
+---
+
+## Command Mapping
+
+| cargo | better | Notes |
+|-------|--------|-------|
+| `cargo build` | `cargo build` (passthrough) | |
+| `cargo add PKG` | `better add PKG` | |
+| `cargo audit` | `better audit` | Integrates rustsec |
+| `cargo outdated` | `better outdated` | |
+
+## Detection
+
+better detects Rust projects via `Cargo.toml` and uses the CargoEngine.

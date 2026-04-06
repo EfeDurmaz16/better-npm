@@ -1,0 +1,36 @@
+---
+title: better — Universal Package Manager
+description: The universal package manager for every language and ecosystem.
+template: splash
+hero:
+  tagline: One tool. Every ecosystem. Rust-powered speed.
+  image:
+    file: ../../assets/logo.svg
+  actions:
+    - text: Get Started
+      link: /getting-started/installation/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/nicepkg/better
+      icon: external
+---
+
+import { CardGrid, Card } from '@astrojs/starlight/components';
+
+## Why better?
+
+<CardGrid stagger>
+  <Card title="Universal" icon="puzzle">
+    Manage npm, PyPI, crates.io, and Go modules with a single tool.
+  </Card>
+  <Card title="Fast" icon="rocket">
+    Rust-powered CAS deduplication. 3x faster than npm on cold cache.
+  </Card>
+  <Card title="Secure" icon="shield">
+    Built-in audit with context-aware severity scoring.
+  </Card>
+  <Card title="Smart" icon="star">
+    AI-powered upgrade intelligence, impact analysis, and self-healing.
+  </Card>
+</CardGrid>
