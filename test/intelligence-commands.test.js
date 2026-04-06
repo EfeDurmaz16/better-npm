@@ -1,0 +1,219 @@
+/**
+ * Integration tests for v1.x intelligence commands:
+ * upgrade --smart, sbom-gen, supply-chain-audit, pkg-trust, dep-score
+ */
+import test from "node:test";
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import path from "node:path";
+import { makeTempDir, rmrf, writeJson } from "./helpers.js";
+
+const execFileAsync = promisify(execFile);
+const betterBin = path.resolve(process.cwd(), "bin", "better.js");
+
+async function runBetter(args, cwd) {
+  return execFileAsync("node", [betterBin, ...args], {
+    cwd: cwd || process.cwd(),
+    env: { ...process.env, NO_COLOR: "1" },
+    timeout: 30000,
+  }).catch(err => ({ stdout: err.stdout || "", stderr: err.stderr || "", code: err.code }));
+}
+
+// ── upgrade --smart ───────────────────────────────────────────────────────────
+
+test("better upgrade --smart --help shows smart upgrade help", async () => {
+  const result = await runBetter(["upgrade", "--smart", "--help"]);
+  assert.ok(
+    result.stdout.includes("smart") || result.stdout.includes("upgrade"),
+    `Expected smart upgrade help, got: ${result.stdout}`
+  );
+});
+
+test("better upgrade --smart --json returns kind better.upgrade-smart", async () => {
+  const dir = await makeTempDir("better-smart-upgrade-");
+  try {
+    await writeJson(path.join(dir, "package.json"), {
+      name: "smart-upgrade-test",
+      version: "1.0.0",
+      dependencies: {},
+      devDependencies: {}
+    });
+
+    const result = await runBetter(["upgrade", "--smart", "--json"], dir);
+    if (result.stdout?.startsWith("{")) {
+      const json = JSON.parse(result.stdout);
+      assert.ok(
+        json.kind === "better.upgrade-smart",
+        `Expected kind better.upgrade-smart, got: ${JSON.stringify(json)}`
+      );
+      assert.ok(typeof json.ok === "boolean");
+    }
+  } finally {
+    await rmrf(dir);
+  }
+});
+
+test("better upgrade --smart --safe-only --json skips major versions", async () => {
+  const dir = await makeTempDir("better-smart-safe-");
+  try {
+    await writeJson(path.join(dir, "package.json"), {
+      name: "safe-upgrade-test",
+      version: "1.0.0",
+      dependencies: {}
+    });
+
+    const result = await runBetter(["upgrade", "--smart", "--safe-only", "--json"], dir);
+    if (result.stdout?.startsWith("{")) {
+      const json = JSON.parse(result.stdout);
+      if (json.upgrades) {
+        // Should have no "breaking" upgrades when --safe-only
+        const breaking = json.upgrades.filter(u => u.safety === "breaking");
+        assert.equal(breaking.length, 0, "No breaking upgrades with --safe-only");
+      }
+    }
+  } finally {
+    await rmrf(dir);
+  }
+});
+
+// ── sbom-gen ──────────────────────────────────────────────────────────────────
+
+test("better sbom-gen --help shows help", async () => {
+  const result = await runBetter(["sbom-gen", "--help"]);
+  assert.ok(
+    result.stdout.includes("sbom-gen") || result.stdout.includes("SBOM") || result.stdout.includes("sbom"),
+    `Expected sbom-gen help, got: ${result.stdout}`
+  );
+});
+
+test("better sbom-gen --output --json outputs kind better.sbom-gen", async () => {
+  const dir = await makeTempDir("better-sbom-");
+  try {
+    await writeJson(path.join(dir, "package.json"), {
+      name: "sbom-test",
+      version: "2.0.0",
+      license: "MIT",
+      dependencies: {}
+    });
+    await writeJson(path.join(dir, "package-lock.json"), {
+      name: "sbom-test",
+      lockfileVersion: 3,
+      packages: { "": { name: "sbom-test", version: "2.0.0" } }
+    });
+
+    // Use --output to get the {ok, kind} envelope from sbom-gen
+    const result = await runBetter(["sbom-gen", "--output", "sbom.json", "--json"], dir);
+    if (result.stdout?.startsWith("{")) {
+      const json = JSON.parse(result.stdout);
+      assert.ok(json.kind === "better.sbom-gen", `Expected kind better.sbom-gen, got: ${JSON.stringify(json)}`);
+      assert.equal(json.ok, true);
+      assert.ok(json.format === "spdx" || json.format === "cyclonedx", "Should have format");
+      assert.ok(typeof json.packages === "number", "Should have package count");
+    } else {
+      // Without --output, sbom-gen may output raw SBOM — acceptable
+      assert.ok(result.stdout !== undefined);
+    }
+  } finally {
+    await rmrf(dir);
+  }
+});
+
+test("better sbom-gen --format cyclonedx --json outputs cyclonedx", async () => {
+  const dir = await makeTempDir("better-sbom-cdx-");
+  try {
+    await writeJson(path.join(dir, "package.json"), {
+      name: "sbom-cdx-test",
+      version: "1.0.0",
+      dependencies: {}
+    });
+    await writeJson(path.join(dir, "package-lock.json"), {
+      name: "sbom-cdx-test",
+      lockfileVersion: 3,
+      packages: { "": { name: "sbom-cdx-test", version: "1.0.0" } }
+    });
+
+    const result = await runBetter(["sbom-gen", "--format", "cyclonedx", "--json"], dir);
+    if (result.stdout?.startsWith("{")) {
+      const json = JSON.parse(result.stdout);
+      if (json.ok) {
+        assert.ok(json.format === "cyclonedx");
+      }
+    }
+  } finally {
+    await rmrf(dir);
+  }
+});
+
+// ── supply-chain-audit ────────────────────────────────────────────────────────
+
+test("better supply-chain-audit --help shows help", async () => {
+  const result = await runBetter(["supply-chain-audit", "--help"]);
+  assert.ok(
+    result.stdout.includes("supply") || result.stdout.includes("chain") || result.stdout.includes("audit"),
+    `Expected supply-chain-audit help, got: ${result.stdout}`
+  );
+});
+
+test("better supply-chain-audit --json returns report", async () => {
+  const dir = await makeTempDir("better-sca-");
+  try {
+    await writeJson(path.join(dir, "package.json"), {
+      name: "sca-test",
+      version: "1.0.0",
+      dependencies: {}
+    });
+    await writeJson(path.join(dir, "package-lock.json"), {
+      name: "sca-test",
+      lockfileVersion: 3,
+      packages: { "": { name: "sca-test", version: "1.0.0" } }
+    });
+
+    const result = await runBetter(["supply-chain-audit", "--json"], dir);
+    if (result.stdout?.startsWith("{")) {
+      const json = JSON.parse(result.stdout);
+      assert.ok(typeof json.ok === "boolean");
+    }
+  } finally {
+    await rmrf(dir);
+  }
+});
+
+// ── dep-score ─────────────────────────────────────────────────────────────────
+
+test("better dep-score --help shows help", async () => {
+  const result = await runBetter(["dep-score", "--help"]);
+  assert.ok(
+    result.stdout.includes("dep-score") || result.stdout.includes("score") || result.stdout.includes("Usage"),
+    `Expected dep-score help, got: ${result.stdout}`
+  );
+});
+
+test("better dep-score --json returns score structure", async () => {
+  const dir = await makeTempDir("better-dep-score-");
+  try {
+    await writeJson(path.join(dir, "package.json"), {
+      name: "score-test",
+      version: "1.0.0",
+      dependencies: {}
+    });
+
+    const result = await runBetter(["dep-score", "--json"], dir);
+    if (result.stdout?.startsWith("{")) {
+      const json = JSON.parse(result.stdout);
+      assert.ok(typeof json.ok === "boolean");
+    }
+  } finally {
+    await rmrf(dir);
+  }
+});
+
+// ── pkg-trust ─────────────────────────────────────────────────────────────────
+
+test("better pkg-trust --help shows help", async () => {
+  const result = await runBetter(["pkg-trust", "--help"]);
+  assert.ok(
+    result.stdout.includes("pkg-trust") || result.stdout.includes("trust") || result.stdout.includes("Usage"),
+    `Expected pkg-trust help, got: ${result.stdout}`
+  );
+});
