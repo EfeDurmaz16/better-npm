@@ -1,0 +1,115 @@
+name: Benchmark
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'crates/**'
+      - 'src/**'
+      - 'package.json'
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            crates/target/
+          key: bench-${{ runner.os }}-cargo-${{ hashFiles('crates/Cargo.lock') }}
+          restore-keys: |
+            bench-${{ runner.os }}-cargo-
+
+      - name: Install npm dependencies
+        run: npm install --ignore-scripts
+
+      - name: Build Rust core (PR)
+        run: npm run core:build
+
+      - name: Set up benchmark fixture
+        run: |
+          mkdir -p test/fixtures/benchmark-project
+          # Create a minimal package.json + lockfile for benchmarking
+          cat > test/fixtures/benchmark-project/package.json <<'JSON'
+          {
+            "name": "bench-fixture",
+            "version": "1.0.0",
+            "dependencies": {
+              "lodash": "^4.17.21",
+              "semver": "^7.6.0"
+            }
+          }
+          JSON
+          cd test/fixtures/benchmark-project && npm install --package-lock-only
+
+      - name: Run benchmark (PR branch)
+        id: bench_pr
+        run: |
+          node bin/better.js benchmark \
+            --project-root test/fixtures/benchmark-project \
+            --rounds 3 \
+            --json > /tmp/bench-pr.json 2>&1 || true
+          cat /tmp/bench-pr.json
+
+      - name: Checkout base branch
+        run: |
+          git stash
+          git checkout ${{ github.event.pull_request.base.sha }}
+
+      - name: Build Rust core (base)
+        run: |
+          npm install --ignore-scripts
+          npm run core:build
+
+      - name: Run benchmark (base branch)
+        id: bench_base
+        run: |
+          node bin/better.js benchmark \
+            --project-root test/fixtures/benchmark-project \
+            --rounds 3 \
+            --json > /tmp/bench-base.json 2>&1 || true
+          cat /tmp/bench-base.json
+
+      - name: Restore PR branch
+        run: |
+          git checkout ${{ github.event.pull_request.head.sha }}
+          git stash pop || true
+
+      - name: Compare benchmark results
+        id: compare
+        run: |
+          node scripts/benchmark-compare.mjs \
+            /tmp/bench-base.json \
+            /tmp/bench-pr.json > /tmp/bench-comment.md 2>&1
+        continue-on-error: true
+
+      - name: Post PR comment
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: benchmark
+          path: /tmp/bench-comment.md
+
+      - name: Fail on regression
+        if: steps.compare.outcome == 'failure'
+        run: |
+          echo "::error::Performance regression detected. See PR comment for details."
+          exit 1
