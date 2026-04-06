@@ -43,5 +43,8 @@ jobs:
       - name: Test better-core
         run: cargo test --manifest-path crates/Cargo.toml -p better-core
 
+      - name: Install Node.js dependencies
+        run: npm ci
+
       - name: Run Node.js tests
-        run: node --test
+        run: node --test test/*.test.js
