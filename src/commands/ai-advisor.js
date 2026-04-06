@@ -28,9 +28,10 @@ Subcommands:
   alternatives PKG    Find AI-ranked alternative packages
   review              Review dependency usage in your codebase
   migrate PKG [TO]    Get migration guide from one package to another
+  provision INTENT    Natural language to OSP service selection and provisioning
 
 Options:
-  --model MODEL  AI model to use (default: claude-3-haiku-20240307)
+  --model MODEL  AI model to use (default: claude-haiku-4-5)
   --json         Machine-readable output
   -h, --help     Show this help
 `);
@@ -169,6 +170,36 @@ Respond in JSON: {"issues": [{"package": "...", "type": "deprecated|heavy|securi
         if (guide.steps?.length > 0) {
           for (const step of guide.steps) printText(`  • ${step}`);
         }
+      }
+      break;
+    }
+
+    case "provision": {
+      // Natural language to OSP service selection — Task 123
+      const [, ...intentWords] = positionals;
+      const intent = intentWords.join(" ") || "I need cloud services for my project";
+
+      const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
+      const framework = allDeps.next ? "Next.js" : allDeps.react ? "React" : allDeps.express ? "Express" : allDeps.fastify ? "Fastify" : allDeps.nuxt ? "Nuxt" : "Node.js";
+
+      const prompt = `You are an infrastructure advisor for OSP (Open Service Protocol).
+User wants: "${intent}"
+Project uses: ${framework}, ${Object.keys(allDeps).slice(0, 10).join(", ")}
+
+Recommend the best OSP services. Respond as JSON with this structure:
+{"recommended_services": [{"provider": "...", "service": "...", "tier": "free", "reason": "...", "monthly_cost_usd": 0, "alternatives": [{"provider": "...", "service": "...", "monthly_cost_usd": 0, "tradeoff": "..."}]}], "setup_steps": [{"step": 1, "action": "provision", "command": "better provision provider/service --tier free", "generates": [".env"]}], "estimated_monthly_cost": 0}`;
+
+      const plan = await callAI(apiKey, values.model, prompt);
+      const result = { ok: true, kind: "better.ai.provision", intent, ...plan };
+      if (useJson) { printJson(result); }
+      else {
+        printText(`Provisioning plan for: "${intent}"\n`);
+        for (const svc of plan.recommended_services || []) {
+          printText(`  ✓ ${svc.provider}/${svc.service} (${svc.tier}) — $${svc.monthly_cost_usd}/mo`);
+          printText(`    ${svc.reason}`);
+        }
+        printText(`\nEstimated cost: $${plan.estimated_monthly_cost ?? 0}/mo`);
+        if (!useJson) printText("\nRun with --json for full plan, or use 'better infra install' to provision.");
       }
       break;
     }
