@@ -272,6 +272,9 @@ Sardis / OSP commands:
   discover <query>                    Discover available OSP providers
   services [list|status]              List or check status of provisioned services
   env-gen [--output .env]             Generate .env file from provisioned services
+  credentials <list|show|rotate|export> <provider/offering>
+                                      Manage OSP service credentials
+  compliance <report|check> [--org]   Generate compliance report (enterprise)
 
 Global options:
   --json             Machine-readable output (JSON)
@@ -1227,6 +1230,12 @@ export async function runCli(argv) {
         process.exitCode = result.status;
         break;
       }
+      case "credentials":
+        await (await import("./commands/credentials.js")).cmdCredentials(rest);
+        break;
+      case "compliance":
+        await (await import("./commands/compliance.js")).cmdCompliance(rest);
+        break;
       case "lint":
       case "test":
       case "dev":
