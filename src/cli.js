@@ -261,15 +261,16 @@ Commands:
 Sardis / OSP commands:
   login [--sardis]                    Authenticate with Sardis or registry
   logout [--sardis]                   Remove saved credentials
-  pay <package> [--all] [--budget N]  Pay for package access via Sardis
+  wallet                              Show Sardis wallet balance and trust tier
+  pay <package> [--all] [--budget N]  Pay package maintainers via Sardis wallet
   publish [--monetize]                Publish package with optional monetisation
   earnings [--breakdown]              View your Sardis earnings
   sponsor <package> [--monthly N]     Sponsor a package with a recurring amount
   provision <domain/offering> [--tier] [--pay sardis]
                                       Provision an OSP service offering
-  discover <domain>                   Discover available OSP offerings for a domain
-  services [list|status]              List or check status of provisioned services
   deprovision <resource_id>           Remove a provisioned OSP resource
+  discover <query>                    Discover available OSP providers
+  services [list|status]              List or check status of provisioned services
   env-gen [--output .env]             Generate .env file from provisioned services
 
 Global options:
@@ -1169,19 +1170,60 @@ export async function runCli(argv) {
       case "supply-chain":
         await (await import("./commands/supply-chain.js")).cmdSupplyChain(rest);
         break;
-      case "login":
-      case "logout":
+      case "login": {
+        const sardisFlag = rest.includes("--sardis");
+        if (sardisFlag) {
+          await (await import("./commands/sardis.js")).cmdSardisLogin(rest);
+        } else {
+          const { spawnSync: sp } = await import("node:child_process");
+          const result = sp("better-core", ["login", ...rest], { stdio: "inherit" });
+          process.exitCode = result.status;
+        }
+        break;
+      }
+      case "logout": {
+        const sardisFlag = rest.includes("--sardis");
+        if (sardisFlag) {
+          await (await import("./commands/sardis.js")).cmdSardisLogout(rest);
+        } else {
+          const { spawnSync: sp } = await import("node:child_process");
+          const result = sp("better-core", ["logout", ...rest], { stdio: "inherit" });
+          process.exitCode = result.status;
+        }
+        break;
+      }
+      case "wallet":
+        await (await import("./commands/sardis.js")).cmdWallet(rest);
+        break;
       case "pay":
-      case "publish":
+        await (await import("./commands/pay.js")).cmdPay(rest);
+        break;
       case "earnings":
+        await (await import("./commands/earnings.js")).cmdEarnings(rest);
+        break;
       case "sponsor":
+      case "sponsors":
+        await (await import("./commands/sponsor.js")).cmdSponsor(rest);
+        break;
       case "provision":
-      case "discover":
-      case "services":
+        await (await import("./commands/provision.js")).cmdProvision(rest);
+        break;
       case "deprovision":
-      case "env-gen": {
-        const { spawnSync } = await import("node:child_process");
-        const result = spawnSync("better-core", [command, ...rest], { stdio: "inherit" });
+        await (await import("./commands/provision.js")).cmdDeprovision(rest);
+        break;
+      case "discover":
+        await (await import("./commands/discover.js")).cmdDiscover(rest);
+        break;
+      case "services":
+        await (await import("./commands/services.js")).cmdServices(rest);
+        break;
+      case "env-gen":
+      case "env-generate":
+        await (await import("./commands/env-generate.js")).cmdEnvGenerate(rest);
+        break;
+      case "publish": {
+        const { spawnSync: sp } = await import("node:child_process");
+        const result = sp("better-core", ["publish", ...rest], { stdio: "inherit" });
         process.exitCode = result.status;
         break;
       }
