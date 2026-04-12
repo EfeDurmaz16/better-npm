@@ -303,6 +303,16 @@ fn query_registry(
     Ok(results)
 }
 
+/// Public alias for use by the registry::unified module.
+pub fn search_curated_pub(
+    query: &str,
+    category_filter: Option<&str>,
+    payment_filter: Option<&str>,
+    max_results: usize,
+) -> Vec<DiscoveryResult> {
+    search_curated(query, category_filter, payment_filter, max_results)
+}
+
 /// Search the embedded curated provider list.
 fn search_curated(
     query: &str,
