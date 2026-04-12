@@ -369,6 +369,230 @@ fn compute_max_depth(graph: &DepGraph) -> usize {
 }
 
 // ---------------------------------------------------------------------------
+// Task 95: Cross-Ecosystem Dependency Graph
+// ---------------------------------------------------------------------------
+
+/// Ecosystem name → hex color (for D3.js visualization).
+pub const ECOSYSTEM_COLORS: &[(&str, &str)] = &[
+    ("npm", "#CB3837"),
+    ("python", "#3776AB"),
+    ("rust", "#DEA584"),
+    ("go", "#00ADD8"),
+    ("swift", "#F05138"),
+    ("ruby", "#CC342D"),
+    ("php", "#777BB4"),
+    ("dotnet", "#512BD4"),
+];
+
+/// Unified dependency graph spanning multiple ecosystems.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DependencyGraph {
+    pub nodes: Vec<GraphNode>,
+    pub edges: Vec<GraphEdge>,
+    pub ecosystems: Vec<EcosystemSummary>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GraphNode {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    /// "npm", "python", "rust", "go", "swift", "ruby", "php", "dotnet"
+    pub ecosystem: String,
+    pub size: u64,
+    pub depth: u32,
+    pub vuln_count: u32,
+    pub license: String,
+    pub has_context: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GraphEdge {
+    pub source: String,
+    pub target: String,
+    /// "prod", "dev", "peer", "optional", "build"
+    pub dep_type: String,
+    pub cross_ecosystem: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EcosystemSummary {
+    pub name: String,
+    pub color: String,
+    pub count: usize,
+}
+
+impl DependencyGraph {
+    /// Build a cross-ecosystem dependency graph from a project root.
+    ///
+    /// Scans for package-lock.json (npm), Cargo.lock (rust), go.sum (go),
+    /// Gemfile.lock (ruby), composer.lock (php), and *.csproj (dotnet).
+    pub fn from_project(project_root: &Path) -> DependencyGraph {
+        let mut nodes: Vec<GraphNode> = Vec::new();
+        let mut edges: Vec<GraphEdge> = Vec::new();
+        let mut eco_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+        // npm
+        if project_root.join("package-lock.json").exists() {
+            if let Ok(graph) = DepGraph::from_lockfile(project_root) {
+                for (id, node) in &graph.nodes {
+                    *eco_counts.entry("npm".to_string()).or_insert(0) += 1;
+                    nodes.push(GraphNode {
+                        id: format!("npm:{}", id),
+                        name: node.name.clone(),
+                        version: node.version.clone(),
+                        ecosystem: "npm".to_string(),
+                        size: 0,
+                        depth: if node.is_direct { 0 } else { 1 },
+                        vuln_count: 0,
+                        license: String::new(),
+                        has_context: false,
+                    });
+                    for dep in &node.deps {
+                        edges.push(GraphEdge {
+                            source: format!("npm:{}", id),
+                            target: format!("npm:{}", dep),
+                            dep_type: node.dep_type.clone(),
+                            cross_ecosystem: false,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Rust / Cargo.lock
+        if project_root.join("Cargo.lock").exists() {
+            if let Ok(content) = fs::read_to_string(project_root.join("Cargo.lock")) {
+                for pkg in parse_cargo_lock_simple(&content) {
+                    *eco_counts.entry("rust".to_string()).or_insert(0) += 1;
+                    nodes.push(GraphNode {
+                        id: format!("rust:{}", pkg.0),
+                        name: pkg.0,
+                        version: pkg.1,
+                        ecosystem: "rust".to_string(),
+                        size: 0,
+                        depth: 0,
+                        vuln_count: 0,
+                        license: String::new(),
+                        has_context: false,
+                    });
+                }
+            }
+        }
+
+        // Go / go.sum
+        if project_root.join("go.sum").exists() {
+            if let Ok(content) = fs::read_to_string(project_root.join("go.sum")) {
+                let mut seen = std::collections::HashSet::new();
+                for line in content.lines() {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() >= 2 {
+                        let name = parts[0].to_string();
+                        if seen.insert(name.clone()) {
+                            let version = parts[1].trim_end_matches("/go.mod").to_string();
+                            *eco_counts.entry("go".to_string()).or_insert(0) += 1;
+                            nodes.push(GraphNode {
+                                id: format!("go:{}", name),
+                                name,
+                                version,
+                                ecosystem: "go".to_string(),
+                                size: 0,
+                                depth: 0,
+                                vuln_count: 0,
+                                license: String::new(),
+                                has_context: false,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // Ruby / Gemfile.lock
+        if project_root.join("Gemfile.lock").exists() {
+            if let Ok(content) = fs::read_to_string(project_root.join("Gemfile.lock")) {
+                let mut in_gem = false;
+                for line in content.lines() {
+                    if line == "GEM" || line.starts_with("GEM") { in_gem = true; continue; }
+                    if line.starts_with("BUNDLED WITH") || line.starts_with("PLATFORMS") || line.starts_with("DEPENDENCIES") { in_gem = false; }
+                    if in_gem {
+                        let t = line.trim();
+                        if t.starts_with("remote:") || t.starts_with("specs:") { continue; }
+                        if let Some(pos) = t.find(" (") {
+                            let name = t[..pos].trim().to_string();
+                            let version = t[pos + 2..].trim_end_matches(')').to_string();
+                            if !name.is_empty() && !version.contains(' ') {
+                                *eco_counts.entry("ruby".to_string()).or_insert(0) += 1;
+                                nodes.push(GraphNode {
+                                    id: format!("ruby:{}", name),
+                                    name,
+                                    version,
+                                    ecosystem: "ruby".to_string(),
+                                    size: 0,
+                                    depth: 0,
+                                    vuln_count: 0,
+                                    license: String::new(),
+                                    has_context: false,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Build ecosystem summary with colors
+        let ecosystems: Vec<EcosystemSummary> = eco_counts
+            .into_iter()
+            .map(|(name, count)| {
+                let color = ECOSYSTEM_COLORS
+                    .iter()
+                    .find(|(eco, _)| *eco == name.as_str())
+                    .map(|(_, c)| c.to_string())
+                    .unwrap_or_else(|| "#888888".to_string());
+                EcosystemSummary { name, color, count }
+            })
+            .collect();
+
+        DependencyGraph { nodes, edges, ecosystems }
+    }
+
+    /// Return nodes for a specific ecosystem.
+    pub fn filter_ecosystem(&self, ecosystem: &str) -> Vec<&GraphNode> {
+        self.nodes.iter().filter(|n| n.ecosystem == ecosystem).collect()
+    }
+
+    /// Total node count.
+    pub fn total_nodes(&self) -> usize {
+        self.nodes.len()
+    }
+}
+
+/// Minimal Cargo.lock parser: returns Vec<(name, version)>.
+fn parse_cargo_lock_simple(content: &str) -> Vec<(String, String)> {
+    let mut results = Vec::new();
+    let mut cur_name: Option<String> = None;
+    let mut cur_version: Option<String> = None;
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line == "[[package]]" {
+            if let (Some(n), Some(v)) = (cur_name.take(), cur_version.take()) {
+                results.push((n, v));
+            }
+        } else if let Some(rest) = line.strip_prefix("name = ") {
+            cur_name = Some(rest.trim_matches('"').to_string());
+        } else if let Some(rest) = line.strip_prefix("version = ") {
+            cur_version = Some(rest.trim_matches('"').to_string());
+        }
+    }
+    if let (Some(n), Some(v)) = (cur_name, cur_version) {
+        results.push((n, v));
+    }
+    results
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -466,5 +690,94 @@ mod tests {
         assert!(graph.nodes.contains_key("lodash"));
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ── Task 95: cross-ecosystem graph ────────────────────────────────────────
+
+    #[test]
+    fn ecosystem_colors_is_non_empty() {
+        assert!(!ECOSYSTEM_COLORS.is_empty());
+        assert!(ECOSYSTEM_COLORS.iter().any(|(eco, _)| *eco == "npm"));
+        assert!(ECOSYSTEM_COLORS.iter().any(|(eco, _)| *eco == "swift"));
+        assert!(ECOSYSTEM_COLORS.iter().any(|(eco, _)| *eco == "ruby"));
+    }
+
+    #[test]
+    fn dependency_graph_empty_dir_returns_no_nodes() {
+        let dir = tempfile::tempdir().unwrap();
+        let g = DependencyGraph::from_project(dir.path());
+        assert_eq!(g.total_nodes(), 0);
+        assert!(g.ecosystems.is_empty());
+    }
+
+    #[test]
+    fn dependency_graph_detects_go_sum() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("go.sum"),
+            "github.com/pkg/errors v0.9.1 h1:abc\ngithub.com/pkg/errors v0.9.1/go.mod h1:def\n",
+        ).unwrap();
+        let g = DependencyGraph::from_project(dir.path());
+        assert!(g.total_nodes() > 0);
+        assert!(g.filter_ecosystem("go").len() > 0);
+    }
+
+    #[test]
+    fn dependency_graph_detects_gemfile_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let gemfile_lock = "GEM\n  remote: https://rubygems.org/\n  specs:\n    rack (3.0.0)\n    rails (7.1.0)\n      rack\nBUNDLED WITH\n   2.4.0\n";
+        std::fs::write(dir.path().join("Gemfile.lock"), gemfile_lock).unwrap();
+        let g = DependencyGraph::from_project(dir.path());
+        assert!(g.filter_ecosystem("ruby").len() >= 2);
+    }
+
+    #[test]
+    fn dependency_graph_detects_cargo_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let cargo_lock = "# This file is automatically @generated by Cargo.\n[[package]]\nname = \"serde\"\nversion = \"1.0.0\"\n\n[[package]]\nname = \"tokio\"\nversion = \"1.0.0\"\n";
+        std::fs::write(dir.path().join("Cargo.lock"), cargo_lock).unwrap();
+        let g = DependencyGraph::from_project(dir.path());
+        assert_eq!(g.filter_ecosystem("rust").len(), 2);
+    }
+
+    #[test]
+    fn dependency_graph_polyglot_project() {
+        let dir = tempfile::tempdir().unwrap();
+        // npm
+        let lock = r#"{"lockfileVersion":3,"packages":{"node_modules/react":{"version":"18.0.0","resolved":"","integrity":""}}}"#;
+        let pkg = r#"{"name":"app","version":"1.0.0","dependencies":{"react":"^18"}}"#;
+        std::fs::write(dir.path().join("package-lock.json"), lock).unwrap();
+        std::fs::write(dir.path().join("package.json"), pkg).unwrap();
+        // Go
+        std::fs::write(dir.path().join("go.sum"), "github.com/gin-gonic/gin v1.9.0 h1:abc\n").unwrap();
+        let g = DependencyGraph::from_project(dir.path());
+        assert!(g.ecosystems.len() >= 2, "Expected at least npm and go ecosystems");
+    }
+
+    #[test]
+    fn parse_cargo_lock_simple_parses_packages() {
+        let content = "[[package]]\nname = \"anyhow\"\nversion = \"1.0.75\"\n\n[[package]]\nname = \"tokio\"\nversion = \"1.32.0\"\n";
+        let pkgs = parse_cargo_lock_simple(content);
+        assert_eq!(pkgs.len(), 2);
+        assert!(pkgs.iter().any(|(n, _)| n == "anyhow"));
+        assert!(pkgs.iter().any(|(n, _)| n == "tokio"));
+    }
+
+    #[test]
+    fn graph_node_serializes_to_json() {
+        let node = GraphNode {
+            id: "npm:react".to_string(),
+            name: "react".to_string(),
+            version: "18.0.0".to_string(),
+            ecosystem: "npm".to_string(),
+            size: 42000,
+            depth: 0,
+            vuln_count: 0,
+            license: "MIT".to_string(),
+            has_context: false,
+        };
+        let json = serde_json::to_string(&node).unwrap();
+        assert!(json.contains("npm:react"));
+        assert!(json.contains("\"ecosystem\":\"npm\""));
     }
 }

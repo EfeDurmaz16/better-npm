@@ -1,7 +1,10 @@
 pub mod generator;
+pub mod generators;
 pub mod template;
 pub mod js;
 pub mod python;
+pub mod docc;
+pub mod yard;
 pub mod cache;
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -95,6 +98,25 @@ pub fn generate_context(
                 .unwrap_or_else(|| "0.0.0".to_string());
             python::extract_python_context(&pkg_root, package_name, &version)
         }
+        "swift" | "spm" => {
+            use generators::ContextGenerator;
+            let gen = docc::DoccGenerator;
+            let pkg_root = project_root.join(".build").join("checkouts").join(package_name);
+            let search_root = if pkg_root.exists() { pkg_root } else { project_root.to_path_buf() };
+            let sources = gen.detect_docs(&search_root);
+            let doc = gen.generate(&sources).map_err(|e| e.message)?;
+            Ok(doc_to_package_context(doc))
+        }
+        "ruby" | "gem" | "bundler" => {
+            use generators::ContextGenerator;
+            let gen = yard::YardGenerator;
+            // Look in vendor/bundle/ruby/*/gems/<name>-*
+            let vendor_path = find_ruby_gem(project_root, package_name);
+            let search_root = vendor_path.unwrap_or_else(|| project_root.to_path_buf());
+            let sources = gen.detect_docs(&search_root);
+            let doc = gen.generate(&sources).map_err(|e| e.message)?;
+            Ok(doc_to_package_context(doc))
+        }
         _ => Err(format!("unsupported ecosystem: {}", eco)),
     }
 }
@@ -151,4 +173,59 @@ fn find_python_package(
         "Python package '{}' not found in venv site-packages",
         package_name
     ))
+}
+
+/// Locate a Ruby gem inside vendor/bundle/ruby/<version>/gems/<name>-<version>/.
+fn find_ruby_gem(project_root: &std::path::Path, gem_name: &str) -> Option<std::path::PathBuf> {
+    let vendor = project_root.join("vendor").join("bundle").join("ruby");
+    if !vendor.exists() {
+        return None;
+    }
+    // Iterate ruby version dirs
+    if let Ok(ruby_vers) = std::fs::read_dir(&vendor) {
+        for ruby_ver in ruby_vers.flatten() {
+            let gems_dir = ruby_ver.path().join("gems");
+            if let Ok(gems) = std::fs::read_dir(&gems_dir) {
+                for gem in gems.flatten() {
+                    let name = gem.file_name();
+                    let dir_name = name.to_string_lossy();
+                    if dir_name.starts_with(gem_name) {
+                        return Some(gem.path());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Convert a `ContextDocument` (from the generators module) into the legacy `PackageContext`.
+fn doc_to_package_context(doc: generators::ContextDocument) -> PackageContext {
+    PackageContext {
+        name: doc.package,
+        version: doc.version,
+        ecosystem: doc.ecosystem,
+        description: doc.summary,
+        exports: doc.exports.into_iter().map(|e| ExportedSymbol {
+            name: e.name,
+            kind: SymbolKind::Function,
+            signature: Some(e.signature),
+            description: Some(e.description),
+            params: e.parameters.into_iter().map(|p| ParamInfo {
+                name: p.name,
+                type_str: Some(p.type_),
+                optional: p.optional,
+                default: None,
+                description: Some(p.description),
+            }).collect(),
+            return_type: None,
+        }).collect(),
+        quick_start: String::new(),
+        patterns: vec![],
+        gotchas: doc.gotchas,
+        types_summary: None,
+        dependencies: vec![],
+        generated_at: String::new(),
+        markdown: doc.markdown,
+    }
 }
