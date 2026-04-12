@@ -317,6 +317,169 @@ pub fn migrate_lockfile(project_root: &Path, from: &str) -> Result<MigrateResult
     })
 }
 
+// ---------------------------------------------------------------------------
+// Task 74: Cross-ecosystem lockfile detection and migration
+// ---------------------------------------------------------------------------
+
+/// Identifies the source lockfile format.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LockfileSource {
+    // Node.js
+    NpmPackageLock,
+    YarnLock,
+    PnpmLock,
+    // Python
+    PipfileLock,
+    PoetryLock,
+    UvLock,
+    // Rust
+    CargoLock,
+    // Go
+    GoSum,
+}
+
+/// A detected lockfile ready for migration.
+#[derive(Debug, Clone)]
+pub struct DetectedLockfile {
+    pub path: std::path::PathBuf,
+    pub source: LockfileSource,
+    pub ecosystem: &'static str,
+}
+
+/// Auto-detect all lockfiles present in a project root.
+pub fn detect_lockfiles(project_root: &Path) -> Vec<DetectedLockfile> {
+    let candidates: &[(&str, LockfileSource, &str)] = &[
+        ("package-lock.json", LockfileSource::NpmPackageLock, "npm"),
+        ("yarn.lock",         LockfileSource::YarnLock,       "npm"),
+        ("pnpm-lock.yaml",    LockfileSource::PnpmLock,       "npm"),
+        ("Pipfile.lock",      LockfileSource::PipfileLock,    "python"),
+        ("poetry.lock",       LockfileSource::PoetryLock,     "python"),
+        ("uv.lock",           LockfileSource::UvLock,         "python"),
+        ("Cargo.lock",        LockfileSource::CargoLock,      "cargo"),
+        ("go.sum",            LockfileSource::GoSum,          "go"),
+    ];
+
+    candidates
+        .iter()
+        .filter_map(|(filename, source, ecosystem)| {
+            let path = project_root.join(filename);
+            if path.exists() {
+                Some(DetectedLockfile {
+                    path,
+                    source: source.clone(),
+                    ecosystem,
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Result of a cross-ecosystem migration.
+#[derive(Debug)]
+pub struct MigrationResult {
+    pub lockfiles_found: usize,
+    pub lockfiles_migrated: usize,
+    pub ecosystems: Vec<String>,
+    pub total_packages: usize,
+}
+
+/// Parse a Cargo.lock file into a simple package list.
+///
+/// Cargo.lock format (v2/v3 TOML):
+/// ```toml
+/// [[package]]
+/// name = "serde"
+/// version = "1.0.0"
+/// source = "registry+https://github.com/rust-lang/crates.io-index"
+/// checksum = "abc123"
+/// ```
+pub fn parse_cargo_lock(path: &Path) -> Result<Vec<(String, String, String)>, String> {
+    let content = fs::read_to_string(path)
+        .map_err(|e| format!("Cannot read Cargo.lock: {}", e))?;
+
+    let mut packages = Vec::new();
+    let mut name = String::new();
+    let mut version = String::new();
+    let mut checksum = String::new();
+    let mut in_package = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[[package]]" {
+            if in_package && !name.is_empty() && !version.is_empty() {
+                packages.push((name.clone(), version.clone(), checksum.clone()));
+            }
+            name.clear();
+            version.clear();
+            checksum.clear();
+            in_package = true;
+        } else if in_package {
+            if let Some(v) = extract_toml_string(trimmed, "name") {
+                name = v;
+            } else if let Some(v) = extract_toml_string(trimmed, "version") {
+                version = v;
+            } else if let Some(v) = extract_toml_string(trimmed, "checksum") {
+                checksum = v;
+            }
+        }
+    }
+    // Don't forget the last package
+    if in_package && !name.is_empty() && !version.is_empty() {
+        packages.push((name, version, checksum));
+    }
+
+    Ok(packages)
+}
+
+/// Parse a go.sum file into a list of (module, version, hash) tuples.
+///
+/// go.sum format:
+/// ```
+/// github.com/user/module v1.2.3 h1:HASH=
+/// github.com/user/module v1.2.3/go.mod h1:HASH=
+/// ```
+pub fn parse_go_sum(path: &Path) -> Result<Vec<(String, String, String)>, String> {
+    let content = fs::read_to_string(path)
+        .map_err(|e| format!("Cannot read go.sum: {}", e))?;
+
+    let mut packages = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        // Skip go.mod lines — only keep the source lines
+        if trimmed.contains("/go.mod ") {
+            continue;
+        }
+        let parts: Vec<&str> = trimmed.splitn(3, ' ').collect();
+        if parts.len() >= 2 {
+            let module = parts[0].to_string();
+            let version = parts[1].trim_start_matches('v').to_string();
+            let hash = parts.get(2).map(|s| s.to_string()).unwrap_or_default();
+
+            let key = format!("{}@{}", module, version);
+            if seen.insert(key) {
+                packages.push((module, version, hash));
+            }
+        }
+    }
+
+    Ok(packages)
+}
+
+/// Detect and report all lockfiles in a project (for `better migrate --list`).
+pub fn detect_and_report(project_root: &Path) -> Vec<String> {
+    detect_lockfiles(project_root)
+        .iter()
+        .map(|lf| format!("{} ({})", lf.path.display(), lf.ecosystem))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,5 +582,105 @@ charset-normalizer = ">=2,<4"
         let (line2, hashes2) = extract_hashes("flask==2.3.2");
         assert_eq!(line2, "flask==2.3.2");
         assert!(hashes2.is_empty());
+    }
+
+    // ── Task 74: cross-ecosystem detection tests ──────────────────────────
+
+    #[test]
+    fn detect_lockfiles_finds_npm_package_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
+        let detected = detect_lockfiles(dir.path());
+        assert_eq!(detected.len(), 1);
+        assert_eq!(detected[0].source, LockfileSource::NpmPackageLock);
+        assert_eq!(detected[0].ecosystem, "npm");
+    }
+
+    #[test]
+    fn detect_lockfiles_finds_yarn_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("yarn.lock"), "").unwrap();
+        let detected = detect_lockfiles(dir.path());
+        assert!(detected.iter().any(|l| l.source == LockfileSource::YarnLock));
+    }
+
+    #[test]
+    fn detect_lockfiles_polyglot_project() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("Cargo.lock"), "").unwrap();
+        std::fs::write(dir.path().join("go.sum"), "").unwrap();
+        let detected = detect_lockfiles(dir.path());
+        assert_eq!(detected.len(), 3);
+        let ecosystems: Vec<_> = detected.iter().map(|l| l.ecosystem).collect();
+        assert!(ecosystems.contains(&"npm"));
+        assert!(ecosystems.contains(&"cargo"));
+        assert!(ecosystems.contains(&"go"));
+    }
+
+    #[test]
+    fn detect_lockfiles_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(detect_lockfiles(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn parse_cargo_lock_simple() {
+        let dir = tempfile::tempdir().unwrap();
+        let cargo_lock = dir.path().join("Cargo.lock");
+        std::fs::write(&cargo_lock, r#"
+[[package]]
+name = "serde"
+version = "1.0.193"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abc123def456"
+
+[[package]]
+name = "rand"
+version = "0.8.5"
+checksum = "deadbeef"
+"#).unwrap();
+        let pkgs = parse_cargo_lock(&cargo_lock).unwrap();
+        assert_eq!(pkgs.len(), 2);
+        assert_eq!(pkgs[0].0, "serde");
+        assert_eq!(pkgs[0].1, "1.0.193");
+        assert_eq!(pkgs[0].2, "abc123def456");
+        assert_eq!(pkgs[1].0, "rand");
+        assert_eq!(pkgs[1].1, "0.8.5");
+    }
+
+    #[test]
+    fn parse_cargo_lock_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Cargo.lock");
+        std::fs::write(&path, "").unwrap();
+        let pkgs = parse_cargo_lock(&path).unwrap();
+        assert!(pkgs.is_empty());
+    }
+
+    #[test]
+    fn parse_go_sum_simple() {
+        let dir = tempfile::tempdir().unwrap();
+        let go_sum = dir.path().join("go.sum");
+        std::fs::write(&go_sum, r#"
+github.com/gorilla/mux v1.8.1 h1:TuBL1KLIqAB+DKfcbkF6K9ZNV3ziLKPeQW7c3rFMJ0E=
+github.com/gorilla/mux v1.8.1/go.mod h1:AKf9I4AEqPTmMytcMc0KkNouC66V3BtZ4qD8fgaB5bo=
+github.com/stretchr/testify v1.8.4 h1:CcVxWJTDXMVBZz2vNFrKRmaFD9JrLLrJSMUuXVqosBc=
+"#).unwrap();
+        let pkgs = parse_go_sum(&go_sum).unwrap();
+        assert_eq!(pkgs.len(), 2); // go.mod entries excluded
+        assert!(pkgs.iter().any(|(m, _, _)| m == "github.com/gorilla/mux"));
+        assert!(pkgs.iter().any(|(m, _, _)| m == "github.com/stretchr/testify"));
+    }
+
+    #[test]
+    fn parse_go_sum_deduplicates_modules() {
+        let dir = tempfile::tempdir().unwrap();
+        let go_sum = dir.path().join("go.sum");
+        std::fs::write(&go_sum,
+            "github.com/pkg/errors v0.9.1 h1:abc=\ngithub.com/pkg/errors v0.9.1 h1:abc=\n"
+        ).unwrap();
+        let pkgs = parse_go_sum(&go_sum).unwrap();
+        assert_eq!(pkgs.len(), 1, "Duplicate module versions should be deduplicated");
     }
 }

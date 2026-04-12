@@ -56,6 +56,136 @@ pub fn write_env_file(
 }
 
 // ---------------------------------------------------------------------------
+// Task 73: Cross-Ecosystem env convention detection
+// ---------------------------------------------------------------------------
+
+/// Framework/ecosystem env file convention.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EnvConvention {
+    /// Next.js: .env.local (gitignored by default in Next.js projects)
+    NextJs,
+    /// Vite: .env.local
+    Vite,
+    /// Generic Node.js: .env
+    Node,
+    /// Python (python-dotenv, django-environ): .env
+    Python,
+    /// Rust (dotenvy): .env
+    Rust,
+    /// Go (godotenv): .env
+    Go,
+    /// Unknown / fallback: .env
+    Generic,
+}
+
+impl EnvConvention {
+    /// The output filename for the generated env file.
+    pub fn output_filename(&self) -> &'static str {
+        match self {
+            Self::NextJs | Self::Vite => ".env.local",
+            _ => ".env",
+        }
+    }
+
+    /// Gitignore patterns that should be present for this convention.
+    pub fn gitignore_patterns(&self) -> Vec<&'static str> {
+        match self {
+            Self::NextJs | Self::Vite => vec![".env.local", ".env*.local"],
+            _ => vec![".env"],
+        }
+    }
+}
+
+/// Detect the ecosystem / framework to determine env file conventions.
+///
+/// Priority order: Next.js > Vite > Node > Python > Rust > Go > Generic.
+pub fn detect_env_convention(project_root: &Path) -> EnvConvention {
+    // Node.js-based frameworks first
+    if project_root.join("package.json").exists() {
+        // Next.js detection
+        if project_root.join("next.config.js").exists()
+            || project_root.join("next.config.mjs").exists()
+            || project_root.join("next.config.ts").exists()
+        {
+            return EnvConvention::NextJs;
+        }
+        // Vite detection
+        if project_root.join("vite.config.js").exists()
+            || project_root.join("vite.config.ts").exists()
+            || project_root.join("vite.config.mjs").exists()
+        {
+            return EnvConvention::Vite;
+        }
+        return EnvConvention::Node;
+    }
+
+    // Python
+    if project_root.join("pyproject.toml").exists()
+        || project_root.join("requirements.txt").exists()
+        || project_root.join("Pipfile").exists()
+    {
+        return EnvConvention::Python;
+    }
+
+    // Rust
+    if project_root.join("Cargo.toml").exists() {
+        return EnvConvention::Rust;
+    }
+
+    // Go
+    if project_root.join("go.mod").exists() {
+        return EnvConvention::Go;
+    }
+
+    EnvConvention::Generic
+}
+
+/// Ensure a pattern is present in .gitignore (appends if missing).
+pub fn ensure_gitignore(project_root: &Path, pattern: &str) {
+    let gitignore_path = project_root.join(".gitignore");
+    let content = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
+    if !content.lines().any(|l| l.trim() == pattern) {
+        let mut new_content = content;
+        if !new_content.ends_with('\n') && !new_content.is_empty() {
+            new_content.push('\n');
+        }
+        new_content.push_str(pattern);
+        new_content.push('\n');
+        let _ = std::fs::write(&gitignore_path, new_content);
+    }
+}
+
+/// Generate .env file with framework-aware output path.
+///
+/// Detects ecosystem from `project_root`, resolves osp:// URIs from vault,
+/// writes to the appropriate file (.env or .env.local), and updates .gitignore.
+pub fn generate_env_cross_ecosystem(
+    project_root: &Path,
+    vault: &Vault,
+    agent_secret_key: &[u8; 32],
+) -> Result<std::path::PathBuf, OspError> {
+    let convention = detect_env_convention(project_root);
+    let template_path = project_root.join(".env.osp");
+
+    if !template_path.exists() {
+        return Err(OspError::ParseError(
+            "No .env.osp template found in project root".into(),
+        ));
+    }
+
+    let pairs = generate_env(&template_path, vault, agent_secret_key)?;
+    let output_path = project_root.join(convention.output_filename());
+    write_env_file(&output_path, &pairs)?;
+
+    // Ensure generated file is gitignored
+    for pattern in convention.gitignore_patterns() {
+        ensure_gitignore(project_root, pattern);
+    }
+
+    Ok(output_path)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -105,5 +235,132 @@ mod tests {
         assert!(content.contains("KEY_ONE=value1"));
         assert!(content.contains("KEY_TWO=\"value with spaces\""));
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ── Task 73: detect_env_convention tests ──────────────────────────────
+
+    #[test]
+    fn detect_nextjs_with_next_config_js() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("next.config.js"), "").unwrap();
+        assert_eq!(detect_env_convention(dir.path()), EnvConvention::NextJs);
+    }
+
+    #[test]
+    fn detect_nextjs_with_next_config_mjs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("next.config.mjs"), "").unwrap();
+        assert_eq!(detect_env_convention(dir.path()), EnvConvention::NextJs);
+    }
+
+    #[test]
+    fn detect_vite_with_vite_config() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("vite.config.ts"), "").unwrap();
+        assert_eq!(detect_env_convention(dir.path()), EnvConvention::Vite);
+    }
+
+    #[test]
+    fn detect_generic_node_with_package_json_only() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+        assert_eq!(detect_env_convention(dir.path()), EnvConvention::Node);
+    }
+
+    #[test]
+    fn detect_python_with_pyproject_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pyproject.toml"), "[tool.poetry]").unwrap();
+        assert_eq!(detect_env_convention(dir.path()), EnvConvention::Python);
+    }
+
+    #[test]
+    fn detect_python_with_requirements_txt() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("requirements.txt"), "flask\n").unwrap();
+        assert_eq!(detect_env_convention(dir.path()), EnvConvention::Python);
+    }
+
+    #[test]
+    fn detect_rust_with_cargo_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]").unwrap();
+        assert_eq!(detect_env_convention(dir.path()), EnvConvention::Rust);
+    }
+
+    #[test]
+    fn detect_go_with_go_mod() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module example.com/myapp").unwrap();
+        assert_eq!(detect_env_convention(dir.path()), EnvConvention::Go);
+    }
+
+    #[test]
+    fn detect_generic_for_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(detect_env_convention(dir.path()), EnvConvention::Generic);
+    }
+
+    #[test]
+    fn nextjs_output_filename_is_env_local() {
+        assert_eq!(EnvConvention::NextJs.output_filename(), ".env.local");
+    }
+
+    #[test]
+    fn vite_output_filename_is_env_local() {
+        assert_eq!(EnvConvention::Vite.output_filename(), ".env.local");
+    }
+
+    #[test]
+    fn node_output_filename_is_env() {
+        assert_eq!(EnvConvention::Node.output_filename(), ".env");
+    }
+
+    #[test]
+    fn rust_output_filename_is_env() {
+        assert_eq!(EnvConvention::Rust.output_filename(), ".env");
+    }
+
+    #[test]
+    fn nextjs_gitignore_patterns_include_env_local() {
+        let patterns = EnvConvention::NextJs.gitignore_patterns();
+        assert!(patterns.contains(&".env.local"));
+    }
+
+    #[test]
+    fn generic_gitignore_patterns_include_env() {
+        let patterns = EnvConvention::Generic.gitignore_patterns();
+        assert!(patterns.contains(&".env"));
+    }
+
+    #[test]
+    fn ensure_gitignore_adds_missing_pattern() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_gitignore(dir.path(), ".env");
+        let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert!(content.contains(".env"));
+    }
+
+    #[test]
+    fn ensure_gitignore_does_not_duplicate_existing_pattern() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".gitignore"), ".env\nnode_modules\n").unwrap();
+        ensure_gitignore(dir.path(), ".env");
+        let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        let count = content.lines().filter(|l| l.trim() == ".env").count();
+        assert_eq!(count, 1, "Should not duplicate existing pattern");
+    }
+
+    #[test]
+    fn generate_env_cross_ecosystem_no_template_returns_err() {
+        let dir = tempfile::tempdir().unwrap();
+        // No .env.osp file
+        let vault = super::Vault::open().unwrap();
+        let key = [0u8; 32];
+        let result = generate_env_cross_ecosystem(dir.path(), &vault, &key);
+        assert!(result.is_err(), "Should error when .env.osp is missing");
     }
 }

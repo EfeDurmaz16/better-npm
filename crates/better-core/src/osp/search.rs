@@ -315,7 +315,7 @@ fn search_curated(
     let mut results = Vec::new();
 
     for provider in &providers {
-        // Category filter
+        // Provider-level category pre-filter (skip providers with no matching category)
         if let Some(cat) = category_filter {
             if !provider.categories.contains(&cat) {
                 continue;
@@ -323,6 +323,13 @@ fn search_curated(
         }
 
         for offering in &provider.offerings {
+            // Offering-level category filter (must match the specific offering's category)
+            if let Some(cat) = category_filter {
+                if offering.category != cat {
+                    continue;
+                }
+            }
+
             // Payment filter: "free" means only free-tier offerings
             if let Some("free") = payment_filter {
                 if !offering.free_tier {
@@ -497,6 +504,7 @@ mod tests {
         };
         let json = serde_json::to_string(&result).unwrap();
         assert!(json.contains("supabase.com"));
-        assert!(json.contains("Database"));
+        // ServiceCategory::Database serializes as "database" (snake_case)
+        assert!(json.contains("database"));
     }
 }
