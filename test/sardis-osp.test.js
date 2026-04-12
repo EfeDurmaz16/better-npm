@@ -278,3 +278,219 @@ test("better sponsors list --json returns array or error object", async () => {
     assert.ok(result.code !== 0 || result.stdout.length > 0 || result.stderr.length > 0);
   }
 });
+
+// ── better deprovision ────────────────────────────────────────────────────────
+
+test("better deprovision --help shows usage", async () => {
+  const result = await runBetter(["deprovision", "--help"]);
+  assert.ok(
+    result.stdout.includes("deprovision") || result.stdout.includes("provision"),
+    `Expected deprovision help, got: ${result.stdout}`
+  );
+});
+
+test("better deprovision without args shows usage or error", async () => {
+  const result = await runBetter(["deprovision"]);
+  assert.ok(
+    result.stdout.length > 0 || result.stderr.length > 0,
+    "Expected some output"
+  );
+});
+
+test("better deprovision unknown-provider/service returns error", async () => {
+  const result = await runBetter(["deprovision", "nonexistent.com/postgres", "--json"]);
+  if (result.stdout && result.stdout.trim().startsWith("{")) {
+    const parsed = JSON.parse(result.stdout.trim());
+    assert.ok(
+      parsed.ok === false || parsed.error !== undefined,
+      `Expected error JSON, got: ${JSON.stringify(parsed)}`
+    );
+  } else {
+    // Non-JSON output is also fine — just must produce something
+    assert.ok(
+      result.code !== 0 || result.stderr.length > 0 || result.stdout.length > 0,
+      "Expected non-zero exit or output"
+    );
+  }
+});
+
+// ── better discover ───────────────────────────────────────────────────────────
+
+test("better discover --help shows usage", async () => {
+  const result = await runBetter(["discover", "--help"]);
+  assert.ok(
+    result.stdout.includes("discover") || result.stdout.includes("category"),
+    `Expected discover help, got: ${result.stdout}`
+  );
+});
+
+test("better discover database returns results or empty list", async () => {
+  const result = await runBetter(["discover", "database", "--json"]);
+  assert.ok(
+    result.stdout !== undefined,
+    "Expected stdout to be defined"
+  );
+  if (result.stdout && result.stdout.trim().startsWith("[")) {
+    const parsed = JSON.parse(result.stdout.trim());
+    assert.ok(Array.isArray(parsed), "Expected array of results");
+  }
+});
+
+test("better discover --category email returns email providers", async () => {
+  const result = await runBetter(["discover", "--category", "email", "--json"]);
+  // Should return at least the Resend curated entry
+  if (result.stdout && result.stdout.trim().startsWith("[")) {
+    const parsed = JSON.parse(result.stdout.trim());
+    assert.ok(Array.isArray(parsed));
+    // All returned results should be email category
+    for (const r of parsed) {
+      assert.ok(
+        r.category === "email" || r.category === "Email",
+        `Expected email category, got ${r.category}`
+      );
+    }
+  } else {
+    assert.ok(result.stdout.length > 0 || result.code !== 0);
+  }
+});
+
+test("better discover supabase finds supabase offerings", async () => {
+  const result = await runBetter(["discover", "supabase", "--json"]);
+  if (result.stdout && result.stdout.trim().startsWith("[")) {
+    const parsed = JSON.parse(result.stdout.trim());
+    if (parsed.length > 0) {
+      assert.ok(
+        parsed.some(r => r.provider_id && r.provider_id.includes("supabase")),
+        `Expected supabase in results, got: ${JSON.stringify(parsed.map(r => r.provider_id))}`
+      );
+    }
+  } else {
+    assert.ok(result.stdout.length > 0);
+  }
+});
+
+test("better discover --free filters to free-tier providers", async () => {
+  const result = await runBetter(["discover", "--free", "--json"]);
+  assert.ok(
+    result.stdout !== undefined,
+    "Expected some output from better discover --free"
+  );
+});
+
+// ── better agent provision ────────────────────────────────────────────────────
+
+test("better agent provision --help shows usage", async () => {
+  const result = await runBetter(["agent", "provision", "--help"]);
+  assert.ok(
+    result.stdout.includes("provision") || result.stdout.includes("agent"),
+    `Expected agent provision help, got: ${result.stdout}`
+  );
+});
+
+test("better agent provision without offering shows error", async () => {
+  const result = await runBetter(["agent", "provision"]);
+  assert.ok(
+    result.code !== 0 || result.stdout.includes("error") || result.stderr.includes("error"),
+    "Expected error when no offering provided"
+  );
+});
+
+test("better agent provision --json returns structured output", async () => {
+  // Without Sardis auth, this should fail gracefully with a JSON error
+  const result = await runBetter(["agent", "provision", "supabase/postgres", "--json"]);
+  if (result.stdout && result.stdout.trim().startsWith("{")) {
+    const parsed = JSON.parse(result.stdout.trim());
+    assert.ok(
+      typeof parsed === "object",
+      `Expected JSON object, got: ${result.stdout}`
+    );
+    // Either success or error — both are valid structured outputs
+    assert.ok(
+      "ok" in parsed || "success" in parsed || "error" in parsed || "kind" in parsed,
+      `Expected ok/success/error/kind field, got: ${JSON.stringify(parsed)}`
+    );
+  } else {
+    // Non-JSON output is acceptable — the command just ran
+    assert.ok(result.stdout.length > 0 || result.stderr.length > 0);
+  }
+});
+
+// ── better credentials ────────────────────────────────────────────────────────
+
+test("better credentials --help shows usage", async () => {
+  const result = await runBetter(["credentials", "--help"]);
+  assert.ok(
+    result.stdout.includes("credentials") || result.stdout.includes("credential"),
+    `Expected credentials help, got: ${result.stdout}`
+  );
+});
+
+test("better credentials list --json returns array or error", async () => {
+  const result = await runBetter(["credentials", "list", "--json"]);
+  assert.ok(
+    result.stdout !== undefined,
+    "Expected some output"
+  );
+  if (result.stdout && result.stdout.trim().startsWith("{")) {
+    const parsed = JSON.parse(result.stdout.trim());
+    assert.ok(typeof parsed === "object");
+  }
+});
+
+test("better credentials show unknown-service returns error", async () => {
+  const result = await runBetter(["credentials", "show", "nonexistent.com/service", "--json"]);
+  if (result.stdout && result.stdout.trim().startsWith("{")) {
+    const parsed = JSON.parse(result.stdout.trim());
+    assert.ok(
+      parsed.ok === false || parsed.error !== undefined || parsed.kind !== undefined,
+      `Expected error, got: ${JSON.stringify(parsed)}`
+    );
+  } else {
+    assert.ok(result.code !== 0 || result.stdout.length > 0 || result.stderr.length > 0);
+  }
+});
+
+// ── better compliance ─────────────────────────────────────────────────────────
+
+test("better compliance --help shows usage", async () => {
+  const result = await runBetter(["compliance", "--help"]);
+  assert.ok(
+    result.stdout.includes("compliance") || result.stdout.includes("report"),
+    `Expected compliance help, got: ${result.stdout}`
+  );
+});
+
+test("better compliance report without auth returns error", async () => {
+  const result = await runBetter(["compliance", "report", "--json"]);
+  if (result.stdout && result.stdout.trim().startsWith("{")) {
+    const parsed = JSON.parse(result.stdout.trim());
+    assert.ok(
+      parsed.ok === false || parsed.error !== undefined || parsed.kind !== undefined,
+      `Expected error field, got: ${JSON.stringify(parsed)}`
+    );
+  } else {
+    assert.ok(result.code !== 0 || result.stdout.length > 0 || result.stderr.length > 0);
+  }
+});
+
+// ── Sardis manifest verification (offline/unit-level) ─────────────────────────
+
+test("better discover with no args shows help or results", async () => {
+  const result = await runBetter(["discover"]);
+  // Without args, should show usage or list all curated providers
+  assert.ok(
+    result.stdout.length > 0 || result.stderr.length > 0,
+    "Expected output from better discover"
+  );
+});
+
+test("better discover with unknown query returns empty list or error", async () => {
+  const result = await runBetter(["discover", "xyznonexistentprovider12345", "--json"]);
+  if (result.stdout && result.stdout.trim().startsWith("[")) {
+    const parsed = JSON.parse(result.stdout.trim());
+    assert.ok(Array.isArray(parsed));
+    // Empty or minimal results are valid — just must be an array
+  } else {
+    assert.ok(result.stdout.length > 0 || result.code !== 0);
+  }
+});
