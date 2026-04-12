@@ -436,7 +436,7 @@ pub fn parse_cargo_lock(path: &Path) -> Result<Vec<(String, String, String)>, St
 /// Parse a go.sum file into a list of (module, version, hash) tuples.
 ///
 /// go.sum format:
-/// ```
+/// ```text
 /// github.com/user/module v1.2.3 h1:HASH=
 /// github.com/user/module v1.2.3/go.mod h1:HASH=
 /// ```
