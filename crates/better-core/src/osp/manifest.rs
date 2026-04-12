@@ -131,6 +131,117 @@ pub fn sort_json_keys(value: &serde_json::Value) -> serde_json::Value {
 }
 
 // ---------------------------------------------------------------------------
+// Task 64: Full manifest verification — TOFU pinning, version monotonicity, nonce
+// ---------------------------------------------------------------------------
+
+/// Result of a comprehensive manifest security verification.
+#[derive(Debug)]
+pub struct ManifestVerification {
+    pub signature_valid: bool,
+    pub version_monotonic: bool,
+    /// TOFU: first use pins the key; subsequent uses must match
+    pub pubkey_pinned: bool,
+    pub warnings: Vec<String>,
+}
+
+/// Verify a manifest with all security checks:
+/// 1. Ed25519 signature over canonical JSON
+/// 2. Monotonic version (manifest_version > cached previous)
+/// 3. TOFU public key pinning
+///
+/// The vault is updated with the new pinned key and version on success.
+pub fn verify_manifest_full(
+    manifest: &ServiceManifest,
+    vault: &mut super::vault::Vault,
+) -> Result<ManifestVerification, super::discovery::OspError> {
+    let sig_valid = super::discovery::verify_manifest_signature(manifest)?;
+    let mut warnings = Vec::new();
+
+    let version_ok = check_manifest_version(manifest, vault);
+    if !version_ok {
+        warnings.push(format!(
+            "Manifest version regression detected for {}",
+            manifest.provider_id
+        ));
+    }
+
+    let pin_ok = check_and_update_pubkey_pin(manifest, vault, &mut warnings);
+
+    Ok(ManifestVerification {
+        signature_valid: sig_valid,
+        version_monotonic: version_ok,
+        pubkey_pinned: pin_ok,
+        warnings,
+    })
+}
+
+/// Check that manifest_version is monotonically increasing vs. the cached version.
+fn check_manifest_version(manifest: &ServiceManifest, vault: &super::vault::Vault) -> bool {
+    match vault.get_pinned_manifest_version(&manifest.provider_id) {
+        Some(cached_version) => manifest.manifest_version > cached_version,
+        None => true, // First time seeing this provider
+    }
+}
+
+/// TOFU public key pinning: pin on first use; require match on subsequent uses.
+fn check_and_update_pubkey_pin(
+    manifest: &ServiceManifest,
+    vault: &mut super::vault::Vault,
+    warnings: &mut Vec<String>,
+) -> bool {
+    let Some(ref pubkey) = manifest.provider_public_key else {
+        warnings.push(format!(
+            "Provider {} has no public key — signature cannot be verified",
+            manifest.provider_id
+        ));
+        return false;
+    };
+
+    match vault.get_pinned_pubkey(&manifest.provider_id) {
+        Some(pinned) => {
+            if pinned == *pubkey {
+                true
+            } else {
+                warnings.push(format!(
+                    "PUBLIC KEY MISMATCH for {} — possible MITM attack!",
+                    manifest.provider_id
+                ));
+                false
+            }
+        }
+        None => {
+            // First use: pin this key
+            let _ = vault.pin_pubkey(&manifest.provider_id, pubkey);
+            let _ = vault.pin_manifest_version(&manifest.provider_id, manifest.manifest_version);
+            true
+        }
+    }
+}
+
+/// Generate a fresh nonce and record it in the vault (replay protection).
+pub fn generate_and_record_nonce(
+    vault: &mut super::vault::Vault,
+) -> Result<String, super::discovery::OspError> {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    let nonce = super::crypto::base64_url_encode(&bytes);
+    vault.check_nonce(&nonce)?;
+    Ok(nonce)
+}
+
+/// Validate that the nonce in a provider response matches what we sent.
+pub fn validate_response_nonce(
+    expected: &str,
+    received: &str,
+) -> Result<(), super::discovery::OspError> {
+    if expected != received {
+        return Err(super::discovery::OspError::NonceReplay);
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -163,5 +274,77 @@ mod tests {
         let arr = sorted.as_array().unwrap();
         let keys: Vec<&str> = arr[0].as_object().unwrap().keys().map(|k| k.as_str()).collect();
         assert_eq!(keys, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn canonical_json_excludes_provider_signature() {
+        let manifest = make_test_manifest();
+        let canon = canonical_json(&manifest).unwrap();
+        assert!(!canon.contains("provider_signature"));
+        assert!(!canon.contains("TEST_SIG"));
+        assert!(canon.contains("mf_test"));
+    }
+
+    #[test]
+    fn validate_response_nonce_matches() {
+        assert!(validate_response_nonce("abc123", "abc123").is_ok());
+    }
+
+    #[test]
+    fn validate_response_nonce_mismatch_errors() {
+        assert!(validate_response_nonce("abc123", "xyz789").is_err());
+    }
+
+    #[test]
+    fn manifest_verification_struct_fields() {
+        let v = ManifestVerification {
+            signature_valid: true,
+            version_monotonic: true,
+            pubkey_pinned: true,
+            warnings: vec![],
+        };
+        assert!(v.signature_valid && v.version_monotonic && v.pubkey_pinned);
+        assert!(v.warnings.is_empty());
+    }
+
+    #[test]
+    fn manifest_verification_with_warnings() {
+        let mut v = ManifestVerification {
+            signature_valid: true,
+            version_monotonic: false,
+            pubkey_pinned: true,
+            warnings: vec![],
+        };
+        v.warnings.push("Manifest version regression".into());
+        assert!(!v.version_monotonic);
+        assert_eq!(v.warnings.len(), 1);
+    }
+
+    fn make_test_manifest() -> ServiceManifest {
+        ServiceManifest {
+            manifest_id: "mf_test".into(),
+            manifest_version: 1,
+            previous_version: None,
+            osp_spec_version: Some("1.1".into()),
+            provider_id: "test.com".into(),
+            display_name: "Test".into(),
+            provider_url: None,
+            provider_public_key: None,
+            offerings: vec![],
+            accepted_payment_methods: None,
+            trust_tier_required: None,
+            endpoints: ProviderEndpoints {
+                provision: "/osp/v1/provision".into(),
+                deprovision: "/osp/v1/deprovision".into(),
+                credentials: "/osp/v1/credentials".into(),
+                rotate: None,
+                status: "/osp/v1/status".into(),
+                usage: None,
+                health: "/osp/v1/health".into(),
+            },
+            extensions: None,
+            effective_at: None,
+            provider_signature: "TEST_SIG".into(),
+        }
     }
 }

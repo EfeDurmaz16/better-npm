@@ -31,3 +31,6 @@ dirs = "5"
 gethostname = "0.4"
 whoami = "1"
 zstd = "0.13"
+
+[dev-dependencies]
+tempfile = "3"

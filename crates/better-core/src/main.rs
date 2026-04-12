@@ -4655,17 +4655,21 @@ fn main() {
                 Ok(m) => m,
                 Err(e) => { eprintln!("error: {}", e); std::process::exit(1); }
             };
-            match osp::deprovision::deprovision(&mut vault, &manifest, parts[0], parts[1]) {
-                Ok(()) => {
+            match osp::deprovision::deprovision(&mut vault, &manifest, parts[0], parts[1], None, false) {
+                Ok(result) => {
                     if global_flags.json || global_flags.agent_mode {
                         let mut w = JsonWriter::new();
                         w.begin_object();
                         w.key("ok"); w.value_bool(true);
                         w.key("kind"); w.value_string("better.deprovision");
+                        w.key("resource_id"); w.value_string(&result.resource_id);
                         w.end_object(); w.out.push('\n');
                         print!("{}", w.finish());
                     } else {
-                        println!("Deprovisioned {}", resource_id);
+                        println!("Deprovisioned {}", result.resource_id);
+                        for warn in &result.env_warnings {
+                            println!("  warning: stale .env.osp reference: {}", warn);
+                        }
                     }
                 }
                 Err(e) => {

@@ -271,6 +271,50 @@ impl Vault {
             .map_err(|e| OspError::VaultError(e.to_string()))?;
         Ok(())
     }
+
+    // -----------------------------------------------------------------------
+    // TOFU public key pinning
+    // -----------------------------------------------------------------------
+
+    /// Get the pinned Ed25519 public key for a provider (TOFU).
+    pub fn get_pinned_pubkey(&self, provider_id: &str) -> Option<String> {
+        let path = self.root.join("pins").join(format!("{}.pubkey", provider_slug(provider_id)));
+        std::fs::read_to_string(&path).ok()
+    }
+
+    /// Pin a provider's public key (TOFU: first use only).
+    pub fn pin_pubkey(&mut self, provider_id: &str, pubkey: &str) -> Result<(), OspError> {
+        let pins_dir = self.root.join("pins");
+        std::fs::create_dir_all(&pins_dir)
+            .map_err(|e| OspError::VaultError(e.to_string()))?;
+        let path = pins_dir.join(format!("{}.pubkey", provider_slug(provider_id)));
+        std::fs::write(&path, pubkey)
+            .map_err(|e| OspError::VaultError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Get the pinned manifest version for a provider.
+    pub fn get_pinned_manifest_version(&self, provider_id: &str) -> Option<u64> {
+        let path = self.root.join("pins").join(format!("{}.version", provider_slug(provider_id)));
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+    }
+
+    /// Pin/update the manifest version for a provider.
+    pub fn pin_manifest_version(&mut self, provider_id: &str, version: u64) -> Result<(), OspError> {
+        let pins_dir = self.root.join("pins");
+        std::fs::create_dir_all(&pins_dir)
+            .map_err(|e| OspError::VaultError(e.to_string()))?;
+        let path = pins_dir.join(format!("{}.version", provider_slug(provider_id)));
+        std::fs::write(&path, version.to_string())
+            .map_err(|e| OspError::VaultError(e.to_string()))?;
+        Ok(())
+    }
+}
+
+fn provider_slug(provider_id: &str) -> String {
+    provider_id.replace('.', "_").replace('/', "_")
 }
 
 fn vault_entry_key(provider: &str, offering_id: &str) -> String {

@@ -1212,3 +1212,231 @@ pub fn napi_analyze_supply_chain(project_root: String) -> NapiSupplyChainReport 
 pub fn napi_check_typosquat(name: String, known_packages: Vec<String>) -> f64 {
     better_core::intelligence::check_typosquat(&name, &known_packages)
 }
+
+// ── v0.8 OSP / Sardis ───────────────────────────────────────────────────────
+
+#[napi(object)]
+pub struct NapiDiscoveryResult {
+    pub provider_id: String,
+    pub display_name: String,
+    pub offering_id: String,
+    pub offering_name: String,
+    pub category: String,
+    pub description: Option<String>,
+    pub free_tier: bool,
+    pub source: String,
+}
+
+/// Search for OSP providers by category or keyword.
+/// Returns JSON array of DiscoveryResult — falls back to curated list offline.
+#[napi(js_name = "ospDiscover")]
+pub fn napi_osp_discover(query: String, category: Option<String>) -> String {
+    use better_core::osp::search::discover;
+    let results = discover(
+        &query,
+        category.as_deref(),
+        None,
+        20,
+    ).unwrap_or_default();
+    serde_json::to_string(&results).unwrap_or_else(|_| "[]".into())
+}
+
+#[napi(object)]
+pub struct NapiOspServiceEntry {
+    pub provider_id: String,
+    pub offering_id: String,
+    pub resource_id: String,
+    pub tier_id: String,
+    pub status: String,
+    pub dashboard_url: Option<String>,
+}
+
+/// List all provisioned OSP services from the local vault.
+#[napi(js_name = "ospServicesList")]
+pub fn napi_osp_services_list() -> String {
+    use better_core::osp::vault::Vault;
+    match Vault::open() {
+        Ok(vault) => {
+            let entries: Vec<_> = vault.list_entries().iter().map(|e| {
+                serde_json::json!({
+                    "provider_id": e.provider_id,
+                    "offering_id": e.offering_id,
+                    "resource_id": e.resource_id,
+                    "tier_id": e.tier_id,
+                    "status": format!("{:?}", e.status),
+                    "dashboard_url": e.dashboard_url,
+                })
+            }).collect();
+            serde_json::to_string(&entries).unwrap_or_else(|_| "[]".into())
+        }
+        Err(e) => {
+            serde_json::json!({ "error": e.to_string() }).to_string()
+        }
+    }
+}
+
+/// Deprovision a service — calls OSP DELETE endpoint and removes vault entry.
+#[napi(js_name = "ospDeprovisionService")]
+pub fn napi_osp_deprovision(provider_id: String, offering: String) -> String {
+    use better_core::osp::vault::Vault;
+    use better_core::osp::discovery::fetch_manifest;
+    use better_core::osp::deprovision::deprovision;
+    match Vault::open() {
+        Ok(mut vault) => {
+            match fetch_manifest(&provider_id) {
+                Ok(manifest) => {
+                    match deprovision(&mut vault, &manifest, &provider_id, &offering, None, false) {
+                        Ok(result) => serde_json::json!({
+                            "ok": true,
+                            "resource_id": result.resource_id,
+                            "vault_cleaned": result.vault_cleaned,
+                            "env_warnings": result.env_warnings,
+                        }).to_string(),
+                        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+                    }
+                }
+                Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+            }
+        }
+        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+    }
+}
+
+/// Generate .env file by resolving osp:// URIs in .env.osp template.
+#[napi(js_name = "ospEnvGenerate")]
+pub fn napi_osp_env_generate(project_root: String) -> String {
+    use better_core::osp::env_gen::{generate_env, write_env_file};
+    use better_core::osp::vault::Vault;
+    let root = Path::new(&project_root);
+    let template = root.join(".env.osp");
+    if !template.exists() {
+        return serde_json::json!({ "ok": false, "error": ".env.osp not found" }).to_string();
+    }
+    match Vault::open() {
+        Ok(mut vault) => {
+            match vault.agent_secret_key() {
+                Ok(secret) => {
+                    match generate_env(&template, &vault, &secret) {
+                        Ok(pairs) => {
+                            let count = pairs.len();
+                            let out = root.join(".env");
+                            match write_env_file(&out, &pairs) {
+                                Ok(()) => serde_json::json!({
+                                    "ok": true,
+                                    "vars_written": count,
+                                    "output": out.to_string_lossy(),
+                                }).to_string(),
+                                Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+                            }
+                        }
+                        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+                    }
+                }
+                Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+            }
+        }
+        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+    }
+}
+
+// ── v0.8 Monetization ───────────────────────────────────────────────────────
+
+/// Fetch earnings summary from Sardis API. Requires SARDIS_TOKEN env var.
+#[napi(js_name = "fetchEarnings")]
+pub fn napi_fetch_earnings(period_days: u32, with_breakdown: bool) -> String {
+    use better_core::sardis::auth::{SardisSession, SardisError};
+    use better_core::monetize::earnings::fetch_earnings;
+
+    let token = match std::env::var("SARDIS_TOKEN") {
+        Ok(t) => t,
+        Err(_) => return serde_json::json!({ "ok": false, "error": "SARDIS_TOKEN not set" }).to_string(),
+    };
+
+    // Build a minimal session from env token
+    let session = SardisSession {
+        access_token: token,
+        refresh_token: String::new(),
+        wallet_id: std::env::var("SARDIS_WALLET_ID").unwrap_or_default(),
+        agent_id: std::env::var("SARDIS_AGENT_ID").unwrap_or_default(),
+        expires_at: (chrono::Utc::now() + chrono::Duration::hours(24)).to_rfc3339(),
+    };
+
+    match fetch_earnings(&session, period_days, with_breakdown) {
+        Ok(summary) => match serde_json::to_string(&summary) {
+            Ok(json) => format!("{{\"ok\":true,\"data\":{}}}", json),
+            Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+        },
+        Err(SardisError::SessionExpired) =>
+            serde_json::json!({ "ok": false, "error": "Session expired" }).to_string(),
+        Err(e) =>
+            serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+    }
+}
+
+/// Pay a package maintainer. Requires SARDIS_TOKEN env var.
+#[napi(js_name = "payPackage")]
+pub fn napi_pay_package(package_name: String, amount: String, currency: String) -> String {
+    use better_core::sardis::auth::SardisSession;
+    use better_core::monetize::pay::pay_package;
+
+    let token = match std::env::var("SARDIS_TOKEN") {
+        Ok(t) => t,
+        Err(_) => return serde_json::json!({ "ok": false, "error": "SARDIS_TOKEN not set" }).to_string(),
+    };
+
+    let session = SardisSession {
+        access_token: token,
+        refresh_token: String::new(),
+        wallet_id: std::env::var("SARDIS_WALLET_ID").unwrap_or_default(),
+        agent_id: std::env::var("SARDIS_AGENT_ID").unwrap_or_default(),
+        expires_at: (chrono::Utc::now() + chrono::Duration::hours(24)).to_rfc3339(),
+    };
+
+    match pay_package(&session, &package_name, &amount, &currency) {
+        Ok(result) => match serde_json::to_string(&result) {
+            Ok(json) => format!("{{\"ok\":true,\"data\":{}}}", json),
+            Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+        },
+        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+    }
+}
+
+/// Create a sponsorship for a package. Requires SARDIS_TOKEN env var.
+#[napi(js_name = "createSponsorship")]
+pub fn napi_create_sponsorship(
+    package_name: String,
+    amount: String,
+    currency: String,
+    schedule: String,
+) -> String {
+    use better_core::sardis::auth::SardisSession;
+    use better_core::monetize::sponsor::{create_sponsorship, SponsorSchedule};
+
+    let token = match std::env::var("SARDIS_TOKEN") {
+        Ok(t) => t,
+        Err(_) => return serde_json::json!({ "ok": false, "error": "SARDIS_TOKEN not set" }).to_string(),
+    };
+
+    let session = SardisSession {
+        access_token: token,
+        refresh_token: String::new(),
+        wallet_id: std::env::var("SARDIS_WALLET_ID").unwrap_or_default(),
+        agent_id: std::env::var("SARDIS_AGENT_ID").unwrap_or_default(),
+        expires_at: (chrono::Utc::now() + chrono::Duration::hours(24)).to_rfc3339(),
+    };
+
+    let sched = match schedule.to_lowercase().as_str() {
+        "monthly" => SponsorSchedule::Monthly,
+        "quarterly" => SponsorSchedule::Quarterly,
+        "annual" => SponsorSchedule::Annual,
+        _ => SponsorSchedule::OneTime,
+    };
+
+    match create_sponsorship(&session, &package_name, &amount, &currency, sched) {
+        Ok(result) => match serde_json::to_string(&result) {
+            Ok(json) => format!("{{\"ok\":true,\"data\":{}}}", json),
+            Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+        },
+        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+    }
+}
