@@ -302,4 +302,10 @@ mod tests {
         assert!(content.contains("^4.17.21")); // unchanged
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn has_range_true_for_tilde() {
+        assert!(has_range("~2.0.0"));
+        assert!(has_range("~0.1.0"));
+    }
 }

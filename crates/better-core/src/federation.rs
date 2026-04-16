@@ -270,4 +270,22 @@ mod tests {
         assert!(plan.candidates.is_empty());
         assert!(plan.skipped.is_empty());
     }
+
+    #[test]
+    fn registry_for_unscoped_pkg_returns_none_when_all_registries_have_scopes() {
+        let config = FederationConfig {
+            registries: vec![FedRegistryEntry {
+                name: "scoped-only".to_string(),
+                url: "https://registry.example.com".to_string(),
+                registry_type: RegistryKind::Npm,
+                priority: 1,
+                scopes: vec!["@internal".to_string()],
+                auth_token: None,
+                enabled: true,
+            }],
+        };
+        // An unscoped package should not match a registry that only handles @internal
+        let reg = registry_for(&config, "lodash");
+        assert!(reg.is_none());
+    }
 }

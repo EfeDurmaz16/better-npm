@@ -273,4 +273,14 @@ mod tests {
         let config = mgr.load_config().unwrap();
         assert!(config.environments.is_empty());
     }
+
+    #[test]
+    fn env_error_display_messages() {
+        let not_found = EnvError::NotFound("staging".to_string());
+        assert!(not_found.to_string().contains("staging"));
+        let already_exists = EnvError::AlreadyExists("prod".to_string());
+        assert!(already_exists.to_string().contains("prod"));
+        let serialize_err = EnvError::Serialize("bad json".to_string());
+        assert!(serialize_err.to_string().contains("bad json"));
+    }
 }
