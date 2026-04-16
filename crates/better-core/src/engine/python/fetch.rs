@@ -210,4 +210,13 @@ mod tests {
         assert!(pkg.is_wheel);
         assert_eq!(pkg.name, "flask");
     }
+
+    #[test]
+    fn test_cas_miss_nonexistent_file() {
+        let dir = std::env::temp_dir().join("fetch-cas-miss-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        // A hash that hasn't been stored
+        assert!(!cas_hit(&dir, "nonexistent0000hash"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

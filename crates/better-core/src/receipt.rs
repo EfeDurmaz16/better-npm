@@ -305,4 +305,20 @@ mod tests {
         assert_eq!(receipts[0].lockfile_hash.as_deref(), Some("sha256:abc123"));
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn receipt_package_count_matches_written_packages() {
+        let tmp = std::env::temp_dir().join("receipt-test-pkg-count");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let pkgs = vec![
+            make_pkg("express", "4.18.2"),
+            make_pkg("lodash", "4.17.21"),
+            make_pkg("react", "18.0.0"),
+        ];
+        write_install_receipt(&tmp, &pkgs, None, None, &[]).unwrap();
+        let receipts = list_receipts(&tmp).unwrap();
+        // parse_receipt stores the count but doesn't re-parse individual package entries
+        assert_eq!(receipts[0].packages_installed, 3);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

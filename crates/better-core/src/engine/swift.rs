@@ -315,4 +315,12 @@ mod tests {
         assert!(files.contains(&"Package.swift"));
         assert!(files.contains(&"Package.resolved"));
     }
+
+    #[test]
+    fn materialize_returns_ok() {
+        let tmp = std::env::temp_dir().join("swift-engine-mat");
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert!(SwiftEngine.materialize(&[], &tmp).is_ok());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

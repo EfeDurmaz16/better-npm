@@ -398,4 +398,11 @@ mod tests {
         assert_eq!(back.version, 1);
         assert_eq!(back.entry_count, 3);
     }
+
+    #[test]
+    fn service_status_ne_variants() {
+        assert_ne!(ServiceStatus::Active, ServiceStatus::Error);
+        assert_ne!(ServiceStatus::Provisioning, ServiceStatus::Deprovisioned);
+        assert_eq!(ServiceStatus::Rotating, ServiceStatus::Rotating);
+    }
 }

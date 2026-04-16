@@ -306,4 +306,16 @@ mod tests {
         assert!(diff.updated.is_empty());
         assert_eq!(diff.unchanged, 0);
     }
+
+    #[test]
+    fn removed_package_appears_in_removed_list() {
+        let before = snap(&[("axios", "1.0.0", "npm"), ("lodash", "4.17.21", "npm")]);
+        let after = snap(&[("lodash", "4.17.21", "npm")]);
+        let diff = compute_dep_diff(&before, &after);
+        assert_eq!(diff.removed.len(), 1);
+        assert_eq!(diff.removed[0].name, "axios");
+        assert!(diff.added.is_empty());
+        assert!(diff.updated.is_empty());
+        assert_eq!(diff.unchanged, 1);
+    }
 }

@@ -386,4 +386,12 @@ mod tests {
         let pred = predict_maintenance(&sig);
         assert!(pred.risk_score <= 1.0);
     }
+
+    #[test]
+    fn active_package_has_low_risk() {
+        let sig = active_signals("healthy-pkg");
+        let pred = predict_maintenance(&sig);
+        assert!(pred.risk_score < 0.5, "healthy package should have risk < 0.5, got {}", pred.risk_score);
+        assert_eq!(pred.current_status, MaintenanceStatus::Active);
+    }
 }

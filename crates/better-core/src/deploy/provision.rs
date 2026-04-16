@@ -428,4 +428,20 @@ mod tests {
         let _ = fs::remove_file(&state);
         let _ = fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn pre_deploy_result_no_services_is_ok_with_zero_cost() {
+        let result = PreDeployResult {
+            ok: true,
+            services_provisioned: vec![],
+            services_already_provisioned: vec![],
+            env_vars_injected: 0,
+            total_cost_estimate: CostEstimate { monthly_usd: 0.0, breakdown: vec![] },
+            env_path: ".env".to_string(),
+            reason: None,
+        };
+        assert!(result.ok);
+        assert_eq!(result.total_cost_estimate.monthly_usd, 0.0);
+        assert!(result.reason.is_none());
+    }
 }

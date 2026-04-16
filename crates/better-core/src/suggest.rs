@@ -947,4 +947,24 @@ numpy
         assert_eq!(normalize_python_name("PyYAML"), "pyyaml");
         assert_eq!(normalize_python_name("python-dotenv"), "python_dotenv");
     }
+
+    #[test]
+    fn test_suggestion_report_fields() {
+        let report = SuggestionReport {
+            missing: vec![MissingDep {
+                name: "axios".into(),
+                imported_in: vec!["src/api.js".into()],
+                import_style: "esm".into(),
+                confidence: 0.9,
+            }],
+            unused: vec![],
+            ecosystem: "npm".into(),
+            files_scanned: 10,
+            scan_ms: 50,
+        };
+        assert_eq!(report.missing.len(), 1);
+        assert_eq!(report.missing[0].name, "axios");
+        assert!(report.unused.is_empty());
+        assert_eq!(report.ecosystem, "npm");
+    }
 }

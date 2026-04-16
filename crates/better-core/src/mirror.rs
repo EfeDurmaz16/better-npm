@@ -318,4 +318,19 @@ mod tests {
         assert!(result.error.is_some());
         assert!(result.latency_ms.is_none());
     }
+
+    #[test]
+    fn mirror_select_result_fields() {
+        let best = MirrorSelectResult {
+            ok: true,
+            selected: Some("https://registry.npmjs.org".to_string()),
+            selected_name: Some("npmjs".to_string()),
+            all: vec![],
+            saved: false,
+            reason: None,
+        };
+        assert!(best.ok);
+        assert_eq!(best.selected.as_deref(), Some("https://registry.npmjs.org"));
+        assert_eq!(best.selected_name.as_deref(), Some("npmjs"));
+    }
 }

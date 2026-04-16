@@ -435,4 +435,21 @@ mod tests {
         assert_eq!(result.backtracks, 3);
         assert!(result.packages.is_empty());
     }
+
+    #[test]
+    fn test_resolver_empty_deps_returns_empty_result() {
+        let env = MarkerEnvironment {
+            os_name: "posix".into(),
+            sys_platform: "linux".into(),
+            platform_machine: "x86_64".into(),
+            implementation_name: "cpython".into(),
+            python_version: "3.11".into(),
+            python_full_version: "3.11.0".into(),
+            platform_system: "Linux".into(),
+        };
+        let mut resolver = Resolver::new(env);
+        let result = resolver.resolve(&[]).unwrap();
+        assert!(result.packages.is_empty());
+        assert_eq!(result.backtracks, 0);
+    }
 }
