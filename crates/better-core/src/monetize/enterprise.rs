@@ -177,4 +177,74 @@ mod tests {
         assert_eq!(back.org_id, "org-1");
         assert_eq!(back.currency, "USD");
     }
+
+    #[test]
+    fn org_role_all_variants_serde() {
+        for role in [OrgRole::Admin, OrgRole::Developer, OrgRole::Viewer] {
+            let json = serde_json::to_string(&role).unwrap();
+            let back: OrgRole = serde_json::from_str(&json).unwrap();
+            let _ = back;
+        }
+    }
+
+    #[test]
+    fn org_member_serde_with_spending_limit() {
+        let m = OrgMember {
+            user_id: "user-42".into(),
+            role: OrgRole::Developer,
+            spending_limit: Some("200.00".into()),
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        let back: OrgMember = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.user_id, "user-42");
+        assert_eq!(back.spending_limit, Some("200.00".into()));
+    }
+
+    #[test]
+    fn budget_check_not_allowed_with_reason() {
+        let check = BudgetCheck {
+            allowed: false,
+            remaining_budget: "0.00".into(),
+            requires_approval: true,
+            reason: Some("Budget exceeded".into()),
+        };
+        let json = serde_json::to_string(&check).unwrap();
+        let back: BudgetCheck = serde_json::from_str(&json).unwrap();
+        assert!(!back.allowed);
+        assert!(back.requires_approval);
+        assert_eq!(back.reason, Some("Budget exceeded".into()));
+    }
+
+    #[test]
+    fn compliance_transaction_serde() {
+        let tx = ComplianceTransaction {
+            transaction_id: "tx-1".into(),
+            user_id: "user-1".into(),
+            package_or_service: "lodash@4.17.21".into(),
+            amount: "0.50".into(),
+            currency: "USD".into(),
+            timestamp: "2024-01-01T00:00:00Z".into(),
+            approved_by: None,
+        };
+        let json = serde_json::to_string(&tx).unwrap();
+        let back: ComplianceTransaction = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.transaction_id, "tx-1");
+        assert!(back.approved_by.is_none());
+    }
+
+    #[test]
+    fn compliance_service_serde() {
+        let svc = ComplianceService {
+            provider_id: "supabase".into(),
+            offering_id: "supabase/postgres".into(),
+            resource_id: "db-abc123".into(),
+            monthly_cost: "25.00".into(),
+            provisioned_by: "user-1".into(),
+            provisioned_at: "2024-01-01T00:00:00Z".into(),
+        };
+        let json = serde_json::to_string(&svc).unwrap();
+        let back: ComplianceService = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.provider_id, "supabase");
+        assert_eq!(back.monthly_cost, "25.00");
+    }
 }

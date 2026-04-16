@@ -165,4 +165,65 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
         let _ = std::fs::remove_dir_all(&cache);
     }
+
+    #[test]
+    fn generate_all_empty_dir_has_zero_failed() {
+        let tmp = std::env::temp_dir().join("ctx-gen-test-failed");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let cache = std::env::temp_dir().join("ctx-gen-test-failed-cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let report = generate_all(&tmp, &cache, false).unwrap();
+        assert!(report.failed.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    #[test]
+    fn generate_all_output_dir_contains_better_context() {
+        let tmp = std::env::temp_dir().join("ctx-gen-test-outdir");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let cache = std::env::temp_dir().join("ctx-gen-test-outdir-cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let report = generate_all(&tmp, &cache, false).unwrap();
+        assert!(report.output_dir.contains(".better"));
+        assert!(report.output_dir.contains("context"));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    #[test]
+    fn generate_all_total_ms_is_non_negative() {
+        let tmp = std::env::temp_dir().join("ctx-gen-test-ms");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let cache = std::env::temp_dir().join("ctx-gen-test-ms-cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let report = generate_all(&tmp, &cache, false).unwrap();
+        // total_ms is u64 so always >= 0
+        let _ = report.total_ms;
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    #[test]
+    fn generate_all_force_false_then_force_true_result_ok() {
+        let tmp = std::env::temp_dir().join("ctx-gen-test-force");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let cache = std::env::temp_dir().join("ctx-gen-test-force-cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        assert!(generate_all(&tmp, &cache, false).is_ok());
+        assert!(generate_all(&tmp, &cache, true).is_ok());
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    #[test]
+    fn generate_all_nonexistent_dir_still_ok() {
+        // generate_all should handle nonexistent project_root gracefully
+        let tmp = std::path::Path::new("/nonexistent-ctx-gen-test");
+        let cache = std::env::temp_dir().join("ctx-gen-test-none-cache");
+        let result = generate_all(tmp, &cache, false);
+        // It should either succeed with 0 generated or return an error gracefully
+        // (it uses if nm_dir.exists() so it should succeed)
+        assert!(result.is_ok());
+    }
 }
