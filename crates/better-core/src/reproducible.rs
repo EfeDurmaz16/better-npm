@@ -227,4 +227,45 @@ mod tests {
         let result = generate_manifest(Path::new("/nonexistent-project"), "1.0.0");
         assert!(result.is_err());
     }
+
+    #[test]
+    fn sha256_hex_is_deterministic() {
+        let h1 = sha256_hex(b"hello world");
+        let h2 = sha256_hex(b"hello world");
+        assert_eq!(h1, h2);
+        assert!(!h1.is_empty());
+    }
+
+    #[test]
+    fn sha256_hex_different_inputs_produce_different_hashes() {
+        let h1 = sha256_hex(b"input_a");
+        let h2 = sha256_hex(b"input_b");
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn save_and_load_manifest_roundtrip() {
+        let root = std::env::temp_dir().join("repro-roundtrip");
+        write_lock(&root, LOCK);
+        let manifest = generate_manifest(&root, "2.0.0").unwrap();
+        save_manifest(&manifest, &root).unwrap();
+        let loaded = load_manifest(&root).unwrap();
+        assert_eq!(loaded.better_version, "2.0.0");
+        assert_eq!(loaded.lockfile_hash, manifest.lockfile_hash);
+        assert_eq!(loaded.packages.len(), manifest.packages.len());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn build_diff_serde() {
+        let diff = BuildDiff {
+            package: "lodash".to_string(),
+            field: "version".to_string(),
+            baseline: "4.17.20".to_string(),
+            current: "4.17.21".to_string(),
+        };
+        let json = serde_json::to_string(&diff).unwrap();
+        assert!(json.contains("lodash"));
+        assert!(json.contains("baseline"));
+    }
 }

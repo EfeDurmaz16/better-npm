@@ -279,4 +279,43 @@ mod tests {
         assert_eq!(results[1].name, "slow");
         assert_eq!(results[2].name, "dead");
     }
+
+    #[test]
+    fn known_mirrors_list_is_nonempty() {
+        assert!(!KNOWN_MIRRORS.is_empty());
+        // npmjs.org should always be present
+        assert!(KNOWN_MIRRORS.iter().any(|(_, url)| url.contains("npmjs.org")));
+    }
+
+    #[test]
+    fn mirror_probe_result_serde_roundtrip() {
+        let result = MirrorProbeResult {
+            name: "test".to_string(),
+            url: "https://example.com".to_string(),
+            latency_ms: Some(123),
+            ok: true,
+            status: Some(200),
+            error: None,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let back: MirrorProbeResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.name, "test");
+        assert_eq!(back.latency_ms, Some(123));
+        assert!(back.ok);
+    }
+
+    #[test]
+    fn mirror_probe_result_failed_has_error() {
+        let result = MirrorProbeResult {
+            name: "dead".to_string(),
+            url: "https://dead.example.com".to_string(),
+            latency_ms: None,
+            ok: false,
+            status: None,
+            error: Some("connection refused".to_string()),
+        };
+        assert!(!result.ok);
+        assert!(result.error.is_some());
+        assert!(result.latency_ms.is_none());
+    }
 }
