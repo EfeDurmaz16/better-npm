@@ -166,4 +166,32 @@ mod tests {
         assert!(report.results.is_empty()); // skipped because not found
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn compute_timing_even_number_of_values() {
+        // sorted: [1, 3, 5, 9] → median at index 2 = 5
+        let t = compute_timing(vec![9, 1, 5, 3]);
+        assert_eq!(t.min_ms, 1);
+        assert_eq!(t.max_ms, 9);
+        assert_eq!(t.mean_ms, (1 + 3 + 5 + 9) / 4);
+    }
+
+    #[test]
+    fn run_benchmark_report_has_platform() {
+        let tmp = std::env::temp_dir().join("bench-test-platform");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let report = run_benchmark(&tmp, 1, &[]).unwrap();
+        assert!(!report.platform.is_empty());
+        assert!(!report.arch.is_empty());
+        assert!(report.cpus >= 1);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn compute_timing_sorts_input() {
+        // Input is unsorted; min should still be 2, max 100
+        let t = compute_timing(vec![50, 100, 2, 20]);
+        assert_eq!(t.min_ms, 2);
+        assert_eq!(t.max_ms, 100);
+    }
 }

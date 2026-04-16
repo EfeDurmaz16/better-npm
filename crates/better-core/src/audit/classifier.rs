@@ -231,4 +231,37 @@ mod tests {
         assert_eq!(c.get("webpack@5.90.0"), DepContext::Build);
         assert_eq!(c.get("vite@5.1.0"), DepContext::Build);
     }
+
+    #[test]
+    fn unclassified_package_defaults_to_transitive() {
+        let c = DepClassifier::classify(
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        // Any unclassified package returns Transitive
+        assert_eq!(c.get("unknown@1.0.0"), DepContext::Transitive);
+    }
+
+    #[test]
+    fn higher_priority_production_wins_over_dev() {
+        assert_eq!(
+            higher_priority(DepContext::Production, DepContext::Dev),
+            DepContext::Production
+        );
+        assert_eq!(
+            higher_priority(DepContext::Dev, DepContext::Production),
+            DepContext::Production
+        );
+    }
+
+    #[test]
+    fn is_build_dep_recognizes_esbuild_and_rollup() {
+        assert!(is_build_dep("esbuild"));
+        assert!(is_build_dep("rollup"));
+        assert!(!is_build_dep("express"));
+        assert!(!is_build_dep("lodash"));
+    }
 }
