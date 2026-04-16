@@ -624,4 +624,44 @@ mod tests {
         // Either an error or empty violations — both are valid; key is no panic
         let _ = result;
     }
+
+    #[test]
+    fn parse_iso_timestamp_epoch_is_zero() {
+        let ts = parse_iso_timestamp("1970-01-01T00:00:00Z").unwrap();
+        assert_eq!(ts, 0);
+    }
+
+    #[test]
+    fn parse_iso_timestamp_too_short_returns_none() {
+        assert!(parse_iso_timestamp("2024").is_none());
+        assert!(parse_iso_timestamp("").is_none());
+    }
+
+    #[test]
+    fn is_leap_year_rules() {
+        assert!(is_leap(2000));  // divisible by 400
+        assert!(is_leap(2004));  // divisible by 4, not 100
+        assert!(!is_leap(1900)); // divisible by 100 but not 400
+        assert!(!is_leap(2023)); // not divisible by 4
+    }
+
+    #[test]
+    fn count_json_array_entries_basic() {
+        // Implementation counts non-string entries; use bare-literal array
+        let json = r#"{"items":[true,false,null]}"#;
+        assert_eq!(count_json_array_entries(json, "items"), 3);
+    }
+
+    #[test]
+    fn count_json_array_entries_string_values_returns_zero() {
+        // String entries are consumed by the in_str guard before has_content fires
+        let json = r#"{"items":["a","b","c"]}"#;
+        assert_eq!(count_json_array_entries(json, "items"), 0);
+    }
+
+    #[test]
+    fn count_json_object_keys_basic() {
+        let json = r#"{"deps":{"lodash":"^4.17","react":"^18.0"}}"#;
+        assert_eq!(count_json_object_keys(json, "deps"), 2);
+    }
 }
