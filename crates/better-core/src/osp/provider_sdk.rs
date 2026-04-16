@@ -650,4 +650,71 @@ mod tests {
         assert!(manifest.contains("\"tiers\""));
         assert!(manifest.contains("\"ed25519\""));
     }
+
+    #[test]
+    fn provider_toml_contains_name_and_domain() {
+        let opts = ProviderScaffoldOpts {
+            name: "my-cache".into(),
+            service_type: "cache".into(),
+            domain: "cache.example.com".into(),
+            output_dir: None,
+        };
+        let toml = provider_toml(&opts);
+        assert!(toml.contains("my-cache"));
+        assert!(toml.contains("cache.example.com"));
+        assert!(toml.contains("osp_version = \"1.1\""));
+    }
+
+    #[test]
+    fn provider_package_json_is_valid_json() {
+        let opts = ProviderScaffoldOpts {
+            name: "my-provider".into(),
+            service_type: "storage".into(),
+            domain: "storage.example.com".into(),
+            output_dir: None,
+        };
+        let pkg = provider_package_json(&opts);
+        let val: serde_json::Value = serde_json::from_str(&pkg).expect("package.json not valid JSON");
+        assert_eq!(val["name"], "my-provider");
+        assert_eq!(val["version"], "1.0.0");
+    }
+
+    #[test]
+    fn provision_handler_js_references_service_type() {
+        let opts = ProviderScaffoldOpts {
+            name: "queue-provider".into(),
+            service_type: "queue".into(),
+            domain: "queue.example.com".into(),
+            output_dir: None,
+        };
+        let js = provision_handler_js(&opts);
+        assert!(js.contains("queue"));
+        assert!(js.contains("handleProvision"));
+    }
+
+    #[test]
+    fn conformance_test_js_contains_idempotency_test() {
+        let opts = ProviderScaffoldOpts {
+            name: "t".into(),
+            service_type: "database".into(),
+            domain: "db.t.com".into(),
+            output_dir: None,
+        };
+        let js = conformance_test_js(&opts);
+        assert!(js.contains("idempotent"));
+        assert!(js.contains("ospVersion"));
+    }
+
+    #[test]
+    fn scaffold_result_serializes() {
+        let result = ScaffoldResult {
+            ok: true,
+            output_dir: "/tmp/my-provider".into(),
+            files_created: vec!["package.json".into()],
+            reason: None,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"ok\":true"));
+        assert!(json.contains("package.json"));
+    }
 }
