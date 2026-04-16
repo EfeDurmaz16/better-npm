@@ -20,6 +20,9 @@ target/
 benchmark.json
 health.json
 
+# better tool runtime state files
+.better-env-profile.json
+
 # Native addon build artifacts
 crates/better-napi/*.node
 
