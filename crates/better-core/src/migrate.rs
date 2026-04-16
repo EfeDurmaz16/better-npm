@@ -683,4 +683,36 @@ github.com/stretchr/testify v1.8.4 h1:CcVxWJTDXMVBZz2vNFrKRmaFD9JrLLrJSMUuXVqosB
         let pkgs = parse_go_sum(&go_sum).unwrap();
         assert_eq!(pkgs.len(), 1, "Duplicate module versions should be deduplicated");
     }
+
+    #[test]
+    fn test_parse_requirements_txt_empty_returns_empty() {
+        let packages = parse_requirements_txt("");
+        assert!(packages.is_empty());
+    }
+
+    #[test]
+    fn test_parse_requirements_txt_comment_only() {
+        let packages = parse_requirements_txt("# just a comment\n# another\n");
+        assert!(packages.is_empty());
+    }
+
+    #[test]
+    fn test_extract_toml_string_missing_key_returns_none() {
+        assert_eq!(extract_toml_string("description = \"A package\"", "name"), None);
+    }
+
+    #[test]
+    fn test_parse_poetry_lock_empty_returns_empty() {
+        let packages = parse_poetry_lock("");
+        assert!(packages.is_empty());
+    }
+
+    #[test]
+    fn test_migrate_lockfile_unknown_format_errors() {
+        let tmp = std::env::temp_dir().join("migrate-test-unknown");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let result = migrate_lockfile(&tmp, "unknown-format");
+        assert!(result.is_err());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

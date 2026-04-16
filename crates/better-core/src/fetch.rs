@@ -377,4 +377,43 @@ mod tests {
         let result = resolve_from_lockfile(std::path::Path::new("/nonexistent/package-lock.json"));
         assert!(result.is_err());
     }
+
+    #[test]
+    fn unpacked_path_has_expected_structure() {
+        let layout = CasLayout::new(std::path::Path::new("/tmp/cas"));
+        let hex = "abcdef1234567890";
+        let p = unpacked_path(&layout, "sha512", hex);
+        let s = p.to_string_lossy();
+        assert!(s.contains("unpacked"));
+        assert!(s.contains("sha512"));
+        assert!(s.contains("ab"));
+        assert!(!s.ends_with(".tgz"));
+    }
+
+    #[test]
+    fn cas_key_from_integrity_invalid_base64_returns_none() {
+        // Valid format but invalid base64 content
+        let result = cas_key_from_integrity("sha512-!!!notbase64!!!");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn cas_key_from_integrity_sha1() {
+        let integrity = "sha1-AAAAAAAAAAAAAAAAAAAAAA=="; // valid base64
+        let result = cas_key_from_integrity(integrity);
+        assert!(result.is_some());
+        let (algo, _) = result.unwrap();
+        assert_eq!(algo, "sha1");
+    }
+
+    #[test]
+    fn tarball_path_and_unpacked_path_share_prefix() {
+        let layout = CasLayout::new(std::path::Path::new("/cas"));
+        let hex = "deadbeef12345678";
+        let tp = tarball_path(&layout, "sha512", hex);
+        let up = unpacked_path(&layout, "sha512", hex);
+        // Both should have sha512/de/ad/ segment
+        assert!(tp.to_string_lossy().contains("/sha512/de/ad/"));
+        assert!(up.to_string_lossy().contains("/sha512/de/ad/"));
+    }
 }
