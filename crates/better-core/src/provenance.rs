@@ -301,6 +301,54 @@ mod tests {
         assert!(json.contains("better.provenance.report"));
         assert!(json.contains("\"totalChecked\""));
     }
+
+    #[test]
+    fn verify_attestation_with_slsa_and_sig_is_valid() {
+        let json = r#"{"attestations":[{"predicateType":"https://slsa.dev/provenance/v1","dsseEnvelope":{"payload":"abc","sig":"xyz"},"signatures":[{"sig":"xyz"}]}],"rekor":"yes"}"#;
+        let result = verify_attestation_structure(json);
+        assert!(result.signature_valid);
+        assert!(result.transparency_log);
+        assert!(result.error.is_none());
+    }
+
+    #[test]
+    fn verify_attestation_has_attestations_but_no_sig() {
+        let json = r#"{"attestations":[{"predicateType":"test"}]}"#;
+        let result = verify_attestation_structure(json);
+        assert!(!result.signature_valid);
+        assert!(result.error.is_some());
+    }
+
+    #[test]
+    fn write_provenance_json_includes_attestation_package() {
+        let report = ProvenanceReport {
+            total_checked: 1,
+            with_provenance: 1,
+            without_provenance: 0,
+            verification_errors: 0,
+            attestations: vec![ProvenanceAttestation {
+                package: "express".to_string(),
+                version: "4.18.2".to_string(),
+                has_attestation: true,
+                signature_valid: true,
+                transparency_log: true,
+                source_repo: Some("https://github.com/expressjs/express".into()),
+                build_trigger: None,
+                error: None,
+            }],
+        };
+        let json = write_provenance_json(&report);
+        assert!(json.contains("express"));
+        assert!(json.contains("4.18.2"));
+        assert!(json.contains("sourceRepo"));
+    }
+
+    #[test]
+    fn verify_attestation_extracts_source_repo() {
+        let json = r#"{"attestations":[{"predicateType":"test","dsseEnvelope":{"payload":"a","sig":"b","signatures":[]}}],"sourceRepositoryUri":"https://github.com/owner/repo"}"#;
+        let result = verify_attestation_structure(json);
+        assert_eq!(result.source_repo.as_deref(), Some("https://github.com/owner/repo"));
+    }
 }
 
 /// Write provenance report as JSON.

@@ -451,4 +451,54 @@ mod tests {
         assert_eq!(result.scripts.len(), 0);
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn parse_bin_scoped_package_uses_local_name() {
+        // @scope/pkg should use "pkg" as the bin name
+        let json = r#"{"name":"@scope/mypkg","version":"1.0.0","bin":"cli.js"}"#;
+        let bins = parse_bin_field(json, "@scope/mypkg");
+        assert_eq!(bins.len(), 1);
+        assert_eq!(bins[0].0, "mypkg");
+    }
+
+    #[test]
+    fn detect_lifecycle_with_install_script() {
+        let tmp = std::env::temp_dir().join("binlinks-test-lifecycle-script");
+        let pkg_name = "native-pkg";
+        let nm = tmp.join("node_modules");
+        std::fs::create_dir_all(nm.join(pkg_name)).unwrap();
+        let json = r#"{"name":"native-pkg","version":"1.0.0","scripts":{"install":"node-gyp rebuild"}}"#;
+        std::fs::write(nm.join(pkg_name).join("package.json"), json).unwrap();
+        let pkg = make_pkg(&nm, pkg_name, json);
+        let result = detect_lifecycle_scripts(&nm, &[pkg]);
+        assert_eq!(result.scripts.len(), 1);
+        assert_eq!(result.scripts[0].script_name, "install");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detect_lifecycle_with_binding_gyp() {
+        let tmp = std::env::temp_dir().join("binlinks-test-gyp");
+        let pkg_name = "native-addon";
+        let nm = tmp.join("node_modules");
+        std::fs::create_dir_all(nm.join(pkg_name)).unwrap();
+        let json = r#"{"name":"native-addon","version":"1.0.0"}"#;
+        std::fs::write(nm.join(pkg_name).join("package.json"), json).unwrap();
+        std::fs::write(nm.join(pkg_name).join("binding.gyp"), "{}").unwrap();
+        let pkg = make_pkg(&nm, pkg_name, json);
+        let result = detect_lifecycle_scripts(&nm, &[pkg]);
+        assert!(result.has_native_addons);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn create_bin_links_empty_packages_returns_zero() {
+        let tmp = std::env::temp_dir().join("binlinks-test-empty");
+        let nm = tmp.join("node_modules");
+        std::fs::create_dir_all(&nm).unwrap();
+        let result = create_bin_links(&nm, &[]).unwrap();
+        assert_eq!(result.links_created, 0);
+        assert_eq!(result.links_failed, 0);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

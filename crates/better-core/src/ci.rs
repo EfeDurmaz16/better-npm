@@ -361,4 +361,46 @@ mod tests {
         assert!(names.contains(&"sbom"));
         assert!(names.contains(&"receipt"));
     }
+
+    #[test]
+    fn sbom_extension_cyclonedx() {
+        assert_eq!(sbom_extension("cyclonedx"), "cdx.json");
+    }
+
+    #[test]
+    fn sbom_extension_spdx_fallback() {
+        assert_eq!(sbom_extension("spdx"), "spdx.json");
+        assert_eq!(sbom_extension("unknown"), "spdx.json");
+    }
+
+    #[test]
+    fn ci_step_status_variants_are_distinct() {
+        assert_ne!(CiStepStatus::Passed, CiStepStatus::Failed);
+        assert_ne!(CiStepStatus::Failed, CiStepStatus::Skipped);
+        assert_ne!(CiStepStatus::Passed, CiStepStatus::Skipped);
+    }
+
+    #[test]
+    fn skipped_step_has_zero_duration() {
+        let step = skipped("my-step", "not needed");
+        assert_eq!(step.status, CiStepStatus::Skipped);
+        assert_eq!(step.duration_ms, 0);
+        assert_eq!(step.name, "my-step");
+        assert_eq!(step.message, "not needed");
+    }
+
+    #[test]
+    fn run_step_ok_returns_passed() {
+        let step = run_step("test-step", || Ok("all good".to_string()));
+        assert_eq!(step.status, CiStepStatus::Passed);
+        assert_eq!(step.message, "all good");
+        assert_eq!(step.name, "test-step");
+    }
+
+    #[test]
+    fn run_step_err_returns_failed() {
+        let step = run_step("failing-step", || Err("something broke".to_string()));
+        assert_eq!(step.status, CiStepStatus::Failed);
+        assert!(step.message.contains("something broke"));
+    }
 }
