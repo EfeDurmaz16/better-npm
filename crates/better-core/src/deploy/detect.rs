@@ -153,4 +153,33 @@ mod tests {
         assert!(!d.build_command.is_empty());
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn detect_astro_project() {
+        let tmp = std::env::temp_dir().join("detect-test-astro");
+        write_pkg(&tmp, r#"{"dependencies":{"astro":"^4.0.0"}}"#);
+        let d = detect_framework(&tmp);
+        assert!(matches!(d.framework, Framework::Astro));
+        assert!(matches!(d.recommended_platform, DeployPlatform::Cloudflare));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detect_rails_from_gemfile_and_config_ru() {
+        let tmp = std::env::temp_dir().join("detect-test-rails");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::File::create(tmp.join("Gemfile")).unwrap();
+        std::fs::File::create(tmp.join("config.ru")).unwrap();
+        let d = detect_framework(&tmp);
+        assert!(matches!(d.framework, Framework::Rails));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detect_framework_serializes() {
+        let d = mk(Framework::NextJs, "next build", ".next", "next dev", DeployPlatform::Vercel);
+        let json = serde_json::to_string(&d).unwrap();
+        assert!(json.contains("NextJs"));
+        assert!(json.contains("Vercel"));
+    }
 }

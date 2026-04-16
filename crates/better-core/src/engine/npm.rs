@@ -196,4 +196,29 @@ mod tests {
         assert!(result.is_err());
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn audit_returns_empty_vec() {
+        let graph = crate::engine::LockGraph { packages: vec![], edges: vec![] };
+        let result = NpmEngine.audit(&graph).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn materialize_returns_ok() {
+        let tmp = std::env::temp_dir().join("npm-engine-test-mat");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let result = NpmEngine.materialize(&[], &tmp);
+        assert!(result.is_ok());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn outdated_missing_lockfile_errors() {
+        let tmp = std::env::temp_dir().join("npm-engine-test-outdated");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let result = NpmEngine.outdated(&tmp);
+        assert!(result.is_err());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

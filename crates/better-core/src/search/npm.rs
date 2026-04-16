@@ -201,4 +201,25 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert!(results[0].has_types);
     }
+
+    #[test]
+    fn urlencoded_passes_through_alphanumeric() {
+        assert_eq!(urlencoded("lodash"), "lodash");
+        assert_eq!(urlencoded("@types/node"), "@types/node");
+    }
+
+    #[test]
+    fn parse_npm_search_response_empty_objects_returns_empty() {
+        let json = r#"{"objects": [], "total": 0}"#;
+        let results = parse_npm_search_response(json).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn parse_npm_search_response_skips_missing_package_field() {
+        // Object without "package" key should be skipped
+        let json = r#"{"objects": [{"score": {"final": 0.5}}]}"#;
+        let results = parse_npm_search_response(json).unwrap();
+        assert!(results.is_empty());
+    }
 }

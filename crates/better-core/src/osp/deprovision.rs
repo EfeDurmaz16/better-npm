@@ -192,4 +192,34 @@ mod tests {
         assert_eq!(result.env_warnings.len(), 1);
         assert!(result.vault_cleaned);
     }
+
+    #[test]
+    fn remove_env_references_no_file_is_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        // .env.osp does not exist — function should return Ok(())
+        let result = remove_env_references(dir.path(), "supabase.com", "postgres");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn find_env_references_does_not_match_other_providers() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_osp = dir.path().join(".env.osp");
+        std::fs::write(&env_osp, "KEY=osp://neon.tech/postgres/KEY\n").unwrap();
+        let refs = find_env_references(dir.path(), "supabase.com", "postgres");
+        assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn deprovision_result_vault_not_cleaned() {
+        let result = DeprovisionResult {
+            resource_id: "res_456".into(),
+            provider_id: "neon.tech".into(),
+            offering_id: "neon.tech/postgres".into(),
+            env_warnings: vec![],
+            vault_cleaned: false,
+        };
+        assert!(!result.vault_cleaned);
+        assert!(result.env_warnings.is_empty());
+    }
 }

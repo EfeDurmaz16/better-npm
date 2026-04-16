@@ -218,4 +218,33 @@ mod tests {
         p.inc_link();
         p.finish_link();
     }
+
+    #[test]
+    fn json_progress_resolve_no_panic() {
+        let p = InstallProgress::new(false, true);
+        p.set_resolve_total(5);
+        p.inc_resolve();
+        p.inc_resolve();
+        p.finish_resolve();
+    }
+
+    #[test]
+    fn json_progress_fetch_bytes_no_panic() {
+        let p = InstallProgress::new(false, true);
+        p.set_fetch_total(3);
+        p.inc_fetch();
+        p.inc_fetch_bytes(2048);
+        p.finish_fetch();
+    }
+
+    #[test]
+    fn json_progress_extract_link_no_panic() {
+        let p = InstallProgress::new(false, true);
+        p.set_extract_total(2);
+        p.inc_extract();
+        p.finish_extract();
+        p.set_link_total(1);
+        p.inc_link();
+        p.finish_link();
+    }
 }

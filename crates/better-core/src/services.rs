@@ -187,4 +187,33 @@ mod tests {
         assert_eq!(resolved.len(), 1);
         assert!(matches!(resolved[0].status, ServiceStatus::NeedsProvision));
     }
+
+    #[test]
+    fn service_error_display_invalid_uri() {
+        let err = ServiceError::InvalidUri("not-osp://foo".to_string());
+        assert!(err.to_string().contains("not-osp://foo"));
+    }
+
+    #[test]
+    fn service_error_display_parse_error() {
+        let err = ServiceError::ParseError("bad json".to_string());
+        assert!(err.to_string().contains("bad json"));
+    }
+
+    #[test]
+    fn parse_osp_uri_missing_slash_returns_error() {
+        // osp://providerwithoutslash has no '/' after removing osp://
+        let result = parse_service_uri("osp://noslash");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_service_dependencies_no_better_section_returns_empty() {
+        let tmp = std::env::temp_dir().join("svc-test-nobetter");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("package.json"), r#"{"name":"app"}"#).unwrap();
+        let deps = load_service_dependencies(&tmp).unwrap();
+        assert!(deps.services.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
