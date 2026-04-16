@@ -204,4 +204,39 @@ mod tests {
         assert!(content.contains("\"name\""));
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn fnv_hash_hex_empty_input_returns_32_char_hex() {
+        let h = fnv_hash_hex(b"");
+        assert_eq!(h.len(), 32);
+        // All hex characters
+        assert!(h.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn content_file_serde_roundtrip() {
+        let f = ContentFile {
+            path: "src/index.js".to_string(),
+            hash: "abc123".to_string(),
+            size: 512,
+            mode: 0o644,
+        };
+        let json = serde_json::to_string(&f).unwrap();
+        let back: ContentFile = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.path, "src/index.js");
+        assert_eq!(back.size, 512);
+    }
+
+    #[test]
+    fn verify_package_fails_for_modified_file() {
+        let tmp = std::env::temp_dir().join("cpub-test-verify-fail");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("package.json"), r#"{"name":"test","version":"1.0.0"}"#).unwrap();
+        let manifest = build_manifest(&tmp, "test", "1.0.0", "author").unwrap();
+        // Modify a file after building manifest
+        std::fs::write(tmp.join("package.json"), r#"{"name":"modified","version":"1.0.0"}"#).unwrap();
+        let ok = verify_package(&manifest, &tmp).unwrap();
+        assert!(!ok, "should fail after modification");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

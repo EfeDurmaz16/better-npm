@@ -279,4 +279,28 @@ mod tests {
             matches!(&o.action, OptimizationAction::Consolidate { .. })
         ));
     }
+
+    #[test]
+    fn is_database_detects_various_keywords() {
+        assert!(is_database("postgres"));
+        assert!(is_database("mysql-db"));
+        assert!(is_database("mongodb"));
+        assert!(is_database("redis"));
+        assert!(!is_database("nginx"));
+        assert!(!is_database("storage"));
+    }
+
+    #[test]
+    fn by_provider_aggregation() {
+        let services = vec![
+            svc("aws", "rds", "t3", "prod", 50.0, 60.0),
+            svc("aws", "elasticache", "t3", "prod", 20.0, 40.0),
+            svc("gcp", "cloud-sql", "db-g1", "prod", 30.0, 55.0),
+        ];
+        let report = generate_cost_report(&services, 0.0, 15);
+        let aws = report.by_provider.get("aws").copied().unwrap_or(0.0);
+        let gcp = report.by_provider.get("gcp").copied().unwrap_or(0.0);
+        assert!((aws - 70.0).abs() < 0.01);
+        assert!((gcp - 30.0).abs() < 0.01);
+    }
 }

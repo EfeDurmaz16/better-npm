@@ -214,4 +214,27 @@ mod tests {
         let result = parse_pypi_package(r#"{"urls": []}"#);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn parse_pypi_package_keywords_parsed() {
+        let json = r#"{"info": {"name": "django", "version": "5.0.0", "keywords": "web,framework,mvc", "classifiers": []}}"#;
+        let pkg = parse_pypi_package(json).unwrap();
+        assert!(pkg.keywords.contains(&"web".to_string()));
+        assert!(pkg.keywords.contains(&"framework".to_string()));
+    }
+
+    #[test]
+    fn parse_pypi_package_typed_classifier_sets_has_types() {
+        let json = r#"{"info": {"name": "mypy", "version": "1.0.0", "classifiers": ["Development Status :: 5", "Typing :: Typed"]}}"#;
+        let pkg = parse_pypi_package(json).unwrap();
+        assert!(pkg.has_types);
+    }
+
+    #[test]
+    fn generate_variations_handles_single_word() {
+        let v = generate_variations("django");
+        assert!(v.contains(&"python-django".to_string()));
+        assert!(v.contains(&"pydjango".to_string()));
+        assert!(v.contains(&"py-django".to_string()));
+    }
 }

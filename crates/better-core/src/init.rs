@@ -284,4 +284,25 @@ mod tests {
         assert!(content.contains("\"next\""));
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn express_template_creates_server_file() {
+        let tmp = std::env::temp_dir().join("init-test-express");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let result = init_project(&tmp, Some("my-server"), Some("express")).unwrap();
+        assert_eq!(result.template, Some("express".to_string()));
+        assert!(result.files_created.iter().any(|f| f.contains("src/")));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn default_init_package_json_contains_version_and_license() {
+        let tmp = std::env::temp_dir().join("init-test-fields");
+        let _ = std::fs::remove_dir_all(&tmp);
+        init_project(&tmp, Some("my-pkg"), None).unwrap();
+        let content = std::fs::read_to_string(tmp.join("package.json")).unwrap();
+        assert!(content.contains("\"version\""));
+        assert!(content.contains("\"ISC\""));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
