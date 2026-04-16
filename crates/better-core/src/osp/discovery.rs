@@ -235,4 +235,81 @@ mod tests {
         let err = OspError::NonceReplay;
         assert!(err.to_string().contains("replay"));
     }
+
+    #[test]
+    fn osp_error_display_http_error() {
+        let err = OspError::HttpError(404);
+        assert!(err.to_string().contains("404"));
+    }
+
+    #[test]
+    fn osp_error_display_provision_failed() {
+        let err = OspError::ProvisionFailed {
+            code: "quota_exceeded".into(),
+            message: "Monthly limit reached".into(),
+        };
+        let s = err.to_string();
+        assert!(s.contains("quota_exceeded"));
+        assert!(s.contains("Monthly limit reached"));
+    }
+
+    #[test]
+    fn osp_error_display_async_timeout() {
+        let err = OspError::AsyncTimeout(120);
+        assert!(err.to_string().contains("120"));
+    }
+
+    #[test]
+    fn find_tier_not_found_returns_err() {
+        use super::super::manifest::*;
+        let offering = ServiceOffering {
+            offering_id: "db".into(),
+            name: "DB".into(),
+            description: None,
+            category: ServiceCategory::Database,
+            tiers: vec![],
+            credentials_schema: serde_json::json!({}),
+            estimated_provision_seconds: None,
+            fulfillment_proof_type: None,
+            regions: None,
+            documentation_url: None,
+        };
+        let result = find_tier(&offering, "nonexistent-tier");
+        assert!(result.is_err());
+        if let Err(OspError::TierNotFound(id)) = result {
+            assert_eq!(id, "nonexistent-tier");
+        }
+    }
+
+    #[test]
+    fn search_offerings_without_category_returns_all() {
+        use super::super::manifest::*;
+        let mut manifest = make_test_manifest();
+        manifest.offerings.push(ServiceOffering {
+            offering_id: "db1".into(),
+            name: "DB".into(),
+            description: None,
+            category: ServiceCategory::Database,
+            tiers: vec![],
+            credentials_schema: serde_json::json!({}),
+            estimated_provision_seconds: None,
+            fulfillment_proof_type: None,
+            regions: None,
+            documentation_url: None,
+        });
+        manifest.offerings.push(ServiceOffering {
+            offering_id: "host1".into(),
+            name: "Host".into(),
+            description: None,
+            category: ServiceCategory::Hosting,
+            tiers: vec![],
+            credentials_schema: serde_json::json!({}),
+            estimated_provision_seconds: None,
+            fulfillment_proof_type: None,
+            regions: None,
+            documentation_url: None,
+        });
+        let results = search_offerings(&manifest, None);
+        assert_eq!(results.len(), 2);
+    }
 }

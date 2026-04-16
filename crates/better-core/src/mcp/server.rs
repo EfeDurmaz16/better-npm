@@ -231,4 +231,48 @@ mod tests {
         // Notifications with no id get no response
         assert_eq!(server.transport.response_count(), 0);
     }
+
+    #[test]
+    fn server_handles_tools_list() {
+        let transport = MockTransport::new(vec![make_request("tools/list", 5)]);
+        let mut server = McpServer::new(transport);
+        server.run().unwrap();
+        assert_eq!(server.transport.response_count(), 1);
+        let resp = server.transport.response_at(0);
+        assert!(resp.get("error").is_none());
+        assert!(resp["result"]["tools"].is_array());
+    }
+
+    #[test]
+    fn server_handles_tools_call_no_params() {
+        // tools/call with no params should return an error
+        let transport = MockTransport::new(vec![make_request("tools/call", 6)]);
+        let mut server = McpServer::new(transport);
+        server.run().unwrap();
+        assert_eq!(server.transport.response_count(), 1);
+        let resp = server.transport.response_at(0);
+        assert!(resp["error"].is_object());
+        assert_eq!(resp["error"]["code"], serde_json::json!(-32602));
+    }
+
+    #[test]
+    fn server_handles_multiple_requests_sequentially() {
+        let transport = MockTransport::new(vec![
+            make_request("ping", 10),
+            make_request("ping", 11),
+            make_request("ping", 12),
+        ]);
+        let mut server = McpServer::new(transport);
+        server.run().unwrap();
+        assert_eq!(server.transport.response_count(), 3);
+    }
+
+    #[test]
+    fn server_initialized_flag_set_after_initialize() {
+        let transport = MockTransport::new(vec![make_request("initialize", 20)]);
+        let mut server = McpServer::new(transport);
+        assert!(!server.initialized);
+        server.run().unwrap();
+        assert!(server.initialized);
+    }
 }
