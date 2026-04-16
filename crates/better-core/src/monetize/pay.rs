@@ -228,4 +228,67 @@ mod tests {
         assert_eq!(back.transaction_id, "tx-001");
         assert_eq!(back.package_name, "lodash");
     }
+
+    #[test]
+    fn payment_status_all_variants_serde() {
+        for status in [PaymentStatus::Completed, PaymentStatus::Pending, PaymentStatus::Failed, PaymentStatus::Recurring] {
+            let json = serde_json::to_string(&status).unwrap();
+            let back: PaymentStatus = serde_json::from_str(&json).unwrap();
+            let _ = back;
+        }
+    }
+
+    #[test]
+    fn recurring_schedule_all_variants_serde() {
+        for s in [RecurringSchedule::Monthly, RecurringSchedule::Weekly, RecurringSchedule::Quarterly] {
+            let json = serde_json::to_string(&s).unwrap();
+            let _back: RecurringSchedule = serde_json::from_str(&json).unwrap();
+        }
+    }
+
+    #[test]
+    fn payment_request_serializes_no_recipient() {
+        let req = PaymentRequest {
+            package_name: "chalk".into(),
+            package_version: None,
+            amount: "0.50".into(),
+            currency: "USD".into(),
+            recipient_wallet_id: None,
+            recurring: None,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("chalk"));
+        assert!(json.contains("0.50"));
+    }
+
+    #[test]
+    fn payment_result_failed_status() {
+        let result = PaymentResult {
+            transaction_id: "tx-fail".into(),
+            package_name: "react".into(),
+            amount: "2.00".into(),
+            currency: "USD".into(),
+            status: PaymentStatus::Failed,
+            recipient: "facebook".into(),
+            timestamp: "2026-01-01T00:00:00Z".into(),
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("Failed"));
+    }
+
+    #[test]
+    fn payment_result_pending_status() {
+        let result = PaymentResult {
+            transaction_id: "tx-pend".into(),
+            package_name: "express".into(),
+            amount: "1.00".into(),
+            currency: "USD".into(),
+            status: PaymentStatus::Pending,
+            recipient: "tj".into(),
+            timestamp: "2026-01-01T00:00:00Z".into(),
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let back: PaymentResult = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back.status, PaymentStatus::Pending));
+    }
 }
