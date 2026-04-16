@@ -665,4 +665,65 @@ mod tests {
         let perms = permissions_for_package(&policy, "some-pkg", &dir).unwrap();
         assert!(!perms.net_allow);
     }
+
+    #[test]
+    fn parse_string_array_parses_items() {
+        let result = parse_string_array(r#"["fs","net","exec"]"#);
+        assert_eq!(result, vec!["fs", "net", "exec"]);
+    }
+
+    #[test]
+    fn parse_string_array_empty_returns_empty() {
+        let result = parse_string_array("[]");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn from_allow_list_fs_grants_full_fs() {
+        let dir = tmp_pkg_dir();
+        let perms = SandboxPermissions::from_allow_list(&dir, &["fs".to_string()]);
+        assert_eq!(perms.fs_read, vec![PathBuf::from("/")]);
+        assert_eq!(perms.fs_write, vec![PathBuf::from("/")]);
+    }
+
+    #[test]
+    fn from_allow_list_env_grants_env_read() {
+        let dir = tmp_pkg_dir();
+        let perms = SandboxPermissions::from_allow_list(&dir, &["env".to_string()]);
+        assert!(perms.env_allow_read);
+    }
+
+    #[test]
+    fn from_allow_list_exec_clears_executable_list() {
+        let dir = tmp_pkg_dir();
+        let perms = SandboxPermissions::from_allow_list(&dir, &["exec".to_string()]);
+        assert!(perms.process_allow);
+        assert!(perms.process_allowed_executables.is_empty());
+    }
+
+    #[test]
+    fn default_permissions_blocks_sensitive_env_vars() {
+        let dir = tmp_pkg_dir();
+        let perms = SandboxPermissions::default_for_package(&dir);
+        assert!(perms.env_blocked_vars.iter().any(|v| v == "NPM_TOKEN"));
+        assert!(perms.env_blocked_vars.iter().any(|v| v == "AWS_SECRET_ACCESS_KEY"));
+    }
+
+    #[test]
+    fn load_sandbox_policy_missing_files_returns_empty() {
+        let tmp = std::env::temp_dir().join("sandbox-policy-test-empty");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let policy = load_sandbox_policy(&tmp);
+        assert!(policy.block.is_empty());
+        assert!(policy.allow.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn parse_sandbox_policy_parses_block_list() {
+        let json = r#"{"block":["bad-pkg","evil-pkg"]}"#;
+        let policy = parse_sandbox_policy(json);
+        assert!(policy.block.contains(&"bad-pkg".to_string()));
+        assert!(policy.block.contains(&"evil-pkg".to_string()));
+    }
 }

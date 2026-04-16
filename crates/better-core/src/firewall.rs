@@ -515,4 +515,62 @@ mod tests {
         // All typosquats are "high" severity → should be blocked
         assert_eq!(report.blocked, report.alerts.iter().filter(|a| a.severity == "high").count() as u64);
     }
+
+    #[test]
+    fn levenshtein_identical_strings_is_zero() {
+        assert_eq!(levenshtein("lodash", "lodash"), 0);
+    }
+
+    #[test]
+    fn levenshtein_empty_string_is_length() {
+        assert_eq!(levenshtein("", "abc"), 3);
+        assert_eq!(levenshtein("abc", ""), 3);
+    }
+
+    #[test]
+    fn levenshtein_single_substitution() {
+        // "react" vs "reect" differs by 1 char
+        assert_eq!(levenshtein("react", "reect"), 1);
+    }
+
+    #[test]
+    fn rough_day_diff_same_date_is_zero() {
+        let diff = rough_day_diff("2024-01-15", "2024-01-15").unwrap();
+        assert_eq!(diff, 0);
+    }
+
+    #[test]
+    fn rough_day_diff_one_day_apart() {
+        let diff = rough_day_diff("2024-01-15", "2024-01-16").unwrap();
+        assert!(diff >= 1);
+    }
+
+    #[test]
+    fn rough_day_diff_invalid_format_returns_none() {
+        assert!(rough_day_diff("not-a-date", "2024-01-01").is_none());
+    }
+
+    #[test]
+    fn firewall_config_default_has_expected_values() {
+        let cfg = FirewallConfig::default();
+        assert!(cfg.enabled);
+        assert!(cfg.typosquat_detection);
+        assert!(cfg.binary_detection);
+        assert_eq!(cfg.max_levenshtein_distance, 2);
+    }
+
+    #[test]
+    fn run_firewall_all_detections_off_returns_no_alerts() {
+        let config = FirewallConfig {
+            enabled: false,
+            typosquat_detection: false,
+            binary_detection: false,
+            new_package_warning: false,
+            ..Default::default()
+        };
+        let packages = vec![pkg("lodahs")];
+        let report = run_firewall(&packages, std::path::Path::new("/tmp"), &config);
+        assert!(report.alerts.is_empty());
+        assert_eq!(report.total_checked, 1);
+    }
 }

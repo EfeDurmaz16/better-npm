@@ -573,4 +573,90 @@ mod tests {
         assert!(json.contains("CycloneDX"));
         assert!(json.contains("my-app"));
     }
+
+    #[test]
+    fn parse_integrity_sha512_prefix() {
+        let (alg, rest) = parse_integrity("sha512-ABCDEF");
+        assert_eq!(alg, "SHA-512");
+        assert_eq!(rest, "ABCDEF");
+    }
+
+    #[test]
+    fn parse_integrity_sha256_prefix() {
+        let (alg, rest) = parse_integrity("sha256-ABCDEF");
+        assert_eq!(alg, "SHA-256");
+        assert_eq!(rest, "ABCDEF");
+    }
+
+    #[test]
+    fn parse_integrity_sha1_prefix() {
+        let (alg, rest) = parse_integrity("sha1-ABCDEF");
+        assert_eq!(alg, "SHA-1");
+        assert_eq!(rest, "ABCDEF");
+    }
+
+    #[test]
+    fn sanitize_spdx_id_replaces_invalid_chars() {
+        let result = sanitize_spdx_id("@scope/pkg-1.0.0");
+        // @ and / should be replaced with -
+        assert!(!result.contains('@'));
+        assert!(!result.contains('/'));
+        assert!(result.contains('-'));
+    }
+
+    #[test]
+    fn simple_uuid_has_correct_format() {
+        let uuid = simple_uuid();
+        let parts: Vec<&str> = uuid.split('-').collect();
+        assert_eq!(parts.len(), 5);
+        assert_eq!(parts[0].len(), 8);
+        assert_eq!(parts[1].len(), 4);
+        assert_eq!(parts[2].len(), 4);
+        assert_eq!(parts[3].len(), 4);
+        assert_eq!(parts[4].len(), 12);
+    }
+
+    #[test]
+    fn write_vex_json_contains_vulnerability_id() {
+        use crate::types::AuditVulnerability;
+        let report = make_report(vec![]);
+        let vuln = AuditVulnerability {
+            id: "CVE-2023-1234".to_string(),
+            summary: "Test vulnerability".to_string(),
+            severity: "high".to_string(),
+            package: "lodash".to_string(),
+            version: "4.17.20".to_string(),
+            fixed: "4.17.21".to_string(),
+        };
+        let vex = write_vex_json(&report, &[vuln]);
+        assert!(vex.contains("CVE-2023-1234"));
+        assert!(vex.contains("lodash"));
+        assert!(vex.contains("affected"));
+    }
+
+    #[test]
+    fn cyclonedx_v16_with_vuln_contains_vulnerability_section() {
+        use crate::types::AuditVulnerability;
+        let report = make_report(vec![make_component("lodash", "4.17.20")]);
+        let vuln = AuditVulnerability {
+            id: "CVE-2023-9999".to_string(),
+            summary: "Prototype pollution".to_string(),
+            severity: "critical".to_string(),
+            package: "lodash".to_string(),
+            version: "4.17.20".to_string(),
+            fixed: "4.17.21".to_string(),
+        };
+        let json = write_cyclonedx_v16(&report, &[vuln], None);
+        assert!(json.contains("CVE-2023-9999"));
+        assert!(json.contains("vulnerabilities"));
+    }
+
+    #[test]
+    fn spdx_v23_contains_relationships() {
+        let report = make_report(vec![make_component("express", "4.18.2")]);
+        let json = write_spdx_v23(&report, None);
+        assert!(json.contains("relationships"));
+        assert!(json.contains("DESCRIBES"));
+        assert!(json.contains("DEPENDS_ON"));
+    }
 }
