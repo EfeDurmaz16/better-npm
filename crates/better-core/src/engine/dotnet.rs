@@ -217,4 +217,44 @@ mod tests {
         assert!(graph.packages.is_empty());
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn extract_xml_attr_extracts_include() {
+        let line = r#"<PackageReference Include="Newtonsoft.Json" Version="13.0.1" />"#;
+        let name = extract_xml_attr(line, "Include").unwrap();
+        let version = extract_xml_attr(line, "Version").unwrap();
+        assert_eq!(name, "Newtonsoft.Json");
+        assert_eq!(version, "13.0.1");
+    }
+
+    #[test]
+    fn extract_xml_attr_missing_attr_returns_none() {
+        let line = r#"<PackageReference Include="SomePackage" />"#;
+        assert!(extract_xml_attr(line, "Version").is_none());
+    }
+
+    #[test]
+    fn parse_csproj_packages_reads_package_references() {
+        let tmp = std::env::temp_dir().join("dotnet-engine-csproj");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let csproj = r#"<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
+    <PackageReference Include="Serilog" Version="3.0.1" />
+  </ItemGroup>
+</Project>"#;
+        std::fs::write(tmp.join("App.csproj"), csproj).unwrap();
+        let graph = parse_csproj_packages(&tmp).unwrap();
+        assert_eq!(graph.packages.len(), 2);
+        let names: Vec<&str> = graph.packages.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"Newtonsoft.Json"));
+        assert!(names.contains(&"Serilog"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn manifest_files_contains_csproj() {
+        let files = DotNetEngine.manifest_files();
+        assert!(files.iter().any(|&f| f.ends_with(".csproj")));
+    }
 }

@@ -288,4 +288,31 @@ mod tests {
         assert!(names.contains(&"SDWebImage"));
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn parse_podfile_lock_ignores_subspecs() {
+        let content = "PODS:\n  - Alamofire (5.8.1)\n  - SDWebImage/Core (5.18.1)\n\n";
+        let pkgs = parse_podfile_lock(content);
+        // SDWebImage/Core is a sub-spec and should be ignored
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].name, "Alamofire");
+    }
+
+    #[test]
+    fn name_is_cocoapods() {
+        assert_eq!(CocoaPodsEngine.name(), "cocoapods");
+    }
+
+    #[test]
+    fn manifest_files_contains_podfile() {
+        let files = CocoaPodsEngine.manifest_files();
+        assert!(files.contains(&"Podfile"));
+        assert!(files.contains(&"Podfile.lock"));
+    }
+
+    #[test]
+    fn parse_podfile_lock_empty_content_returns_empty() {
+        let pkgs = parse_podfile_lock("");
+        assert!(pkgs.is_empty());
+    }
 }

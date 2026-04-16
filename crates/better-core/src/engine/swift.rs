@@ -262,4 +262,57 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn resolve_v2_package_resolved_parses_pins() {
+        let tmp = std::env::temp_dir().join("swift-engine-test-v2");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let content = r#"{
+          "pins": [
+            {
+              "identity": "swift-argument-parser",
+              "location": "https://github.com/apple/swift-argument-parser",
+              "state": { "revision": "abc1234567890", "version": "1.3.0" }
+            }
+          ],
+          "version": 2
+        }"#;
+        std::fs::write(tmp.join("Package.resolved"), content).unwrap();
+        let graph = SwiftEngine.resolve(&tmp).unwrap();
+        assert_eq!(graph.packages.len(), 1);
+        assert_eq!(graph.packages[0].name, "swift-argument-parser");
+        assert_eq!(graph.packages[0].version, "1.3.0");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_v1_package_resolved_parses_pins() {
+        let tmp = std::env::temp_dir().join("swift-engine-test-v1");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let content = r#"{
+          "object": {
+            "pins": [
+              {
+                "package": "Alamofire",
+                "repositoryURL": "https://github.com/Alamofire/Alamofire.git",
+                "state": { "revision": "abc123", "version": "5.8.1" }
+              }
+            ]
+          },
+          "version": 1
+        }"#;
+        std::fs::write(tmp.join("Package.resolved"), content).unwrap();
+        let graph = SwiftEngine.resolve(&tmp).unwrap();
+        assert_eq!(graph.packages.len(), 1);
+        assert_eq!(graph.packages[0].name, "Alamofire");
+        assert_eq!(graph.packages[0].version, "5.8.1");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn manifest_files_contains_package_swift() {
+        let files = SwiftEngine.manifest_files();
+        assert!(files.contains(&"Package.swift"));
+        assert!(files.contains(&"Package.resolved"));
+    }
 }

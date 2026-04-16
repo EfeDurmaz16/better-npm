@@ -183,4 +183,38 @@ mod tests {
         assert!(graph.packages.is_empty());
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn parse_gemfile_lock_parses_gems() {
+        let tmp = std::env::temp_dir().join("ruby-engine-test-lock");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let lockfile_content = "GEM\n  remote: https://rubygems.org/\n  specs:\n    rack (3.0.0)\n    sinatra (3.1.0)\n\nBUNDLED WITH\n   2.4.0\n";
+        let lock_path = tmp.join("Gemfile.lock");
+        std::fs::write(&lock_path, lockfile_content).unwrap();
+        let graph = parse_gemfile_lock(&lock_path).unwrap();
+        assert_eq!(graph.packages.len(), 2);
+        let names: Vec<&str> = graph.packages.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"rack"));
+        assert!(names.contains(&"sinatra"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn manifest_files_contains_gemfile() {
+        let files = RubyEngine.manifest_files();
+        assert!(files.contains(&"Gemfile"));
+    }
+
+    #[test]
+    fn resolve_with_gemfile_lock_returns_packages() {
+        let tmp = std::env::temp_dir().join("ruby-engine-test-withlock");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("Gemfile"), "source 'https://rubygems.org'\n").unwrap();
+        let lockfile = "GEM\n  specs:\n    rake (13.0.6)\n\nBUNDLED WITH\n   2.4.0\n";
+        std::fs::write(tmp.join("Gemfile.lock"), lockfile).unwrap();
+        let graph = RubyEngine.resolve(&tmp).unwrap();
+        assert_eq!(graph.packages.len(), 1);
+        assert_eq!(graph.packages[0].name, "rake");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
