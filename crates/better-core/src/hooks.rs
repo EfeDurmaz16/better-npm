@@ -164,4 +164,27 @@ mod tests {
         assert!(result.is_err());
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn malformed_scope_rejected() {
+        // "feat(auth: desc" — scope opens but doesn't close before colon
+        let r = validate_conventional_commit("feat(auth: missing close paren");
+        assert!(r.is_err());
+        assert!(r.unwrap_err().contains("Malformed scope"));
+    }
+
+    #[test]
+    fn all_valid_commit_types_accepted() {
+        let types = ["feat", "fix", "docs", "style", "refactor", "perf", "test", "build", "ci", "chore", "revert"];
+        for t in types {
+            let msg = format!("{}: something", t);
+            assert!(validate_conventional_commit(&msg).is_ok(), "type '{}' should be valid", t);
+        }
+    }
+
+    #[test]
+    fn extract_hooks_config_no_better_section_returns_empty() {
+        let result = extract_hooks_config(r#"{"name":"app","version":"1.0.0"}"#);
+        assert!(result.is_empty());
+    }
 }

@@ -212,4 +212,37 @@ mod tests {
         assert!(result.is_err());
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn parse_semver_too_short_returns_none() {
+        assert!(parse_semver("1.0").is_none());
+        assert!(parse_semver("1").is_none());
+    }
+
+    #[test]
+    fn check_semver_range_tilde() {
+        let v = parse_semver("2.3.5").unwrap();
+        assert!(check_semver_range(&v, "~2.3.0"));
+        assert!(!check_semver_range(&v, "~2.4.0"));
+    }
+
+    #[test]
+    fn check_semver_range_exact_version() {
+        let v = parse_semver("4.17.21").unwrap();
+        assert!(check_semver_range(&v, "4.17.21"));
+        assert!(!check_semver_range(&v, "4.17.20"));
+    }
+
+    #[test]
+    fn classify_update_detects_major_minor_patch() {
+        let v100 = parse_semver("1.0.0").unwrap();
+        let v200 = parse_semver("2.0.0").unwrap();
+        let v110 = parse_semver("1.1.0").unwrap();
+        let v101 = parse_semver("1.0.1").unwrap();
+
+        assert_eq!(classify_update(&v100, &v200), "major");
+        assert_eq!(classify_update(&v100, &v110), "minor");
+        assert_eq!(classify_update(&v100, &v101), "patch");
+        assert_eq!(classify_update(&v100, &v100), "current");
+    }
 }

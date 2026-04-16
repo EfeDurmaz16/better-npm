@@ -217,4 +217,25 @@ mod tests {
         assert!(satisfies("18.5.0", "^18.0.0"));
         assert!(!satisfies("19.0.0", "^18.0.0"));
     }
+
+    #[test]
+    fn satisfies_lt_operator() {
+        assert!(satisfies("16.0.0", "<18"));
+        assert!(!satisfies("20.0.0", "<18"));
+    }
+
+    #[test]
+    fn satisfies_tilde_range() {
+        // ~ matches same major.minor, patch >= required
+        assert!(satisfies("18.5.3", "~18.5.0"));
+        assert!(!satisfies("18.6.0", "~18.5.0"));
+    }
+
+    #[test]
+    fn parse_semver_returns_correct_tuple() {
+        let (maj, min, pat) = parse_semver("3.14.1");
+        assert_eq!(maj, 3);
+        assert_eq!(min, 14);
+        assert_eq!(pat, 1);
+    }
 }
