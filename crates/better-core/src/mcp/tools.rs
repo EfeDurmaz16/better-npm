@@ -391,4 +391,39 @@ mod tests {
         let result = execute_tool("audit", &serde_json::json!({}));
         assert!(result.is_error);
     }
+
+    #[test]
+    fn list_tools_all_have_descriptions() {
+        let tools = list_tools();
+        for tool in &tools {
+            assert!(!tool.description.is_empty(), "tool {} has empty description", tool.name);
+        }
+    }
+
+    #[test]
+    fn execute_tool_why_missing_args_returns_error() {
+        let result = execute_tool("why", &serde_json::json!({}));
+        assert!(result.is_error);
+    }
+
+    #[test]
+    fn execute_tool_add_missing_project_root_returns_error() {
+        let result = execute_tool("add", &serde_json::json!({}));
+        assert!(result.is_error);
+        assert!(get_text(&result).contains("project_root"));
+    }
+
+    #[test]
+    fn execute_tool_remove_missing_package_returns_error() {
+        let result = execute_tool("remove", &serde_json::json!({"project_root": "/tmp"}));
+        assert!(result.is_error);
+        assert!(get_text(&result).contains("package"));
+    }
+
+    #[test]
+    fn get_string_arg_returns_value() {
+        let args = serde_json::json!({"key": "value"});
+        assert_eq!(get_string_arg(&args, "key"), Some("value".to_string()));
+        assert_eq!(get_string_arg(&args, "missing"), None);
+    }
 }

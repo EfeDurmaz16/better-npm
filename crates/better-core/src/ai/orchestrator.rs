@@ -160,4 +160,47 @@ mod tests {
         assert!(!plan.name.is_empty());
         assert_eq!(plan.name, "ci-pipeline");
     }
+
+    #[test]
+    fn orchestration_step_serde_roundtrip() {
+        let step = OrchestrationStep {
+            command: "better".to_string(),
+            args: vec!["install".to_string()],
+            description: "Install deps".to_string(),
+            blocking: true,
+        };
+        let json = serde_json::to_string(&step).unwrap();
+        let back: OrchestrationStep = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.command, "better");
+        assert!(back.blocking);
+    }
+
+    #[test]
+    fn orchestration_plan_serde_roundtrip() {
+        let plan = AgentOrchestrator::plan_new_project(std::path::Path::new("/tmp"));
+        let json = serde_json::to_string(&plan).unwrap();
+        let back: OrchestrationPlan = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.name, plan.name);
+        assert_eq!(back.steps.len(), plan.steps.len());
+    }
+
+    #[test]
+    fn dry_run_execute_output_mentions_dry_run() {
+        let plan = AgentOrchestrator::plan_ci(std::path::Path::new("/tmp"));
+        let results = AgentOrchestrator::execute(&plan, std::path::Path::new("/tmp"), true);
+        assert!(results.iter().all(|r| r.output.contains("dry-run")));
+    }
+
+    #[test]
+    fn step_result_serde() {
+        let result = StepResult {
+            step: "Install deps".to_string(),
+            success: true,
+            output: "Done".to_string(),
+            duration_ms: 100,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("Install deps"));
+        assert!(json.contains("duration_ms"));
+    }
 }
