@@ -335,4 +335,44 @@ mod tests {
 
         let _ = fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn test_is_python_project_with_pyproject_toml() {
+        let dir = std::env::temp_dir().join("venv-test-pyproject");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("pyproject.toml"), "[project]\nname = \"test\"").unwrap();
+        assert!(is_python_project(&dir));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_is_python_project_with_setup_py() {
+        let dir = std::env::temp_dir().join("venv-test-setup-py");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("setup.py"), "from setuptools import setup; setup()").unwrap();
+        assert!(is_python_project(&dir));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn detect_requires_python_missing_returns_none() {
+        let dir = std::env::temp_dir().join("venv-test-no-req");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        assert!(detect_requires_python(&dir).is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn venv_run_env_no_venv_returns_empty_map() {
+        let dir = std::env::temp_dir().join("venv-test-runenv-empty");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let env = venv_run_env(&dir);
+        // No venv bin dir → no vars inserted
+        assert!(!env.contains_key("VIRTUAL_ENV"));
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

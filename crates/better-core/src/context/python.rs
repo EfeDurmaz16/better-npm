@@ -367,4 +367,56 @@ mod tests {
         assert_eq!(version, Some("2.28.0".to_string()));
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn parse_python_function_extracts_name() {
+        let sym = parse_python_function("def hello(name: str) -> str:").unwrap();
+        assert_eq!(sym.name, "hello");
+        assert!(matches!(sym.kind, SymbolKind::Function));
+        assert_eq!(sym.return_type.as_deref(), Some("str"));
+    }
+
+    #[test]
+    fn parse_python_function_skips_private() {
+        let result = parse_python_function("def _private_helper():");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn parse_python_class_extracts_name() {
+        let sym = parse_python_class("class MyClass(Base):").unwrap();
+        assert_eq!(sym.name, "MyClass");
+        assert!(matches!(sym.kind, SymbolKind::Class));
+    }
+
+    #[test]
+    fn extract_metadata_field_finds_summary() {
+        let metadata = "Name: mypackage\nSummary: A great package\nVersion: 1.0.0\n";
+        let result = extract_metadata_field(metadata, "Summary");
+        assert_eq!(result, Some("A great package".to_string()));
+    }
+
+    #[test]
+    fn extract_metadata_field_unknown_returns_none() {
+        let metadata = "Name: mypkg\nSummary: UNKNOWN\n";
+        let result = extract_metadata_field(metadata, "Summary");
+        assert!(result.is_none()); // "UNKNOWN" is filtered
+    }
+
+    #[test]
+    fn generate_python_types_summary_lists_signatures() {
+        let exports = vec![
+            ExportedSymbol {
+                name: "hello".to_string(),
+                kind: SymbolKind::Function,
+                signature: Some("def hello(name: str) -> str".to_string()),
+                description: None,
+                params: vec![],
+                return_type: Some("str".to_string()),
+            },
+        ];
+        let summary = generate_python_types_summary(&exports);
+        assert!(summary.contains("hello"));
+        assert!(summary.contains("def hello"));
+    }
 }
