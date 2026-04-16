@@ -267,4 +267,30 @@ mod tests {
         assert!(!is_newer("1.0.0", "1.0.0"));
         assert!(!is_newer("1.0.0", "1.1.0"));
     }
+
+    #[test]
+    fn upgrade_error_display_already_latest() {
+        let err = UpgradeError::AlreadyLatest("1.0.0".to_string());
+        assert!(err.to_string().contains("1.0.0"));
+        assert!(err.to_string().contains("latest"));
+    }
+
+    #[test]
+    fn upgrade_error_display_checksum_mismatch() {
+        let err = UpgradeError::ChecksumMismatch {
+            expected: "abc".to_string(),
+            actual: "xyz".to_string(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("abc"));
+        assert!(msg.contains("xyz"));
+    }
+
+    #[test]
+    fn parse_ver_parses_semver_correctly() {
+        assert_eq!(parse_ver("1.2.3"), Some((1, 2, 3)));
+        assert_eq!(parse_ver("v2.0.0"), Some((2, 0, 0)));
+        assert_eq!(parse_ver("1.0.0-beta.1"), Some((1, 0, 0)));
+        assert_eq!(parse_ver("1.0"), None);
+    }
 }

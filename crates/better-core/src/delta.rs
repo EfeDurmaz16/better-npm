@@ -387,4 +387,26 @@ mod tests {
         assert_eq!(snap.packages.len(), 1);
         assert_eq!(snap.packages["react@18.0.0"].version, "18.0.0");
     }
+
+    #[test]
+    fn packages_needing_work_includes_updated_and_added() {
+        let base = snap(&[("a@1.0.0", "1.0.0", "sha-a")]);
+        let head = snap(&[
+            ("a@1.0.0", "1.0.1", "sha-a-new"), // updated
+            ("b@1.0.0", "1.0.0", "sha-b"),      // added
+        ]);
+        let delta = diff_snapshots(&base, &head);
+        let work = delta.packages_needing_work();
+        assert!(work.contains(&"a@1.0.0"));
+        assert!(work.contains(&"b@1.0.0"));
+    }
+
+    #[test]
+    fn integrity_change_detected_as_update() {
+        let base = snap(&[("pkg@1.0.0", "1.0.0", "sha512-old")]);
+        let head = snap(&[("pkg@1.0.0", "1.0.0", "sha512-new")]);
+        let delta = diff_snapshots(&base, &head);
+        assert_eq!(delta.updated.len(), 1);
+        assert!(delta.updated[0].new_integrity.is_some());
+    }
 }

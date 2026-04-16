@@ -294,4 +294,21 @@ mod tests {
         // Very unlikely to be equal with proper entropy
         assert_ne!(kp1.public_key, kp2.public_key);
     }
+
+    #[test]
+    fn signature_serializes_to_json() {
+        let kp = generate_key_pair();
+        let sig = sign_package("express", "4.18.2", "hash123", &kp.private_key, "tester").unwrap();
+        let json = serde_json::to_string(&sig).unwrap();
+        assert!(json.contains("\"express\""));
+        assert!(json.contains("ed25519"));
+    }
+
+    #[test]
+    fn base64_encode_decode_roundtrip() {
+        let original = b"hello world test data";
+        let encoded = base64_encode(original);
+        let decoded = base64_decode(&encoded).unwrap();
+        assert_eq!(decoded, original);
+    }
 }
