@@ -365,4 +365,40 @@ mod tests {
         assert!(config.ignore.iter().any(|e| e.id == "CVE-2024-1234"));
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn add_audit_ignore_twice_returns_error() {
+        let tmp = std::env::temp_dir().join("audit-config-test-dup");
+        std::fs::create_dir_all(&tmp).unwrap();
+        add_audit_ignore(&tmp, "CVE-2024-5555", "reason").unwrap();
+        let result = add_audit_ignore(&tmp, "CVE-2024-5555", "reason again");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("already in the ignore list"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn is_expired_past_date_returns_true() {
+        assert!(is_expired("2020-01-01"));
+    }
+
+    #[test]
+    fn is_expired_future_date_returns_false() {
+        assert!(!is_expired("2099-12-31"));
+    }
+
+    #[test]
+    fn is_expired_invalid_format_returns_false() {
+        assert!(!is_expired("not-a-date"));
+        assert!(!is_expired(""));
+    }
+
+    #[test]
+    fn filter_no_ignore_config_keeps_all_vulns() {
+        let config = AuditConfig::default();
+        let vulns = vec![vuln("CVE-2024-0001"), vuln("CVE-2024-0002")];
+        let (filtered, ignored_count, _) = filter_ignored_vulns(&vulns, &config);
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(ignored_count, 0);
+    }
 }

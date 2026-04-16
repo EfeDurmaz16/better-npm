@@ -387,4 +387,54 @@ mod tests {
         assert_eq!(split_name_version("@myorg/utils@1.0.0"), ("@myorg/utils", Some("1.0.0")));
         assert_eq!(split_name_version("@myorg/*"), ("@myorg/*", None));
     }
+
+    #[test]
+    fn approve_package_creates_config_file() {
+        let tmp = std::env::temp_dir().join("approval-test-approve");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let result = approve_package(&tmp, "lodash@4.17.21", "alice");
+        assert!(result.is_ok(), "approve should succeed: {:?}", result);
+        assert!(tmp.join(".better-approved.json").exists());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn approve_package_twice_returns_error() {
+        let tmp = std::env::temp_dir().join("approval-test-double");
+        std::fs::create_dir_all(&tmp).unwrap();
+        approve_package(&tmp, "lodash@4.17.21", "alice").unwrap();
+        let result = approve_package(&tmp, "lodash@4.17.21", "bob");
+        assert!(result.is_err());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn revoke_nonexistent_returns_error() {
+        let tmp = std::env::temp_dir().join("approval-test-revoke-none");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let result = revoke_package(&tmp, "nonexistent");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn revoke_existing_removes_entry() {
+        let tmp = std::env::temp_dir().join("approval-test-revoke");
+        std::fs::create_dir_all(&tmp).unwrap();
+        approve_package(&tmp, "express@4.18.2", "alice").unwrap();
+        let removed = revoke_package(&tmp, "express@4.18.2").unwrap();
+        assert_eq!(removed, 1);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn check_all_approved_empty_dir_returns_no_violations() {
+        let tmp = std::env::temp_dir().join("approval-test-check");
+        std::fs::create_dir_all(&tmp).unwrap();
+        // No node_modules → no packages to check
+        let result = check_all_approved(&tmp).unwrap();
+        assert!(result.violations.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
