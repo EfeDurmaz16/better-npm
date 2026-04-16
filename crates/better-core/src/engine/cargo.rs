@@ -402,4 +402,58 @@ mod tests {
         assert!(graph.packages.is_empty());
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn strip_toml_str_parses_double_quoted() {
+        assert_eq!(strip_toml_str("name = \"my-crate\"", "name"), Some("my-crate".into()));
+        assert_eq!(strip_toml_str("version = \"1.2.3\"", "version"), Some("1.2.3".into()));
+    }
+
+    #[test]
+    fn strip_toml_str_returns_none_for_wrong_key() {
+        assert!(strip_toml_str("other = \"value\"", "name").is_none());
+    }
+
+    #[test]
+    fn classify_update_major_version_bump() {
+        assert_eq!(classify_update("1.0.0", "2.0.0"), "major");
+    }
+
+    #[test]
+    fn classify_update_minor_version_bump() {
+        assert_eq!(classify_update("1.0.0", "1.1.0"), "minor");
+    }
+
+    #[test]
+    fn classify_update_patch_version_bump() {
+        assert_eq!(classify_update("1.0.0", "1.0.1"), "patch");
+    }
+
+    #[test]
+    fn parse_manifest_deps_simple_string_form() {
+        let toml = "[dependencies]\nlodash = \"4.17.21\"\n";
+        let deps = parse_manifest_deps(toml);
+        assert!(deps.iter().any(|(n, v)| n == "lodash" && v == "4.17.21"));
+    }
+
+    #[test]
+    fn parse_manifest_deps_strips_caret() {
+        let toml = "[dependencies]\nexpress = \"^4.18.2\"\n";
+        let deps = parse_manifest_deps(toml);
+        assert!(deps.iter().any(|(n, v)| n == "express" && v == "4.18.2"));
+    }
+
+    #[test]
+    fn parse_cargo_lock_parses_single_package() {
+        let tmp = std::env::temp_dir().join("cargo-parse-lock-test");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let content = "[[package]]\nname = \"serde\"\nversion = \"1.0.190\"\nchecksum = \"abc123\"\n";
+        std::fs::write(tmp.join("Cargo.lock"), content).unwrap();
+        let graph = parse_cargo_lock(&tmp.join("Cargo.lock")).unwrap();
+        assert_eq!(graph.packages.len(), 1);
+        assert_eq!(graph.packages[0].name, "serde");
+        assert_eq!(graph.packages[0].version, "1.0.190");
+        assert_eq!(graph.packages[0].integrity.as_deref(), Some("abc123"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

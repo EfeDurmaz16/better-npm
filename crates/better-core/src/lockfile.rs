@@ -1119,4 +1119,73 @@ mod tests {
 
         let _ = fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn test_lock_package_from_resolved() {
+        let rp = crate::types::ResolvedPackage {
+            name: "chalk".into(),
+            version: "5.0.0".into(),
+            integrity: "sha512-test".into(),
+            resolved_url: "https://registry.npmjs.org/chalk/-/chalk-5.0.0.tgz".into(),
+            rel_path: "node_modules/chalk".into(),
+        };
+        let lp = LockPackage::from_resolved(&rp, vec![]);
+        assert_eq!(lp.name, "chalk");
+        assert_eq!(lp.version, "5.0.0");
+        assert_eq!(lp.ecosystem, ECOSYSTEM_NPM);
+        assert!(lp.dependencies.is_empty());
+    }
+
+    #[test]
+    fn test_is_multi_ecosystem_single_npm() {
+        let mut writer = LockfileWriter::new();
+        writer.add_package(LockPackage {
+            name: "lodash".into(),
+            version: "4.17.21".into(),
+            integrity: "sha512-test".into(),
+            resolved: "".into(),
+            dependencies: vec![],
+            ecosystem: ECOSYSTEM_NPM,
+        });
+        assert!(!writer.is_multi_ecosystem());
+    }
+
+    #[test]
+    fn test_is_multi_ecosystem_npm_and_python() {
+        let mut writer = LockfileWriter::new();
+        writer.add_package(LockPackage { name: "lodash".into(), version: "4.0.0".into(), integrity: "".into(), resolved: "".into(), dependencies: vec![], ecosystem: ECOSYSTEM_NPM });
+        writer.add_package(LockPackage { name: "flask".into(), version: "2.0.0".into(), integrity: "".into(), resolved: "".into(), dependencies: vec![], ecosystem: ECOSYSTEM_PYTHON });
+        assert!(writer.is_multi_ecosystem());
+    }
+
+    #[test]
+    fn test_fingerprint_starts_with_sha256() {
+        let writer = LockfileWriter::new();
+        let dir = std::env::temp_dir().join("better-lock-fp-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let result = writer.write_both(&dir).unwrap();
+        assert!(result.fingerprint.starts_with("sha256:"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_writer_from_resolved_packages_builds_writer() {
+        let pkgs = vec![
+            crate::types::ResolvedPackage {
+                name: "react".into(),
+                version: "18.2.0".into(),
+                integrity: "sha512-react".into(),
+                resolved_url: "https://registry.npmjs.org/react/-/react-18.2.0.tgz".into(),
+                rel_path: "node_modules/react".into(),
+            },
+        ];
+        let writer = LockfileWriter::from_resolved_packages(&pkgs);
+        let dir = std::env::temp_dir().join("better-lock-frp-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let result = writer.write_both(&dir).unwrap();
+        assert_eq!(result.package_count, 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
