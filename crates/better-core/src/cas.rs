@@ -689,4 +689,41 @@ mod tests {
 
         let _ = fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn file_store_path_uses_two_level_sharding() {
+        let root = std::path::Path::new("/store");
+        let hex = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab";
+        let path = file_store_path(root, hex);
+        assert!(path.to_string_lossy().contains("/files/sha256/ab/cd/"));
+    }
+
+    #[test]
+    fn package_manifest_dir_uses_algo_and_hex() {
+        let root = std::path::Path::new("/store");
+        let hex = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+        let dir = package_manifest_dir(root, "sha256", hex);
+        assert!(dir.to_string_lossy().contains("/packages/sha256/de/ad/"));
+    }
+
+    #[test]
+    fn package_manifest_path_ends_with_manifest_json() {
+        let root = std::path::Path::new("/store");
+        let hex = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+        let path = package_manifest_path(root, "sha256", hex);
+        assert!(path.ends_with("manifest.json"));
+    }
+
+    #[test]
+    fn hash_file_produces_consistent_hash() {
+        let tmp = std::env::temp_dir().join("cas-test-hashfile");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let f = tmp.join("test.txt");
+        std::fs::write(&f, b"hello world").unwrap();
+        let h1 = hash_file(&f).unwrap();
+        let h2 = hash_file(&f).unwrap();
+        assert_eq!(h1, h2);
+        assert_eq!(h1.len(), 64); // SHA-256 hex is 64 chars
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

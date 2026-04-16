@@ -782,4 +782,71 @@ mod tests {
         assert!(report.totals.logical > 0);
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn write_scan_json_contains_ok_true() {
+        let agg = ScanAgg {
+            logical: 1024,
+            physical: 512,
+            shared: 0,
+            file_count: 10,
+            package_count: 2,
+            approx: false,
+        };
+        let json = write_scan_json(std::path::Path::new("/project"), &agg, true, None);
+        assert!(json.contains("\"ok\":true"));
+        assert!(json.contains("\"fileCount\":10"));
+        assert!(json.contains("\"packageCount\":2"));
+    }
+
+    #[test]
+    fn write_scan_json_includes_reason_when_provided() {
+        let agg = ScanAgg::default();
+        let json = write_scan_json(std::path::Path::new("/project"), &agg, false, Some("something went wrong".into()));
+        assert!(json.contains("\"ok\":false"));
+        assert!(json.contains("something went wrong"));
+    }
+
+    #[test]
+    fn write_materialize_json_contains_key_fields() {
+        let stats = MaterializeStats {
+            files: 5,
+            files_linked: 3,
+            files_copied: 2,
+            ..MaterializeStats::default()
+        };
+        let phases = PhaseDurations::default();
+        let json = write_materialize_json(
+            std::path::Path::new("/src"),
+            std::path::Path::new("/dst"),
+            LinkStrategy::Hardlink,
+            4,
+            MaterializeProfile::Auto,
+            4,
+            true,
+            None,
+            150,
+            &stats,
+            &phases,
+        );
+        assert!(json.contains("\"ok\":true"));
+        assert!(json.contains("\"filesLinked\":3"));
+        assert!(json.contains("\"durationMs\":150"));
+    }
+
+    #[test]
+    fn analyze_scoped_package_name_extracted() {
+        let tmp = std::env::temp_dir().join("analyze-test-scoped");
+        let nm = tmp.join("node_modules");
+        // Scoped package: @scope/pkg
+        let scope_dir = nm.join("@scope").join("pkg");
+        std::fs::create_dir_all(&scope_dir).unwrap();
+        let mut f = std::fs::File::create(scope_dir.join("package.json")).unwrap();
+        use std::io::Write;
+        f.write_all(br#"{"name":"@scope/pkg","version":"1.0.0"}"#).unwrap();
+        let report = analyze(&tmp, false).unwrap();
+        assert_eq!(report.packages.len(), 1);
+        assert_eq!(report.packages[0].name, "@scope/pkg");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
