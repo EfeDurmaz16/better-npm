@@ -259,4 +259,23 @@ mod tests {
         assert!(DhtError::NoProviders.to_string().contains("No providers"));
         assert!(DhtError::Network("err".into()).to_string().contains("err"));
     }
+
+    #[test]
+    fn node_id_is_32_bytes() {
+        let node = make_node();
+        assert_eq!(node.node_id.len(), 32);
+        // Two nodes have different IDs (with overwhelming probability)
+        let node2 = make_node();
+        assert_ne!(node.node_id, node2.node_id);
+    }
+
+    #[test]
+    fn announce_same_cid_twice_is_ok() {
+        let mut node = make_node();
+        let cid = ContentId::sha256(b"double announce");
+        node.announce(&cid).unwrap();
+        node.announce(&cid).unwrap();
+        let providers = node.find_providers(&cid).unwrap();
+        assert!(!providers.is_empty());
+    }
 }

@@ -305,4 +305,29 @@ flask>=3.0
         let result = strip_inline_comment("flask>=3.0 # web framework");
         assert_eq!(result, "flask>=3.0");
     }
+
+    #[test]
+    fn test_parse_version_pinned_package() {
+        let content = "django==4.2.0\n";
+        let base = Path::new(".");
+        let req = RequirementsFile::parse_content(content, base, 0).unwrap();
+        assert_eq!(req.packages.len(), 1);
+        assert_eq!(req.packages[0].name, "django");
+        // constraint should have one specifier (==4.2.0)
+        assert_eq!(req.packages[0].constraint.specifiers.len(), 1);
+    }
+
+    #[test]
+    fn test_comment_only_file_returns_empty() {
+        let content = "# Just a comment\n# Another comment\n";
+        let base = Path::new(".");
+        let req = RequirementsFile::parse_content(content, base, 0).unwrap();
+        assert!(req.packages.is_empty());
+    }
+
+    #[test]
+    fn test_strip_inline_comment_no_comment() {
+        let result = strip_inline_comment("numpy>=1.20.0");
+        assert_eq!(result, "numpy>=1.20.0");
+    }
 }
