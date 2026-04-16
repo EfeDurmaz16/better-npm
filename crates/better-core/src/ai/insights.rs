@@ -238,4 +238,47 @@ mod tests {
         assert!(!insights.consolidation_opportunities.is_empty());
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn consolidations_constant_is_nonempty() {
+        assert!(!CONSOLIDATIONS.is_empty());
+        assert!(CONSOLIDATIONS.iter().any(|(cat, _, _)| *cat == "http-client"));
+    }
+
+    #[test]
+    fn analyze_org_same_version_no_inconsistencies() {
+        let tmp = std::env::temp_dir().join("insights-test-same-ver");
+        // Two projects, same dep, same version → no inconsistency
+        write_pkg(&tmp.join("p1"), r#"{"name":"p1","version":"1.0.0","dependencies":{"lodash":"4.17.21"}}"#);
+        write_pkg(&tmp.join("p2"), r#"{"name":"p2","version":"1.0.0","dependencies":{"lodash":"4.17.21"}}"#);
+        let insights = analyze_org(&tmp).unwrap();
+        assert!(insights.version_inconsistencies.is_empty());
+        assert_eq!(insights.projects_analyzed, 2);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn standardization_score_decreases_with_inconsistencies() {
+        let tmp = std::env::temp_dir().join("insights-test-score");
+        // 3 projects with lodash version differences → score < 100
+        write_pkg(&tmp.join("pa"), r#"{"name":"pa","dependencies":{"lodash":"4.17.20"}}"#);
+        write_pkg(&tmp.join("pb"), r#"{"name":"pb","dependencies":{"lodash":"4.17.21"}}"#);
+        write_pkg(&tmp.join("pc"), r#"{"name":"pc","dependencies":{"lodash":"4.16.0"}}"#);
+        let insights = analyze_org(&tmp).unwrap();
+        assert!(insights.standardization_score < 100);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn analyze_org_counts_total_instances() {
+        let tmp = std::env::temp_dir().join("insights-test-instances");
+        write_pkg(&tmp.join("q1"), r#"{"name":"q1","dependencies":{"a":"1.0","b":"2.0"}}"#);
+        write_pkg(&tmp.join("q2"), r#"{"name":"q2","dependencies":{"a":"1.0","c":"3.0"}}"#);
+        let insights = analyze_org(&tmp).unwrap();
+        // q1 has 2 deps, q2 has 2 deps → 4 total instances
+        assert_eq!(insights.total_dep_instances, 4);
+        // Unique: a, b, c → 3
+        assert_eq!(insights.total_unique_deps, 3);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

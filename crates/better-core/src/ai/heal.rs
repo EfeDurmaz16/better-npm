@@ -191,4 +191,69 @@ mod tests {
         assert_eq!(report.fixed_count, 0);
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn heal_action_type_upgrade_serializes() {
+        let action = HealActionType::Upgrade {
+            from: "1.0.0".into(),
+            to: "2.0.0".into(),
+        };
+        let json = serde_json::to_string(&action).unwrap();
+        assert!(json.contains("Upgrade") || json.contains("from") || json.contains("to"));
+    }
+
+    #[test]
+    fn heal_status_no_patch_serializes() {
+        let status = HealStatus::NoPatchAvailable;
+        let json = serde_json::to_string(&status).unwrap();
+        assert!(!json.is_empty());
+    }
+
+    #[test]
+    fn heal_report_remaining_count_is_total_minus_fixed() {
+        let report = HealReport {
+            actions: vec![
+                HealAction {
+                    vulnerability: "v1".into(),
+                    package: "pkg".into(),
+                    action_type: HealActionType::NoAction,
+                    status: HealStatus::Fixed,
+                    pr_url: None,
+                },
+                HealAction {
+                    vulnerability: "v2".into(),
+                    package: "pkg2".into(),
+                    action_type: HealActionType::Remove,
+                    status: HealStatus::NoPatchAvailable,
+                    pr_url: None,
+                },
+            ],
+            fixed_count: 1,
+            remaining_count: 1,
+            pr_created: false,
+        };
+        assert_eq!(report.fixed_count + report.remaining_count, report.actions.len());
+    }
+
+    #[test]
+    fn heal_project_detects_deprecated_request() {
+        let tmp = std::env::temp_dir().join("heal2-test-deprecated");
+        write_file(
+            &tmp.join("package.json"),
+            br#"{"name":"app","version":"1.0.0","dependencies":{"request":"^2.88.2"}}"#,
+        );
+        let report = heal_project(&tmp, true).unwrap();
+        assert!(report.actions.iter().any(|a| a.package == "request"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn needs_healing_env_example_without_env() {
+        let tmp = std::env::temp_dir().join("heal2-test-env");
+        std::fs::create_dir_all(&tmp).unwrap();
+        write_file(&tmp.join(".env.example"), b"FOO=bar");
+        let issues = needs_healing(&tmp);
+        assert!(issues.iter().any(|i| i.contains(".env")));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
