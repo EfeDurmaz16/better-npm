@@ -302,4 +302,54 @@ mod tests {
         let result = GoEngine.resolve(std::path::Path::new("/nonexistent-go-project-xyz"));
         assert!(result.is_err());
     }
+
+    #[test]
+    fn manifest_files_contains_go_mod() {
+        assert!(GoEngine.manifest_files().contains(&"go.mod"));
+    }
+
+    #[test]
+    fn fetch_returns_packages_as_cached() {
+        let graph = LockGraph {
+            packages: vec![
+                ResolvedNode {
+                    name: "github.com/foo/bar".into(),
+                    version: "1.0.0".into(),
+                    integrity: None,
+                    resolved_url: None,
+                    ecosystem: Ecosystem::Go,
+                },
+            ],
+            edges: vec![],
+        };
+        let tmp = std::env::temp_dir().join("go-fetch-test");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let results = GoEngine.fetch(&graph, &tmp).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].cached);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn materialize_returns_ok() {
+        let tmp = std::env::temp_dir().join("go-mat-test");
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert!(GoEngine.materialize(&[], &tmp).is_ok());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_single_line_require() {
+        let tmp = std::env::temp_dir().join("go-engine-single-require");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            tmp.join("go.mod"),
+            "module example.com/app\ngo 1.21\nrequire github.com/pkg/errors v0.9.1\n",
+        ).unwrap();
+        let graph = GoEngine.resolve(&tmp).unwrap();
+        assert_eq!(graph.packages.len(), 1);
+        assert_eq!(graph.packages[0].name, "github.com/pkg/errors");
+        assert_eq!(graph.packages[0].version, "0.9.1");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

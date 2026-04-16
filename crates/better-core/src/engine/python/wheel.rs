@@ -422,4 +422,64 @@ mod tests {
         assert!(best.is_some());
         assert_eq!(best.unwrap().filename, "pkg-1.0.0-cp312-cp312-macosx_11_0_arm64.whl");
     }
+
+    #[test]
+    fn test_parse_non_whl_extension_returns_error() {
+        let result = WheelFilename::parse("requests-2.31.0.tar.gz");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Not a wheel"));
+    }
+
+    #[test]
+    fn test_parse_too_few_parts_returns_error() {
+        let result = WheelFilename::parse("onlytwoparts-1.0.0.whl");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_select_sdist_returns_non_yanked() {
+        use super::super::pypi::{FileDigests, PackageType, ReleaseFile};
+
+        let files = vec![
+            ReleaseFile {
+                filename: "pkg-1.0.0.tar.gz".to_string(),
+                url: "https://example.com/1".to_string(),
+                size: 1000,
+                digests: FileDigests { sha256: "abc".to_string(), md5: None },
+                requires_python: None,
+                packagetype: PackageType::Sdist,
+                python_version: None,
+                yanked: false,
+                yanked_reason: None,
+            },
+        ];
+        let sdist = select_sdist(&files);
+        assert!(sdist.is_some());
+        assert_eq!(sdist.unwrap().filename, "pkg-1.0.0.tar.gz");
+    }
+
+    #[test]
+    fn test_select_best_wheel_empty_returns_none() {
+        let platform = PlatformTags {
+            python_tag: "cp312".to_string(),
+            abi_tag: "cp312".to_string(),
+            platform_tag: "manylinux_2_17_x86_64".to_string(),
+        };
+        let result = select_best_wheel(&[], &platform);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_is_compatible_platform_manylinux_same_arch() {
+        assert!(is_compatible_platform(
+            "manylinux_2_17_x86_64",
+            "manylinux_2_14_x86_64"
+        ));
+    }
+
+    #[test]
+    fn test_package_preference_ordering() {
+        assert!(PackagePreference::PlatformWheel > PackagePreference::UniversalWheel);
+        assert!(PackagePreference::UniversalWheel > PackagePreference::Sdist);
+    }
 }

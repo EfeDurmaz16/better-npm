@@ -252,4 +252,43 @@ mod tests {
         let result = analyze_supply_chain(std::path::Path::new("/nonexistent-project"));
         assert!(result.is_err());
     }
+
+    #[test]
+    fn anomaly_severity_serializes() {
+        let json = serde_json::to_string(&AnomalySeverity::Critical).unwrap();
+        assert_eq!(json, "\"Critical\"");
+        let json = serde_json::to_string(&AnomalySeverity::Low).unwrap();
+        assert_eq!(json, "\"Low\"");
+    }
+
+    #[test]
+    fn empty_packages_has_full_trust_score() {
+        let tmp = std::env::temp_dir().join("supply-chain-empty-pkgs");
+        let lock = serde_json::json!({
+            "lockfileVersion": 3,
+            "packages": { "": { "name": "myapp" } }
+        });
+        write_lock(&tmp.join("package-lock.json"), &lock.to_string());
+        let report = analyze_supply_chain(&tmp).unwrap();
+        assert_eq!(report.trust_score, 100.0);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn report_serializes_to_json() {
+        let report = SupplyChainReport {
+            total_packages: 3,
+            anomalies: vec![],
+            publisher_stats: PublisherStats {
+                unique_publishers: 2,
+                top_publishers: vec![],
+                concentration_score: 0.5,
+            },
+            provenance_coverage: 0.8,
+            trust_score: 90.0,
+        };
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains("trust_score"));
+        assert!(json.contains("90.0"));
+    }
 }
