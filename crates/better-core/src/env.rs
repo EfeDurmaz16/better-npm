@@ -325,4 +325,68 @@ mod tests {
         assert!(!info.platform.is_empty());
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn load_dotenv_local_overrides_base() {
+        let tmp = std::env::temp_dir().join("env-test-override");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join(".env"), "KEY=base\n").unwrap();
+        std::fs::write(tmp.join(".env.local"), "KEY=override\n").unwrap();
+        let vars = load_dotenv(&tmp);
+        let val = vars.iter().find(|(k, _)| k == "KEY").map(|(_, v)| v.as_str());
+        assert_eq!(val, Some("override"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn load_dotenv_strips_single_quotes() {
+        let tmp = std::env::temp_dir().join("env-test-squotes");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join(".env"), "KEY='single quoted'\n").unwrap();
+        let vars = load_dotenv(&tmp);
+        assert_eq!(vars[0].1, "single quoted");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn load_dotenv_skips_blank_lines() {
+        let tmp = std::env::temp_dir().join("env-test-blanks");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join(".env"), "\n\nA=1\n\nB=2\n").unwrap();
+        let vars = load_dotenv(&tmp);
+        assert_eq!(vars.len(), 2);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn load_dotenv_no_key_before_equals_is_skipped() {
+        let tmp = std::env::temp_dir().join("env-test-nokey");
+        std::fs::create_dir_all(&tmp).unwrap();
+        // "=value" has an empty key; should be skipped
+        std::fs::write(tmp.join(".env"), "=value\nVALID=yes\n").unwrap();
+        let vars = load_dotenv(&tmp);
+        assert_eq!(vars.len(), 1);
+        assert_eq!(vars[0].0, "VALID");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn load_dotenv_value_with_equals_in_it() {
+        let tmp = std::env::temp_dir().join("env-test-equals-in-val");
+        std::fs::create_dir_all(&tmp).unwrap();
+        // Only the first '=' is the separator
+        std::fs::write(tmp.join(".env"), "URL=http://x.com?a=1&b=2\n").unwrap();
+        let vars = load_dotenv(&tmp);
+        assert_eq!(vars[0].1, "http://x.com?a=1&b=2");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn env_info_contains_better_version() {
+        let tmp = std::env::temp_dir().join("env-test-version");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let info = env_info(&tmp);
+        assert!(!info.better_version.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

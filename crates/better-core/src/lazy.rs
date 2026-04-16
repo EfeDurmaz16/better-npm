@@ -274,4 +274,63 @@ mod tests {
 
         fs::remove_dir_all(&dir).unwrap();
     }
+
+    #[test]
+    fn test_epoch_days_to_date_unix_epoch() {
+        // Day 0 = 1970-01-01
+        let (y, m, d) = epoch_days_to_date(0);
+        assert_eq!(y, 1970);
+        assert_eq!(m, 1);
+        assert_eq!(d, 1);
+    }
+
+    #[test]
+    fn test_epoch_days_to_date_known_date() {
+        // 2024-01-01 = 19723 days since epoch
+        let (y, m, d) = epoch_days_to_date(19723);
+        assert_eq!(y, 2024);
+        assert_eq!(m, 1);
+        assert_eq!(d, 1);
+    }
+
+    #[test]
+    fn test_lazy_package_entry_serde_roundtrip() {
+        let entry = LazyPackageEntry {
+            name: "lodash".into(),
+            version: "4.17.21".into(),
+            rel_path: "node_modules/lodash".into(),
+            cas_path: "/cache/unpacked/sha512/abc123/package".into(),
+            integrity: "sha512-abc123".into(),
+            has_scripts: false,
+            bin: HashMap::new(),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let back: LazyPackageEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.name, "lodash");
+        assert_eq!(back.version, "4.17.21");
+        assert!(!back.has_scripts);
+    }
+
+    #[test]
+    fn test_cas_path_for_pkg_sha512() {
+        let cache = std::path::Path::new("/cache");
+        let path = cas_path_for_pkg("sha512-somebase64hash==", cache);
+        // Should be under /cache/unpacked/sha512/
+        assert!(path.to_string_lossy().contains("unpacked"));
+        assert!(path.to_string_lossy().contains("sha512"));
+    }
+
+    #[test]
+    fn test_cas_path_for_pkg_sha1() {
+        let cache = std::path::Path::new("/cache");
+        let path = cas_path_for_pkg("sha1-abc123", cache);
+        assert!(path.to_string_lossy().contains("sha1"));
+    }
+
+    #[test]
+    fn test_read_lazy_manifest_missing_file_returns_err() {
+        let result = read_lazy_manifest(std::path::Path::new("/nonexistent-lazy-dir"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("read lazy manifest"));
+    }
 }
