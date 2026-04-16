@@ -780,4 +780,45 @@ mod tests {
         assert!(json.contains("npm:react"));
         assert!(json.contains("\"ecosystem\":\"npm\""));
     }
+
+    #[test]
+    fn find_paths_nonexistent_target_returns_empty() {
+        let graph = make_graph(&[
+            ("a", "1.0.0", &["b"], true),
+            ("b", "1.0.0", &[], false),
+        ]);
+        let paths = graph.find_paths("nonexistent", 10);
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn find_cycles_detects_simple_cycle() {
+        let graph = make_graph(&[
+            ("a", "1.0.0", &["b"], true),
+            ("b", "1.0.0", &["a"], false), // cycle: a → b → a
+        ]);
+        let report = graph.find_cycles();
+        assert!(report.has_cycles);
+    }
+
+    #[test]
+    fn extract_field_str_extracts_quoted_value() {
+        let json = r#"{"name": "lodash", "version": "4.17.21"}"#;
+        assert_eq!(extract_field_str(json, "name"), Some("lodash".into()));
+        assert_eq!(extract_field_str(json, "version"), Some("4.17.21".into()));
+    }
+
+    #[test]
+    fn extract_field_str_missing_key_returns_none() {
+        let json = r#"{"name": "lodash"}"#;
+        assert!(extract_field_str(json, "missing").is_none());
+    }
+
+    #[test]
+    fn to_dot_empty_graph() {
+        let graph = make_graph(&[]);
+        let dot = graph.to_dot(10);
+        assert!(dot.starts_with("digraph"));
+        assert!(dot.contains("}"));
+    }
 }
