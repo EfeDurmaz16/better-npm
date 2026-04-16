@@ -165,4 +165,25 @@ mod tests {
         assert!(!plan.breaking_changes.is_empty());
         assert!(plan.breaking_changes.iter().any(|b| b.contains("eslint") || b.contains("tslint")));
     }
+
+    #[test]
+    fn migrations_constant_is_nonempty() {
+        assert!(!MIGRATIONS.is_empty());
+        assert!(MIGRATIONS.iter().any(|(f, _, _)| *f == "moment"));
+    }
+
+    #[test]
+    fn migration_plan_serializes_to_json() {
+        let plan = plan_migration("webpack", "vite", std::path::Path::new("/tmp")).unwrap();
+        let json = serde_json::to_string(&plan).unwrap();
+        assert!(json.contains("webpack"));
+        assert!(json.contains("vite"));
+    }
+
+    #[test]
+    fn migration_effort_low_for_unknown_pair() {
+        // Unknown pair has 1 breaking change → Low effort
+        let plan = plan_migration("pkg-a", "pkg-b", std::path::Path::new("/tmp")).unwrap();
+        assert!(matches!(plan.estimated_effort, MigrationEffort::Low));
+    }
 }

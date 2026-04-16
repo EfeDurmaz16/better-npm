@@ -204,4 +204,26 @@ mod tests {
         assert!(review.overall_health.score < 100);
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn lighter_alternative_suggested_for_moment() {
+        let tmp = std::env::temp_dir().join("review-test-lighter");
+        write_pkg_json(&tmp, r#"{"name":"app","version":"1.0.0","dependencies":{"moment":"^2.30.0"}}"#);
+        let review = review_dependencies(&tmp).unwrap();
+        assert!(review.suggestions.iter().any(|s| matches!(s.category, SuggestionCategory::Downsize)));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn known_consolidations_list_is_nonempty() {
+        assert!(!KNOWN_CONSOLIDATIONS.is_empty());
+        assert!(KNOWN_CONSOLIDATIONS.iter().any(|(p, _, _)| *p == "moment"));
+    }
+
+    #[test]
+    fn suggestion_severity_high_serializes() {
+        let sev = SuggestionSeverity::High;
+        let json = serde_json::to_string(&sev).unwrap();
+        assert_eq!(json, "\"High\"");
+    }
 }
