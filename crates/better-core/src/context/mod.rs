@@ -229,3 +229,106 @@ fn doc_to_package_context(doc: generators::ContextDocument) -> PackageContext {
         markdown: doc.markdown,
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn symbol_kind_display_function() {
+        assert_eq!(SymbolKind::Function.to_string(), "function");
+    }
+
+    #[test]
+    fn symbol_kind_display_class() {
+        assert_eq!(SymbolKind::Class.to_string(), "class");
+    }
+
+    #[test]
+    fn symbol_kind_display_all_variants() {
+        assert_eq!(SymbolKind::Constant.to_string(), "const");
+        assert_eq!(SymbolKind::Type.to_string(), "type");
+        assert_eq!(SymbolKind::Interface.to_string(), "interface");
+        assert_eq!(SymbolKind::Enum.to_string(), "enum");
+        assert_eq!(SymbolKind::Module.to_string(), "module");
+        assert_eq!(SymbolKind::Variable.to_string(), "variable");
+    }
+
+    #[test]
+    fn package_context_fields_stored() {
+        let ctx = PackageContext {
+            name: "lodash".into(),
+            version: "4.17.21".into(),
+            ecosystem: "npm".into(),
+            description: "Utility library".into(),
+            exports: vec![],
+            quick_start: "const _ = require('lodash');".into(),
+            patterns: vec![],
+            gotchas: vec!["side effects".into()],
+            types_summary: None,
+            dependencies: vec!["@types/lodash".into()],
+            generated_at: "2026-01-01".into(),
+            markdown: "# lodash".into(),
+        };
+        assert_eq!(ctx.name, "lodash");
+        assert_eq!(ctx.version, "4.17.21");
+        assert_eq!(ctx.gotchas.len(), 1);
+        assert_eq!(ctx.dependencies.len(), 1);
+    }
+
+    #[test]
+    fn bulk_context_result_fields() {
+        let r = BulkContextResult {
+            generated: 5,
+            cached: 10,
+            failed: vec![],
+            total_ms: 200,
+            output_dir: "/tmp/better/context".into(),
+        };
+        assert_eq!(r.generated, 5);
+        assert_eq!(r.cached, 10);
+        assert!(r.failed.is_empty());
+    }
+
+    #[test]
+    fn exported_symbol_kind_is_function() {
+        let sym = ExportedSymbol {
+            name: "map".into(),
+            kind: SymbolKind::Function,
+            signature: Some("(fn: Function) => Array".into()),
+            description: Some("Maps over array".into()),
+            params: vec![],
+            return_type: None,
+        };
+        assert_eq!(sym.kind.to_string(), "function");
+        assert!(sym.signature.is_some());
+    }
+
+    #[test]
+    fn usage_pattern_fields_stored() {
+        let p = UsagePattern {
+            title: "Basic usage".into(),
+            code: "import _ from 'lodash';".into(),
+            language: "javascript".into(),
+        };
+        assert_eq!(p.title, "Basic usage");
+        assert_eq!(p.language, "javascript");
+    }
+
+    #[test]
+    fn param_info_optional_flag() {
+        let param = ParamInfo {
+            name: "options".into(),
+            type_str: Some("Object".into()),
+            optional: true,
+            default: Some("{}".into()),
+            description: None,
+        };
+        assert!(param.optional);
+        assert_eq!(param.default.as_deref(), Some("{}"));
+    }
+}

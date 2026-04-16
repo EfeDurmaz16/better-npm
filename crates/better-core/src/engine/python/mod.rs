@@ -186,3 +186,68 @@ impl PackageEngine for PythonEngine {
         Ok(Vec::new())
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::PackageEngine;
+
+    #[test]
+    fn name_is_python() {
+        assert_eq!(PythonEngine::new().name(), "python");
+    }
+
+    #[test]
+    fn manifest_files_contains_pyproject_toml() {
+        assert!(PythonEngine::new().manifest_files().contains(&"pyproject.toml"));
+    }
+
+    #[test]
+    fn manifest_files_contains_requirements_txt() {
+        assert!(PythonEngine::new().manifest_files().contains(&"requirements.txt"));
+    }
+
+    #[test]
+    fn detect_false_without_any_manifest() {
+        let tmp = std::env::temp_dir().join("python-engine-test-nofile");
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert!(!PythonEngine::new().detect(&tmp));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detect_true_with_requirements_txt() {
+        let tmp = std::env::temp_dir().join("python-engine-test-req");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("requirements.txt"), "flask>=2.0\n").unwrap();
+        assert!(PythonEngine::new().detect(&tmp));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detect_true_with_pyproject_toml() {
+        let tmp = std::env::temp_dir().join("python-engine-test-pyproject");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("pyproject.toml"), "[project]\nname = \"myapp\"\n").unwrap();
+        assert!(PythonEngine::new().detect(&tmp));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn materialize_returns_ok() {
+        let tmp = std::env::temp_dir().join("python-engine-test-mat");
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert!(PythonEngine::new().materialize(&[], &tmp).is_ok());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn audit_returns_empty_vec() {
+        let graph = LockGraph { packages: vec![], edges: vec![] };
+        assert!(PythonEngine::new().audit(&graph).unwrap().is_empty());
+    }
+}
