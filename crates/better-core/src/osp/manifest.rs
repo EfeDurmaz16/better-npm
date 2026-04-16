@@ -320,6 +320,50 @@ mod tests {
         assert_eq!(v.warnings.len(), 1);
     }
 
+    #[test]
+    fn sort_json_keys_passthrough_scalar() {
+        let json = serde_json::json!(42);
+        let sorted = sort_json_keys(&json);
+        assert_eq!(sorted, serde_json::json!(42));
+    }
+
+    #[test]
+    fn service_category_serde_snake_case() {
+        assert_eq!(serde_json::to_string(&ServiceCategory::Database).unwrap(), "\"database\"");
+        assert_eq!(serde_json::to_string(&ServiceCategory::Ai).unwrap(), "\"ai\"");
+        let db: ServiceCategory = serde_json::from_str("\"database\"").unwrap();
+        assert!(matches!(db, ServiceCategory::Database));
+    }
+
+    #[test]
+    fn payment_method_serde_snake_case() {
+        assert_eq!(serde_json::to_string(&PaymentMethod::Free).unwrap(), "\"free\"");
+        assert_eq!(serde_json::to_string(&PaymentMethod::SardisWallet).unwrap(), "\"sardis_wallet\"");
+        assert_eq!(serde_json::to_string(&PaymentMethod::X402).unwrap(), "\"x402\"");
+    }
+
+    #[test]
+    fn price_serde_roundtrip() {
+        let p = Price { amount: "9.99".into(), currency: "USD".into(), interval: Some("month".into()) };
+        let json = serde_json::to_string(&p).unwrap();
+        let back: Price = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.amount, "9.99");
+        assert_eq!(back.interval, Some("month".into()));
+    }
+
+    #[test]
+    fn escrow_profile_serde_roundtrip() {
+        let ep = EscrowProfile {
+            timeout_seconds: Some(3600),
+            verification_window_seconds: Some(300),
+            dispute_window_seconds: None,
+        };
+        let json = serde_json::to_string(&ep).unwrap();
+        let back: EscrowProfile = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.timeout_seconds, Some(3600));
+        assert!(back.dispute_window_seconds.is_none());
+    }
+
     fn make_test_manifest() -> ServiceManifest {
         ServiceManifest {
             manifest_id: "mf_test".into(),

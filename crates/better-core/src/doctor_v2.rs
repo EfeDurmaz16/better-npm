@@ -283,4 +283,76 @@ mod tests {
         assert!(report.overall_score <= 100);
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn doctor_v2_detects_npm_ecosystem() {
+        let tmp = std::env::temp_dir().join("doctorv2-test-npm");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("package.json"), r#"{"name":"test","version":"1.0.0"}"#).unwrap();
+        let report = run_doctor_v2(&tmp).unwrap();
+        assert!(report.ecosystem_reports.iter().any(|r| r.ecosystem == "npm"));
+        assert!(report.cross_ecosystem.ecosystems_found.contains(&"npm".to_string()));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn doctor_v2_invalid_package_json_generates_error() {
+        let tmp = std::env::temp_dir().join("doctorv2-test-invalid-json");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("package.json"), "not json").unwrap();
+        let report = run_doctor_v2(&tmp).unwrap();
+        let npm_report = report.ecosystem_reports.iter().find(|r| r.ecosystem == "npm").unwrap();
+        assert!(!npm_report.manifest_valid);
+        assert!(npm_report.issues.iter().any(|i| matches!(i.severity, IssueSeverity::Error)));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn doctor_v2_detects_python_ecosystem() {
+        let tmp = std::env::temp_dir().join("doctorv2-test-python");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("requirements.txt"), "flask>=2.0\n").unwrap();
+        let report = run_doctor_v2(&tmp).unwrap();
+        assert!(report.ecosystem_reports.iter().any(|r| r.ecosystem == "python"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn doctor_v2_detects_cargo_ecosystem() {
+        let tmp = std::env::temp_dir().join("doctorv2-test-cargo");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("Cargo.toml"), "[package]\nname = \"test\"\n").unwrap();
+        let report = run_doctor_v2(&tmp).unwrap();
+        assert!(report.ecosystem_reports.iter().any(|r| r.ecosystem == "cargo"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn doctor_v2_missing_lockfile_creates_warning() {
+        let tmp = std::env::temp_dir().join("doctorv2-test-no-lock");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("package.json"), r#"{"name":"test"}"#).unwrap();
+        let report = run_doctor_v2(&tmp).unwrap();
+        let npm_report = report.ecosystem_reports.iter().find(|r| r.ecosystem == "npm").unwrap();
+        assert!(!npm_report.lockfile_present);
+        assert!(npm_report.issues.iter().any(|i| matches!(i.severity, IssueSeverity::Warning)));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn issue_severity_serde_variants() {
+        let severities = [IssueSeverity::Error, IssueSeverity::Warning, IssueSeverity::Info];
+        for s in &severities {
+            let json = serde_json::to_string(s).unwrap();
+            assert!(!json.is_empty());
+        }
+    }
+
+    #[test]
+    fn cas_health_default_is_zero() {
+        let h = CasHealth::default();
+        assert_eq!(h.total_entries, 0);
+        assert_eq!(h.total_bytes, 0);
+        assert_eq!(h.orphaned_entries, 0);
+    }
 }
