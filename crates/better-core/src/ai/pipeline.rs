@@ -322,4 +322,51 @@ mod tests {
         let result = execute_pipeline(&p, std::path::Path::new("/tmp"));
         assert!(result.stages.iter().any(|r| matches!(r.status, StageStatus::Skipped)));
     }
+
+    #[test]
+    fn pipeline_serde_roundtrip() {
+        let p = standard_pipeline(true);
+        let json = serde_json::to_string(&p).unwrap();
+        let back: Pipeline = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.name, p.name);
+        assert_eq!(back.stages.len(), p.stages.len());
+        assert_eq!(back.rollback_on_failure, p.rollback_on_failure);
+    }
+
+    #[test]
+    fn standard_pipeline_rollback_on_failure() {
+        let p = standard_pipeline(false);
+        assert!(p.rollback_on_failure);
+    }
+
+    #[test]
+    fn pipeline_action_install_serde() {
+        let action = PipelineAction::Install { frozen: true };
+        let json = serde_json::to_string(&action).unwrap();
+        let back: PipelineAction = serde_json::from_str(&json).unwrap();
+        match back {
+            PipelineAction::Install { frozen } => assert!(frozen),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn gate_type_auto_approval_serde() {
+        let gate = GateType::AutoApproval { message: "LGTM".into() };
+        let json = serde_json::to_string(&gate).unwrap();
+        assert!(json.contains("AutoApproval") || json.contains("LGTM"));
+    }
+
+    #[test]
+    fn pipeline_result_success_on_empty_pipeline() {
+        let p = Pipeline {
+            name: "empty".to_string(),
+            stages: vec![],
+            gates: vec![],
+            rollback_on_failure: false,
+        };
+        let result = execute_pipeline(&p, std::path::Path::new("/tmp"));
+        assert!(result.success);
+        assert!(result.stages.is_empty());
+    }
 }

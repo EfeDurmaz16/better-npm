@@ -182,4 +182,50 @@ mod tests {
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
     }
+
+    #[test]
+    fn email_dep_suggests_email_service() {
+        let tmp = std::env::temp_dir().join("provision-test-email");
+        write_pkg_json(&tmp, r#"{"name":"app","dependencies":{"nodemailer":"^6.0.0"}}"#);
+        let recs = recommend_services(&tmp).unwrap();
+        assert!(recs.iter().any(|r| r.service_type == "email"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn storage_dep_suggests_storage_service() {
+        let tmp = std::env::temp_dir().join("provision-test-storage");
+        write_pkg_json(&tmp, r#"{"name":"app","dependencies":{"multer":"^1.0.0"}}"#);
+        let recs = recommend_services(&tmp).unwrap();
+        assert!(recs.iter().any(|r| r.service_type == "storage"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn service_option_osp_supported_field() {
+        let opt = ServiceOption {
+            provider: "Sardis".into(),
+            service: "PostgreSQL".into(),
+            tier: "starter".into(),
+            monthly_cost_usd: 0.0,
+            features: vec![],
+            osp_supported: true,
+        };
+        assert!(opt.osp_supported);
+        let json = serde_json::to_string(&opt).unwrap();
+        assert!(json.contains("\"osp_supported\":true"));
+    }
+
+    #[test]
+    fn provision_recommendation_serializes() {
+        let rec = ProvisionRecommendation {
+            service_type: "database".into(),
+            recommended: vec![],
+            reasoning: "ORM detected".into(),
+            auto_provision_cmd: Some("better provision db".into()),
+        };
+        let json = serde_json::to_string(&rec).unwrap();
+        assert!(json.contains("database"));
+        assert!(json.contains("ORM detected"));
+    }
 }
