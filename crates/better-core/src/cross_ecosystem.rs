@@ -190,4 +190,71 @@ mod tests {
         assert!(ws.ecosystems.contains(&"npm".to_string()) || ws.members.is_empty()); // may or may not detect root
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn topological_sort_empty_returns_empty() {
+        let result = topological_sort(&[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn topological_sort_no_deps_returns_all() {
+        let members = vec![
+            WorkspaceMember { name: "a".into(), path: std::path::PathBuf::new(), ecosystem: "npm".into(), dependencies: vec![] },
+            WorkspaceMember { name: "b".into(), path: std::path::PathBuf::new(), ecosystem: "npm".into(), dependencies: vec![] },
+        ];
+        let result = topological_sort(&members);
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&"a".to_string()));
+        assert!(result.contains(&"b".to_string()));
+    }
+
+    #[test]
+    fn topological_sort_dep_before_dependent() {
+        let members = vec![
+            WorkspaceMember { name: "app".into(), path: std::path::PathBuf::new(), ecosystem: "npm".into(), dependencies: vec!["lib".into()] },
+            WorkspaceMember { name: "lib".into(), path: std::path::PathBuf::new(), ecosystem: "npm".into(), dependencies: vec![] },
+        ];
+        let result = topological_sort(&members);
+        let lib_pos = result.iter().position(|n| n == "lib").unwrap();
+        let app_pos = result.iter().position(|n| n == "app").unwrap();
+        assert!(lib_pos < app_pos, "lib should come before app");
+    }
+
+    #[test]
+    fn detects_rust_subpackage() {
+        let tmp = std::env::temp_dir().join("cross-eco-test-rust");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let sub = tmp.join("my-crate");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("Cargo.toml"), "[package]\nname = \"my-crate\"\nversion = \"0.1.0\"\n").unwrap();
+        let ws = detect_polyglot_workspace(&tmp);
+        assert!(ws.ecosystems.contains(&"cargo".to_string()));
+        assert!(ws.members.iter().any(|m| m.name == "my-crate"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detects_python_subpackage() {
+        let tmp = std::env::temp_dir().join("cross-eco-test-python");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let sub = tmp.join("my-service");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("pyproject.toml"), "[project]\nname = \"my-service\"\n").unwrap();
+        let ws = detect_polyglot_workspace(&tmp);
+        assert!(ws.ecosystems.contains(&"python".to_string()));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn ignores_node_modules_dir() {
+        let tmp = std::env::temp_dir().join("cross-eco-test-nm");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let nm = tmp.join("node_modules").join("some-pkg");
+        std::fs::create_dir_all(&nm).unwrap();
+        std::fs::write(nm.join("package.json"), r#"{"name":"some-pkg"}"#).unwrap();
+        let ws = detect_polyglot_workspace(&tmp);
+        assert!(ws.members.is_empty(), "node_modules should be ignored");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

@@ -182,4 +182,69 @@ mod tests {
         assert_eq!(wallet.balance, "100.50");
         assert_eq!(wallet.trust_tier, 2);
     }
+
+    #[test]
+    fn test_escrow_status_all_variants_serde() {
+        for (status, expected) in &[
+            (EscrowStatus::Held, "\"Held\""),
+            (EscrowStatus::Released, "\"Released\""),
+            (EscrowStatus::Refunded, "\"Refunded\""),
+            (EscrowStatus::Disputed, "\"Disputed\""),
+        ] {
+            let s = serde_json::to_string(status).unwrap();
+            assert_eq!(&s, expected);
+        }
+    }
+
+    #[test]
+    fn test_escrow_hold_serde_roundtrip() {
+        let hold = EscrowHold {
+            escrow_id: "esc123".into(),
+            amount: "9.99".into(),
+            currency: "USD".into(),
+            status: EscrowStatus::Held,
+            timeout_at: "2099-01-01T00:00:00Z".into(),
+        };
+        let json = serde_json::to_string(&hold).unwrap();
+        let back: EscrowHold = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.escrow_id, "esc123");
+        assert_eq!(back.status, EscrowStatus::Held);
+    }
+
+    #[test]
+    fn test_spending_mandate_serde_roundtrip() {
+        let m = SpendingMandate {
+            mandate_id: "m1".into(),
+            wallet_id: "w1".into(),
+            max_amount: "50.00".into(),
+            currency: "EUR".into(),
+            provider_id: "supabase".into(),
+            offering_id: "supabase/postgres".into(),
+            expires_at: "2099-01-01T00:00:00Z".into(),
+            signature: "sig123".into(),
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        let back: SpendingMandate = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.mandate_id, "m1");
+        assert_eq!(back.max_amount, "50.00");
+    }
+
+    #[test]
+    fn test_wallet_info_serde_roundtrip() {
+        let w = WalletInfo {
+            wallet_id: "w42".into(),
+            balance: "999.00".into(),
+            currency: "USD".into(),
+            trust_tier: 5,
+        };
+        let json = serde_json::to_string(&w).unwrap();
+        let back: WalletInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.wallet_id, "w42");
+        assert_eq!(back.trust_tier, 5);
+    }
+
+    #[test]
+    fn test_escrow_status_refunded_ne_disputed() {
+        assert_ne!(EscrowStatus::Refunded, EscrowStatus::Disputed);
+    }
 }

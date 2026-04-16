@@ -180,4 +180,58 @@ mod tests {
         let err = SardisError::NotAuthenticated;
         assert!(err.to_string().contains("better login --sardis"));
     }
+
+    #[test]
+    fn test_sardis_session_serde_roundtrip() {
+        let session = SardisSession {
+            access_token: "tok123".into(),
+            refresh_token: "ref456".into(),
+            wallet_id: "w789".into(),
+            agent_id: "agent01".into(),
+            expires_at: "2099-01-01T00:00:00Z".into(),
+        };
+        let json = serde_json::to_string(&session).unwrap();
+        let back: SardisSession = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.access_token, "tok123");
+        assert_eq!(back.wallet_id, "w789");
+    }
+
+    #[test]
+    fn test_sardis_error_display_session_expired() {
+        let err = SardisError::SessionExpired;
+        assert!(err.to_string().contains("expired"));
+    }
+
+    #[test]
+    fn test_sardis_error_display_invalid_credentials() {
+        let err = SardisError::InvalidCredentials;
+        assert!(err.to_string().to_lowercase().contains("invalid"));
+    }
+
+    #[test]
+    fn test_sardis_error_display_network() {
+        let err = SardisError::Network("timeout".into());
+        assert!(err.to_string().contains("Network error"));
+        assert!(err.to_string().contains("timeout"));
+    }
+
+    #[test]
+    fn test_sardis_error_display_api_error() {
+        let err = SardisError::Api { code: "404".into(), message: "Not found".into() };
+        let s = err.to_string();
+        assert!(s.contains("404"));
+        assert!(s.contains("Not found"));
+    }
+
+    #[test]
+    fn test_sardis_login_request_api_key_serialization() {
+        let req = SardisLoginRequest {
+            email: None,
+            api_key: Some("sk-abc123".into()),
+            device_id: "dev-999".into(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("sk-abc123"));
+        assert!(json.contains("dev-999"));
+    }
 }
