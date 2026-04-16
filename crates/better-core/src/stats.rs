@@ -251,6 +251,51 @@ mod tests {
         };
         assert_eq!(entry.total_saved, entry.file_size * (entry.reference_count as u64 - 1));
     }
+
+    #[test]
+    fn dir_size_returns_zero_for_empty_dir() {
+        let tmp = std::env::temp_dir().join("stats-dir-size-empty");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let size = dir_size(&tmp);
+        assert_eq!(size, 0);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn dir_size_includes_file_bytes() {
+        let tmp = std::env::temp_dir().join("stats-dir-size-files");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("a.txt"), b"hello").unwrap(); // 5 bytes
+        std::fs::write(tmp.join("b.txt"), b"world!").unwrap(); // 6 bytes
+        let size = dir_size(&tmp);
+        assert_eq!(size, 11);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn walk_cas_visits_all_files() {
+        let tmp = std::env::temp_dir().join("stats-walk-cas");
+        let sub = tmp.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(tmp.join("file1"), b"a").unwrap();
+        std::fs::write(sub.join("file2"), b"b").unwrap();
+        let mut count = 0usize;
+        walk_cas(&tmp, &mut |_| count += 1);
+        assert_eq!(count, 2);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn compare_with_python_venv_has_python_breakdown() {
+        let tmp = std::env::temp_dir().join("stats-test-venv");
+        let venv = tmp.join(".venv").join("lib");
+        std::fs::create_dir_all(&venv).unwrap();
+        std::fs::write(venv.join("pkg.py"), b"# python file").unwrap();
+        let result = compare_without_better(&tmp).unwrap();
+        let ecosystems: Vec<&str> = result.breakdown.iter().map(|b| b.ecosystem.as_str()).collect();
+        assert!(ecosystems.contains(&"python"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
 
 /// Compare disk usage with vs without better CAS.

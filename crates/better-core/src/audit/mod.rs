@@ -468,4 +468,89 @@ mod tests {
         assert_eq!(report.total, 0);
         assert_eq!(report.risk_level, "none");
     }
+
+    fn make_vuln(id: &str, pkg: &str, ver: &str, sev: &str) -> AuditVulnerability {
+        AuditVulnerability {
+            id: id.to_string(),
+            summary: format!("vuln in {}", pkg),
+            severity: sev.to_string(),
+            package: pkg.to_string(),
+            version: ver.to_string(),
+            fixed: "999.0.0".to_string(),
+        }
+    }
+
+    #[test]
+    fn smart_audit_prod_vuln_appears_in_results() {
+        let raw = vec![make_vuln("GHSA-001", "express", "4.0.0", "HIGH")];
+        let mut root_deps = HashMap::new();
+        root_deps.insert("express".to_string(), "^4.0.0".to_string());
+        let mut resolved = HashMap::new();
+        resolved.insert("express".to_string(), "4.0.0".to_string());
+        let report = smart_audit(
+            &raw,
+            &root_deps,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &resolved,
+            &AuditFilter::default(),
+        );
+        assert_eq!(report.total, 1);
+        assert_eq!(report.risk_level, "high");
+    }
+
+    #[test]
+    fn smart_audit_critical_risk_level() {
+        let raw = vec![make_vuln("GHSA-002", "lodash", "4.17.20", "CRITICAL")];
+        let mut root_deps = HashMap::new();
+        root_deps.insert("lodash".to_string(), "^4.0.0".to_string());
+        let report = smart_audit(
+            &raw,
+            &root_deps,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &AuditFilter::default(),
+        );
+        assert_eq!(report.risk_level, "critical");
+    }
+
+    #[test]
+    fn smart_audit_filter_removes_low_score() {
+        let raw = vec![make_vuln("GHSA-003", "chalk", "4.0.0", "LOW")];
+        let mut filter = AuditFilter::default();
+        filter.min_score = 5.0;
+        let report = smart_audit(
+            &raw,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &filter,
+        );
+        // Low severity dev vuln effective_score < 5.0 should be filtered
+        assert_eq!(report.filtered, 0);
+        assert_eq!(report.risk_level, "none");
+    }
+
+    #[test]
+    fn today_date_iso_format_is_yyyy_mm_dd() {
+        let date = today_date_iso();
+        let parts: Vec<&str> = date.split('-').collect();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0].len(), 4); // YYYY
+        assert_eq!(parts[1].len(), 2); // MM
+        assert_eq!(parts[2].len(), 2); // DD
+    }
+
+    #[test]
+    fn is_leap_century_not_divisible_by_400() {
+        assert!(!is_leap(1700));
+        assert!(!is_leap(1800));
+        assert!(!is_leap(1900));
+        assert!(is_leap(2000)); // divisible by 400
+    }
 }

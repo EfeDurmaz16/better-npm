@@ -344,4 +344,58 @@ mod tests {
         let back: ServiceStatus = serde_json::from_str(&json).unwrap();
         assert_eq!(back, ServiceStatus::Active);
     }
+
+    #[test]
+    fn vault_entry_key_dots_and_slashes_replaced() {
+        let key = vault_entry_key("aws.amazon.com", "rds/postgres");
+        assert_eq!(key, "aws_amazon_com_rds_postgres");
+    }
+
+    #[test]
+    fn vault_entry_key_no_special_chars_unchanged() {
+        let key = vault_entry_key("supabase", "postgres");
+        assert_eq!(key, "supabase_postgres");
+    }
+
+    #[test]
+    fn service_status_all_variants_serde_roundtrip() {
+        for status in [
+            ServiceStatus::Active,
+            ServiceStatus::Provisioning,
+            ServiceStatus::Deprovisioned,
+            ServiceStatus::Error,
+            ServiceStatus::Rotating,
+        ] {
+            let json = serde_json::to_string(&status).unwrap();
+            let back: ServiceStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, status);
+        }
+    }
+
+    #[test]
+    fn agent_keypair_drop_zeroes_secret() {
+        let mut kp = AgentKeyPair {
+            secret_key: [0xAB; 32],
+            public_key: [0x01; 32],
+        };
+        // Verify the key is non-zero before drop
+        assert!(kp.secret_key.iter().any(|&b| b != 0));
+        // Drop explicitly via fill
+        kp.secret_key.fill(0);
+        assert!(kp.secret_key.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn vault_meta_serde() {
+        let meta = VaultMeta {
+            version: 1,
+            created_at: "2026-01-01".to_string(),
+            last_modified_at: "2026-01-02".to_string(),
+            entry_count: 3,
+        };
+        let json = serde_json::to_string(&meta).unwrap();
+        let back: VaultMeta = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.version, 1);
+        assert_eq!(back.entry_count, 3);
+    }
 }

@@ -726,4 +726,53 @@ mod tests {
         assert!(matches!(MaterializeProfile::from_arg("small-files"), Some(MaterializeProfile::SmallFiles)));
         assert!(MaterializeProfile::from_arg("bogus").is_none());
     }
+
+    #[test]
+    fn link_strategy_as_str() {
+        assert_eq!(LinkStrategy::Auto.as_str(), "auto");
+        assert_eq!(LinkStrategy::Hardlink.as_str(), "hardlink");
+        assert_eq!(LinkStrategy::Copy.as_str(), "copy");
+    }
+
+    #[test]
+    fn materialize_profile_as_str() {
+        assert_eq!(MaterializeProfile::Auto.as_str(), "auto");
+        assert_eq!(MaterializeProfile::IoHeavy.as_str(), "io-heavy");
+        assert_eq!(MaterializeProfile::SmallFiles.as_str(), "small-files");
+    }
+
+    #[test]
+    fn materialize_counters_snapshot_reflects_values() {
+        use std::sync::atomic::Ordering;
+        let c = MaterializeCounters::default();
+        c.files.store(10, Ordering::Relaxed);
+        c.files_linked.store(7, Ordering::Relaxed);
+        c.files_copied.store(3, Ordering::Relaxed);
+        let snap = c.snapshot();
+        assert_eq!(snap.files, 10);
+        assert_eq!(snap.files_linked, 7);
+        assert_eq!(snap.files_copied, 3);
+    }
+
+    #[test]
+    fn cas_layout_new_uses_cache_dir() {
+        let base = std::path::Path::new("/tmp/my-cache");
+        let layout = CasLayout::new(base);
+        assert!(layout.tarballs_dir.starts_with(base));
+        assert!(layout.unpacked_dir.starts_with(base));
+        assert!(layout.tmp_dir.starts_with(base));
+    }
+
+    #[test]
+    fn npmrc_config_default_registry() {
+        let cfg = NpmrcConfig::default();
+        assert!(cfg.default_registry.contains("npmjs.org"));
+        assert!(cfg.scoped_registries.is_empty());
+        assert!(cfg.auth_tokens.is_empty());
+    }
+
+    #[test]
+    fn node_layout_isolated_alias() {
+        assert_eq!(NodeLayout::from_arg("isolated"), Some(NodeLayout::Strict));
+    }
 }
