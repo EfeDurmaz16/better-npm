@@ -348,4 +348,73 @@ mod tests {
         assert!(!result.ok);
         assert!(result.reason.is_some());
     }
+
+    #[test]
+    fn pack_empty_store_succeeds_with_zero_entries() {
+        let tmp = std::env::temp_dir().join("ci-pack-empty-store");
+        let store = tmp.join("store");
+        let archive = tmp.join("cache.tar.zst");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&store).unwrap();
+        let result = pack_cache(&store, &archive, 3);
+        assert!(result.ok, "pack failed: {:?}", result.reason);
+        assert_eq!(result.entries, 0);
+        assert!(archive.exists());
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn pack_result_ok_flag_is_true_on_success() {
+        let tmp = std::env::temp_dir().join("ci-pack-result-ok");
+        let store = tmp.join("store");
+        let archive = tmp.join("out.tar.zst");
+        let _ = fs::remove_dir_all(&tmp);
+        make_test_store(&store);
+        let result = pack_cache(&store, &archive, 3);
+        assert!(result.ok);
+        assert!(result.reason.is_none());
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn pack_result_serializes_to_json() {
+        let r = PackResult {
+            ok: true,
+            output_path: "/tmp/cache.tar.zst".into(),
+            entries: 5,
+            compressed_bytes: 1000,
+            uncompressed_bytes: 5000,
+            manifest_hash: "abc123".into(),
+            reason: None,
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(json.contains("\"ok\":true"));
+        assert!(json.contains("\"entries\":5"));
+    }
+
+    #[test]
+    fn unpack_result_serializes_to_json() {
+        let r = UnpackResult {
+            ok: false,
+            input_path: "/tmp/cache.tar.zst".into(),
+            entries: 0,
+            uncompressed_bytes: 0,
+            manifest_ok: false,
+            reason: Some("archive not found".into()),
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(json.contains("\"ok\":false"));
+        assert!(json.contains("archive not found"));
+    }
+
+    #[test]
+    fn collect_files_finds_all_files_in_store() {
+        let tmp = std::env::temp_dir().join("ci-pack-collect-test");
+        let _ = fs::remove_dir_all(&tmp);
+        make_test_store(&tmp);
+        let mut files = Vec::new();
+        collect_files(&tmp, &mut files).unwrap();
+        assert_eq!(files.len(), 2);
+        let _ = fs::remove_dir_all(&tmp);
+    }
 }

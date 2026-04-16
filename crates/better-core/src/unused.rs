@@ -365,4 +365,48 @@ import relative from "./local";
         assert!(refs.contains(&"jest".to_string()));
         assert!(!refs.contains(&"--coverage".to_string()));
     }
+
+    #[test]
+    fn test_extract_string_literal_single_quote() {
+        let bytes = b"'hello' rest";
+        let result = extract_string_literal(bytes, 0);
+        assert_eq!(result, Some(("hello".to_string(), 7)));
+    }
+
+    #[test]
+    fn test_extract_string_literal_double_quote() {
+        let bytes = b"\"world\" rest";
+        let result = extract_string_literal(bytes, 0);
+        assert_eq!(result, Some(("world".to_string(), 7)));
+    }
+
+    #[test]
+    fn test_extract_string_literal_unclosed_returns_none() {
+        let bytes = b"'unclosed";
+        let result = extract_string_literal(bytes, 0);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_is_ident_char_alphanumeric() {
+        assert!(is_ident_char(Some(b'a')));
+        assert!(is_ident_char(Some(b'Z')));
+        assert!(is_ident_char(Some(b'0')));
+        assert!(is_ident_char(Some(b'_')));
+        assert!(is_ident_char(Some(b'$')));
+    }
+
+    #[test]
+    fn test_is_ident_char_non_ident() {
+        assert!(!is_ident_char(Some(b' ')));
+        assert!(!is_ident_char(Some(b'-')));
+        assert!(!is_ident_char(Some(b'.')));
+        assert!(!is_ident_char(None));
+    }
+
+    #[test]
+    fn test_detect_unused_missing_package_json_errors() {
+        let result = detect_unused(std::path::Path::new("/nonexistent-project-dir"));
+        assert!(result.is_err());
+    }
 }
