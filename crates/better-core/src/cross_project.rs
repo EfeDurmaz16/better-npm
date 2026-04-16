@@ -207,4 +207,70 @@ mod tests {
         assert_eq!(report.projects_scanned, 1);
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn scan_python_project_is_detected() {
+        let tmp = std::env::temp_dir().join("cross-project-test-py");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("requirements.txt"), "flask>=2.0\n").unwrap();
+        let report = scan_projects(&[tmp.clone()]);
+        assert_eq!(report.projects_scanned, 1);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn scan_shared_package_across_two_projects() {
+        let base = std::env::temp_dir().join("cross-project-test-shared");
+        let p1 = base.join("project1");
+        let p2 = base.join("project2");
+        std::fs::create_dir_all(&p1).unwrap();
+        std::fs::create_dir_all(&p2).unwrap();
+        let lockfile = r#"{"lockfileVersion":3,"packages":{"node_modules/lodash":{"version":"4.17.21"}}}"#;
+        std::fs::write(p1.join("package-lock.json"), lockfile).unwrap();
+        std::fs::write(p2.join("package-lock.json"), lockfile).unwrap();
+        let report = scan_projects(&[p1, p2]);
+        assert_eq!(report.projects_scanned, 2);
+        assert!(report.shared_packages.iter().any(|sp| sp.name == "lodash"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn scan_no_version_drift_for_identical_versions() {
+        let base = std::env::temp_dir().join("cross-project-test-nodrift");
+        let p1 = base.join("p1");
+        let p2 = base.join("p2");
+        std::fs::create_dir_all(&p1).unwrap();
+        std::fs::create_dir_all(&p2).unwrap();
+        let lockfile = r#"{"lockfileVersion":3,"packages":{"node_modules/react":{"version":"18.0.0"}}}"#;
+        std::fs::write(p1.join("package-lock.json"), lockfile).unwrap();
+        std::fs::write(p2.join("package-lock.json"), lockfile).unwrap();
+        let report = scan_projects(&[p1, p2]);
+        // Same version in both projects → no drift
+        assert!(report.version_drift.is_empty());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn scan_version_drift_detected_for_different_versions() {
+        let base = std::env::temp_dir().join("cross-project-test-drift");
+        let p1 = base.join("p1");
+        let p2 = base.join("p2");
+        std::fs::create_dir_all(&p1).unwrap();
+        std::fs::create_dir_all(&p2).unwrap();
+        std::fs::write(p1.join("package-lock.json"),
+            r#"{"lockfileVersion":3,"packages":{"node_modules/lodash":{"version":"3.0.0"}}}"#).unwrap();
+        std::fs::write(p2.join("package-lock.json"),
+            r#"{"lockfileVersion":3,"packages":{"node_modules/lodash":{"version":"4.17.21"}}}"#).unwrap();
+        let report = scan_projects(&[p1, p2]);
+        let drift = report.version_drift.iter().find(|d| d.package == "lodash");
+        assert!(drift.is_some());
+        assert!(drift.unwrap().drift_major, "major version drift expected");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn upgrade_opportunities_empty_in_basic_scan() {
+        let report = scan_projects(&[]);
+        assert!(report.upgrade_opportunities.is_empty());
+    }
 }

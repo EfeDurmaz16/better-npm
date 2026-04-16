@@ -196,4 +196,66 @@ mod tests {
         assert_eq!(h1, h2);
         assert_eq!(h1.len(), 128); // 16 hex chars × 8
     }
+
+    #[test]
+    fn compute_sha512_hex_different_inputs_differ() {
+        let h1 = compute_sha512_hex(b"hello");
+        let h2 = compute_sha512_hex(b"world");
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn registry_index_empty_cid_returns_ok_empty() {
+        let reg = test_registry();
+        let idx = RegistryIndex::fetch(&reg).unwrap();
+        assert!(idx.list().is_empty());
+    }
+
+    #[test]
+    fn registry_index_resolve_missing_returns_none() {
+        let reg = test_registry();
+        let idx = RegistryIndex::fetch(&reg).unwrap();
+        assert!(idx.resolve("lodash", "4.17.21").is_none());
+    }
+
+    #[test]
+    fn registry_protocol_serde() {
+        assert_eq!(serde_json::to_string(&RegistryProtocol::Ipfs).unwrap(), "\"ipfs\"");
+        assert_eq!(serde_json::to_string(&RegistryProtocol::Arweave).unwrap(), "\"arweave\"");
+        assert_eq!(serde_json::to_string(&RegistryProtocol::BetterDht).unwrap(), "\"betterdht\"");
+    }
+
+    #[test]
+    fn publisher_prepare_manifest_from_file() {
+        let tmp = std::env::temp_dir().join("decentralized-publish-test");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let tarball = tmp.join("pkg.tgz");
+        std::fs::write(&tarball, b"fake tarball content").unwrap();
+
+        let pub_ = DecentralizedPublisher { registry: test_registry() };
+        let entry = pub_.prepare_manifest("lodash", "4.17.21", &tarball, "alice").unwrap();
+        assert_eq!(entry.name, "lodash");
+        assert_eq!(entry.version, "4.17.21");
+        assert_eq!(entry.publisher, "alice");
+        assert!(entry.integrity.starts_with("sha512-"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn decentralized_package_entry_serde_roundtrip() {
+        let entry = DecentralizedPackageEntry {
+            name: "test-pkg".into(),
+            version: "1.0.0".into(),
+            content_id: "QmTestCid123".into(),
+            protocol: "ipfs".into(),
+            integrity: "sha512-abc123".into(),
+            signature: None,
+            publisher: "alice".into(),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let back: DecentralizedPackageEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.name, "test-pkg");
+        assert!(back.signature.is_none());
+    }
 }

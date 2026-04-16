@@ -218,4 +218,85 @@ mod tests {
         let engines = r.load_all();
         assert!(engines.is_empty());
     }
+
+    #[test]
+    fn plugin_manifest_serde_roundtrip() {
+        let m = PluginManifest {
+            name: "my-plugin".into(),
+            version: "1.0.0".into(),
+            description: "A test plugin".into(),
+            bin: "plugin-bin".into(),
+            manifest_files: vec!["custom.toml".into()],
+            detect_files: vec!["custom.toml".into()],
+            author: "alice".into(),
+            engine_api_version: 1,
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        let back: PluginManifest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.name, "my-plugin");
+        assert_eq!(back.engine_api_version, 1);
+    }
+
+    #[test]
+    fn install_missing_plugin_json_returns_error() {
+        let tmp = std::env::temp_dir().join("plugin-test-no-manifest");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let r = PluginRegistry { plugins_dir: tmp.join("plugins") };
+        let result = r.install(&tmp);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("plugin.json"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn remove_nonexistent_plugin_returns_error() {
+        let tmp = std::env::temp_dir().join("plugin-test-remove");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let r = PluginRegistry { plugins_dir: tmp.clone() };
+        let result = r.remove("nonexistent");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("nonexistent"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn subprocess_engine_name_returns_plugin_name() {
+        let m = PluginManifest {
+            name: "my-plugin".into(),
+            version: "1.0.0".into(),
+            description: "test".into(),
+            bin: "bin".into(),
+            manifest_files: vec![],
+            detect_files: vec!["special.toml".into()],
+            author: "test".into(),
+            engine_api_version: 1,
+        };
+        let engine = SubprocessPluginEngine {
+            manifest: m,
+            bin_path: std::path::PathBuf::from("/tmp/nonexistent-bin"),
+        };
+        assert_eq!(engine.name(), "my-plugin");
+    }
+
+    #[test]
+    fn subprocess_engine_detect_returns_false_for_missing_files() {
+        let tmp = std::env::temp_dir().join("plugin-test-detect");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let m = PluginManifest {
+            name: "my-plugin".into(),
+            version: "1.0.0".into(),
+            description: "test".into(),
+            bin: "bin".into(),
+            manifest_files: vec![],
+            detect_files: vec!["custom-lock.yaml".into()],
+            author: "test".into(),
+            engine_api_version: 1,
+        };
+        let engine = SubprocessPluginEngine {
+            manifest: m,
+            bin_path: std::path::PathBuf::from("/tmp/nonexistent-bin"),
+        };
+        assert!(!engine.detect(&tmp));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
