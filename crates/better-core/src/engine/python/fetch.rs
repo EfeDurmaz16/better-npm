@@ -166,4 +166,48 @@ mod tests {
     fn test_cas_hit_nonexistent() {
         assert!(!cas_hit(Path::new("/tmp"), "abc123def456"));
     }
+
+    #[test]
+    fn test_cas_path_prefix_is_first_two_chars() {
+        let root = Path::new("/cas");
+        let path = pypi_cas_path(root, "deadbeef");
+        let components: Vec<_> = path.components().collect();
+        // Should be /cas/pypi/de/deadbeef
+        assert!(path.to_string_lossy().contains("/de/"));
+        assert!(path.ends_with("deadbeef"));
+        let _ = components;
+    }
+
+    #[test]
+    fn test_cas_path_single_char_hash() {
+        // Should not panic for short hashes
+        let root = Path::new("/cas");
+        let path = pypi_cas_path(root, "a");
+        assert!(path.ends_with("a"));
+    }
+
+    #[test]
+    fn test_cas_hit_existing_file() {
+        let dir = std::env::temp_dir().join("fetch-cas-hit-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let hash = "cafebabe1234";
+        let cas_path = pypi_cas_path(&dir, hash);
+        std::fs::create_dir_all(cas_path.parent().unwrap()).unwrap();
+        std::fs::write(&cas_path, b"data").unwrap();
+        assert!(cas_hit(&dir, hash));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_fetched_package_is_wheel_field() {
+        use super::super::version::Pep440Version;
+        let pkg = FetchedPackage {
+            name: "flask".into(),
+            version: Pep440Version::parse("3.0.0").unwrap(),
+            cas_path: PathBuf::from("/cas/pypi/xx/xxx"),
+            is_wheel: true,
+        };
+        assert!(pkg.is_wheel);
+        assert_eq!(pkg.name, "flask");
+    }
 }

@@ -159,4 +159,48 @@ mod tests {
         assert!(json.contains("init"));
         assert!(json.contains("function"));
     }
+
+    #[test]
+    fn context_error_display() {
+        let err = ContextError { message: "file not found".into() };
+        assert_eq!(err.to_string(), "file not found");
+    }
+
+    #[test]
+    fn context_error_from_string() {
+        let err: ContextError = "parse failed".into();
+        assert_eq!(err.message, "parse failed");
+    }
+
+    #[test]
+    fn param_entry_serializes() {
+        let p = ParamEntry {
+            name: "limit".into(),
+            type_: "u32".into(),
+            description: "Max results".into(),
+            optional: true,
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains("\"optional\":true"));
+        assert!(json.contains("\"name\":\"limit\""));
+    }
+
+    #[test]
+    fn context_document_has_all_fields() {
+        let doc = ContextDocument::empty("serde", "1.0.0", "rust");
+        assert_eq!(doc.version, "1.0.0");
+        assert!(doc.exports.is_empty());
+        assert!(doc.examples.is_empty());
+        assert!(doc.gotchas.is_empty());
+        assert!(doc.migration_notes.is_empty());
+        assert!(doc.markdown.is_empty());
+    }
+
+    #[test]
+    fn context_document_token_estimate_rounds_down() {
+        let mut doc = ContextDocument::empty("pkg", "0.1", "npm");
+        doc.markdown = "x".repeat(7); // 7 / 4 = 1
+        doc.estimate_tokens();
+        assert_eq!(doc.token_estimate, 1);
+    }
 }
