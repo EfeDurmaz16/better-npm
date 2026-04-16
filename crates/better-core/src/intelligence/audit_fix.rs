@@ -288,4 +288,29 @@ mod tests {
         assert_eq!(result.fixes_applied, 1);
         assert_eq!(result.remaining_vulns, 1);
     }
+
+    #[test]
+    fn audit_vuln_has_correct_fields() {
+        let v = make_vuln("lodash", "4.17.20", Some("4.17.21"));
+        assert_eq!(v.package, "lodash");
+        assert_eq!(v.version, "4.17.20");
+        assert_eq!(v.patched_version, Some("4.17.21".to_string()));
+        assert!(!v.ids.is_empty());
+    }
+
+    #[test]
+    fn fix_status_applied_serializes() {
+        let status = FixStatus::Applied;
+        let json = serde_json::to_string(&status).unwrap();
+        assert_eq!(json, "\"Applied\"");
+    }
+
+    #[test]
+    fn empty_vulns_returns_zero_counts() {
+        let cfg = AuditFixConfig { dry_run: true, ..Default::default() };
+        let result = apply_audit_fixes(Path::new("/tmp"), &[], &cfg).unwrap();
+        assert_eq!(result.fixes_attempted, 0);
+        assert_eq!(result.fixes_applied, 0);
+        assert_eq!(result.remaining_vulns, 0);
+    }
 }

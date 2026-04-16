@@ -341,4 +341,21 @@ mod tests {
             _     => RiskLevel::Critical,
         }
     }
+
+    #[test]
+    fn breaking_change_has_migration_hint() {
+        let result = analyze_changelog("mypkg", "2.5.0", "3.0.0", SAMPLE_CHANGELOG).unwrap();
+        for bc in &result.breaking_changes {
+            assert!(!bc.migration_hint.is_empty(), "migration hint should not be empty");
+        }
+    }
+
+    #[test]
+    fn changelog_error_not_found_variant() {
+        let err = ChangelogError::NotFound("testpkg".to_string());
+        match err {
+            ChangelogError::NotFound(s) => assert_eq!(s, "testpkg"),
+            _ => panic!("expected NotFound"),
+        }
+    }
 }

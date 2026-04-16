@@ -291,4 +291,31 @@ mod tests {
     fn parse_iso_to_epoch_short_string_returns_none() {
         assert!(parse_iso_to_epoch("2024").is_none());
     }
+
+    #[test]
+    fn cache_entry_serde_roundtrip() {
+        let entry = CacheEntry {
+            ecosystem: "npm".to_string(),
+            name: "lodash".to_string(),
+            version: "4.17.21".to_string(),
+            path: "/cache/npm/lodash@4.17.21.md".to_string(),
+            size_bytes: 1024,
+            generated_at: "2024-01-01T00:00:00Z".to_string(),
+            last_accessed: "2024-01-02T00:00:00Z".to_string(),
+            authored: false,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let back: CacheEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.name, "lodash");
+        assert_eq!(back.size_bytes, 1024);
+    }
+
+    #[test]
+    fn write_cached_fresh_flag_roundtrip() {
+        write_cached("npm", "test-cache-fresh", "2.0.0-test", "# Fresh content\n", true).unwrap();
+        let result = read_cached("npm", "test-cache-fresh", "2.0.0-test");
+        assert_eq!(result, Some("# Fresh content\n".to_string()));
+        let p = cache_path("npm", "test-cache-fresh", "2.0.0-test");
+        let _ = std::fs::remove_file(p);
+    }
 }
