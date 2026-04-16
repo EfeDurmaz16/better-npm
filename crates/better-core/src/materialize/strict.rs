@@ -376,4 +376,62 @@ mod tests {
         let phantoms = detect_phantom_deps(&pkgs, &direct);
         assert!(phantoms.is_empty());
     }
+
+    #[test]
+    fn integrity_to_filename_replaces_slashes_and_colons() {
+        assert_eq!(
+            integrity_to_filename("sha512-abc/def:ghi"),
+            "sha512-abc_def-ghi"
+        );
+    }
+
+    #[test]
+    fn plan_no_direct_deps_has_no_root_symlinks() {
+        let pkgs = vec![make_pkg("lodash", "4.17.21", &[])];
+        let root = Path::new("/tmp/no-direct-test");
+        let cas = Path::new("/cas");
+        let plan = plan_strict_layout(root, cas, &pkgs, &[]);
+        // No root-level symlinks (those live directly in node_modules/)
+        let root_links: Vec<_> = plan
+            .symlinks
+            .iter()
+            .filter(|(_, link)| link.parent() == Some(Path::new("/tmp/no-direct-test/node_modules")))
+            .collect();
+        assert!(root_links.is_empty());
+    }
+
+    #[test]
+    fn plan_scoped_package_adds_scope_dir() {
+        let mut scoped = make_pkg("@scope/pkg", "1.0.0", &[]);
+        scoped.name = "@scope/pkg".to_string();
+        let root = Path::new("/tmp/scoped-test");
+        let cas = Path::new("/cas");
+        let direct = vec!["@scope/pkg".to_string()];
+        let plan = plan_strict_layout(root, cas, &[scoped], &direct);
+        // Should include the @scope/ directory in dirs
+        let has_scope_dir = plan
+            .dirs
+            .iter()
+            .any(|d| d.ends_with("@scope"));
+        assert!(has_scope_dir, "Expected @scope/ directory to be planned");
+    }
+
+    #[test]
+    fn detect_phantom_deps_empty_packages() {
+        let phantoms = detect_phantom_deps(&[], &[]);
+        assert!(phantoms.is_empty());
+    }
+
+    #[test]
+    fn plan_hard_links_count_equals_file_count() {
+        let pkgs = vec![
+            make_pkg("a", "1.0.0", &[]),
+            make_pkg("b", "1.0.0", &[]),
+        ];
+        let root = Path::new("/tmp/hl-test");
+        let cas = Path::new("/cas");
+        let plan = plan_strict_layout(root, cas, &pkgs, &[]);
+        // Each package has exactly 1 file (from make_pkg)
+        assert_eq!(plan.hard_links.len(), 2);
+    }
 }

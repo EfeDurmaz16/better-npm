@@ -370,4 +370,69 @@ mod tests {
         };
         assert!(resolver.markers_match(&dep));
     }
+
+    #[test]
+    fn test_merge_constraint_empty_constraint_is_skipped() {
+        let env = MarkerEnvironment::detect("3.11.0");
+        let resolver = Resolver::new(env);
+        let mut constraints: HashMap<String, VersionConstraint> = HashMap::new();
+
+        // Empty constraint (no specifiers) should not be inserted
+        let empty = VersionConstraint { specifiers: Vec::new() };
+        resolver.merge_constraint(&mut constraints, "requests", &empty);
+        assert!(!constraints.contains_key("requests"));
+    }
+
+    #[test]
+    fn test_resolution_error_variants() {
+        let conflict = ResolutionError::Conflict {
+            package: "flask".into(),
+            constraint_a: ">=2.0".into(),
+            constraint_b: "<1.0".into(),
+        };
+        match conflict {
+            ResolutionError::Conflict { package, .. } => assert_eq!(package, "flask"),
+            _ => panic!("wrong variant"),
+        }
+
+        let not_found = ResolutionError::NotFound { package: "xyz".into() };
+        match not_found {
+            ResolutionError::NotFound { package } => assert_eq!(package, "xyz"),
+            _ => panic!("wrong variant"),
+        }
+
+        let max_bt = ResolutionError::MaxBacktracks { count: 10_000 };
+        match max_bt {
+            ResolutionError::MaxBacktracks { count } => assert_eq!(count, 10_000),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_resolved_package_fields() {
+        let ver = super::super::version::Pep440Version::parse("2.31.0").unwrap();
+        let pkg = ResolvedPackage {
+            name: "requests".into(),
+            version: ver.clone(),
+            dependencies: vec![],
+            extras: vec!["security".into()],
+            download_url: "https://example.com/requests-2.31.0.whl".into(),
+            sha256: "abc123".into(),
+        };
+        assert_eq!(pkg.name, "requests");
+        assert_eq!(pkg.extras, vec!["security"]);
+        assert_eq!(pkg.sha256, "abc123");
+    }
+
+    #[test]
+    fn test_resolution_result_fields() {
+        let result = ResolutionResult {
+            packages: vec![],
+            resolution_ms: 42,
+            backtracks: 3,
+        };
+        assert_eq!(result.resolution_ms, 42);
+        assert_eq!(result.backtracks, 3);
+        assert!(result.packages.is_empty());
+    }
 }

@@ -326,4 +326,82 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert!(files[0].yanked);
     }
+
+    #[test]
+    fn test_parse_pypi_json_empty_releases() {
+        let json = r#"{"info": {"name": "mylib"}, "releases": {}}"#;
+        let info = parse_pypi_json(json, "mylib").unwrap();
+        assert_eq!(info.name, "mylib");
+        assert!(info.versions.is_empty());
+        assert!(info.releases.is_empty());
+    }
+
+    #[test]
+    fn test_parse_pypi_json_invalid_json_returns_error() {
+        let result = parse_pypi_json("not json at all", "pkg");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("JSON parse error"));
+    }
+
+    #[test]
+    fn test_parse_release_files_empty_array() {
+        let json = serde_json::json!([]);
+        let files = parse_release_files(&json);
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn test_package_type_other_variant() {
+        let json = serde_json::json!([{
+            "filename": "pkg-1.0.0.egg",
+            "url": "https://example.com/pkg-1.0.0.egg",
+            "size": 1234,
+            "digests": {"sha256": "bbb"},
+            "packagetype": "bdist_egg",
+            "yanked": false
+        }]);
+        let files = parse_release_files(&json);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].packagetype, PackageType::Other("bdist_egg".to_string()));
+    }
+
+    #[test]
+    fn test_parse_release_files_sdist_type() {
+        let json = serde_json::json!([{
+            "filename": "flask-3.0.0.tar.gz",
+            "url": "https://example.com/flask-3.0.0.tar.gz",
+            "size": 98765,
+            "digests": {"sha256": "ccc", "md5": "ddd"},
+            "requires_python": ">=3.8",
+            "packagetype": "sdist",
+            "python_version": "source",
+            "yanked": false
+        }]);
+        let files = parse_release_files(&json);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].packagetype, PackageType::Sdist);
+        assert_eq!(files[0].digests.md5, Some("ddd".to_string()));
+        assert_eq!(files[0].requires_python, Some(">=3.8".to_string()));
+    }
+
+    #[test]
+    fn test_parse_pypi_json_name_from_info_field() {
+        let json = r#"{
+            "info": {"name": "Flask"},
+            "releases": {
+                "2.3.0": [{
+                    "filename": "Flask-2.3.0-py3-none-any.whl",
+                    "url": "https://example.com/Flask-2.3.0.whl",
+                    "size": 99000,
+                    "digests": {"sha256": "zzz"},
+                    "packagetype": "bdist_wheel",
+                    "yanked": false
+                }]
+            }
+        }"#;
+        let info = parse_pypi_json(json, "flask").unwrap();
+        // Name comes from info.name field, not the passed argument
+        assert_eq!(info.name, "Flask");
+        assert_eq!(info.versions.len(), 1);
+    }
 }

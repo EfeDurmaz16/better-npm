@@ -338,4 +338,95 @@ mod tests {
         let status: ProvisionStatus = serde_json::from_str(json).unwrap();
         assert_eq!(status, ProvisionStatus::Active);
     }
+
+    #[test]
+    fn test_provision_status_all_variants() {
+        let cases = [
+            ("\"provisioning\"", ProvisionStatus::Provisioning),
+            ("\"active\"", ProvisionStatus::Active),
+            ("\"failed\"", ProvisionStatus::Failed),
+            ("\"pending_payment\"", ProvisionStatus::PendingPayment),
+        ];
+        for (json, expected) in &cases {
+            let status: ProvisionStatus = serde_json::from_str(json).unwrap();
+            assert_eq!(&status, expected);
+        }
+    }
+
+    #[test]
+    fn test_provision_request_builder_with_payment_and_webhook() {
+        let offering = ServiceOffering {
+            offering_id: "svc/db".into(),
+            name: "DB".into(),
+            description: None,
+            category: ServiceCategory::Database,
+            tiers: vec![],
+            credentials_schema: serde_json::json!({}),
+            estimated_provision_seconds: None,
+            fulfillment_proof_type: None,
+            regions: None,
+            documentation_url: None,
+        };
+        let tier = ServiceTier {
+            tier_id: "pro".into(),
+            name: "Pro".into(),
+            price: Price { amount: "20.00".into(), currency: "USD".into(), interval: Some("month".into()) },
+            limits: None,
+            features: None,
+            escrow_profile: None,
+            rate_limit: None,
+            sla: None,
+        };
+        let req = ProvisionRequestBuilder::new(offering, tier, "proj".into(), "pk".into())
+            .payment("sardis_wallet", "proof_abc")
+            .webhook("https://example.com/hook")
+            .build()
+            .unwrap();
+
+        assert_eq!(req.payment_method.as_deref(), Some("sardis_wallet"));
+        assert_eq!(req.payment_proof.as_deref(), Some("proof_abc"));
+        assert_eq!(req.webhook_url.as_deref(), Some("https://example.com/hook"));
+    }
+
+    #[test]
+    fn test_fulfillment_proof_serde_roundtrip() {
+        let proof = FulfillmentProof {
+            r#type: "receipt".into(),
+            health_check_url: Some("https://example.com/health".into()),
+            receipt_signature: Some("sig123".into()),
+            receipt_payload: None,
+            timestamp: "2024-01-01T00:00:00Z".into(),
+        };
+        let json = serde_json::to_string(&proof).unwrap();
+        let back: FulfillmentProof = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.r#type, "receipt");
+        assert!(back.receipt_payload.is_none());
+    }
+
+    #[test]
+    fn test_provision_request_nonce_is_nonempty() {
+        let offering = ServiceOffering {
+            offering_id: "o1".into(),
+            name: "O".into(),
+            description: None,
+            category: ServiceCategory::Ai,
+            tiers: vec![],
+            credentials_schema: serde_json::json!({}),
+            estimated_provision_seconds: None,
+            fulfillment_proof_type: None,
+            regions: None,
+            documentation_url: None,
+        };
+        let tier = ServiceTier {
+            tier_id: "t1".into(),
+            name: "T".into(),
+            price: Price { amount: "0".into(), currency: "USD".into(), interval: None },
+            limits: None, features: None, escrow_profile: None, rate_limit: None, sla: None,
+        };
+        let req = ProvisionRequestBuilder::new(offering, tier, "p".into(), "k".into())
+            .build()
+            .unwrap();
+        assert!(!req.nonce.is_empty());
+        assert!(req.idempotency_key.is_some());
+    }
 }
