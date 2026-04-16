@@ -421,4 +421,26 @@ mod tests {
         chain.reset();
         assert_eq!(chain.active(), "https://registry.npmjs.org");
     }
+
+    #[test]
+    fn registry_entry_with_no_scope_matches_any_package() {
+        let config = make_config(&[("https://registry.npmjs.org", None)]);
+        // Both scoped and non-scoped packages fall through to default
+        let (url1, _) = resolve_registry(&config, "lodash");
+        let (url2, _) = resolve_registry(&config, "@scope/pkg");
+        assert_eq!(url1, url2);
+    }
+
+    #[test]
+    fn registry_config_multiple_scopes_resolved_correctly() {
+        let config = make_config(&[
+            ("https://registry.a.com", Some("@aa")),
+            ("https://registry.b.com", Some("@bb")),
+            ("https://registry.npmjs.org", None),
+        ]);
+        let (url_a, _) = resolve_registry(&config, "@aa/pkg");
+        let (url_b, _) = resolve_registry(&config, "@bb/pkg");
+        assert_eq!(url_a, "https://registry.a.com");
+        assert_eq!(url_b, "https://registry.b.com");
+    }
 }

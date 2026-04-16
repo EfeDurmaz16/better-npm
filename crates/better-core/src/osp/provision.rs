@@ -429,4 +429,39 @@ mod tests {
         assert!(!req.nonce.is_empty());
         assert!(req.idempotency_key.is_some());
     }
+
+    #[test]
+    fn test_provision_request_offering_and_tier_stored() {
+        let offering = ServiceOffering {
+            offering_id: "svc/cache".into(),
+            name: "Cache".into(),
+            description: None,
+            category: ServiceCategory::Database,
+            tiers: vec![],
+            credentials_schema: serde_json::json!({}),
+            estimated_provision_seconds: None,
+            fulfillment_proof_type: None,
+            regions: None,
+            documentation_url: None,
+        };
+        let tier = ServiceTier {
+            tier_id: "pro".into(),
+            name: "Pro".into(),
+            price: Price { amount: "10".into(), currency: "USD".into(), interval: None },
+            limits: None, features: None, escrow_profile: None, rate_limit: None, sla: None,
+        };
+        let req = ProvisionRequestBuilder::new(offering, tier, "myproject".into(), "pk".into())
+            .build()
+            .unwrap();
+        assert_eq!(req.offering_id, "svc/cache");
+        assert_eq!(req.tier_id, "pro");
+        assert_eq!(req.project_name, "myproject");
+    }
+
+    #[test]
+    fn test_provision_status_failed_serde() {
+        let status = ProvisionStatus::Failed;
+        let json = serde_json::to_string(&status).unwrap();
+        assert_eq!(json, "\"failed\"");
+    }
 }
