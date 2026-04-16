@@ -199,4 +199,16 @@ mod tests {
         assert_eq!(cache.get("key").as_deref(), Some("second value"));
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn stats_reflects_single_entry_bytes() {
+        let tmp = std::env::temp_dir().join("audit-cache-test-bytes");
+        let cache = OsvCache::with_dir(tmp.clone());
+        let content = "exactly twenty bytes";
+        cache.put("k", content).unwrap();
+        let stats = cache.stats();
+        assert_eq!(stats.entries, 1);
+        assert!(stats.total_bytes >= content.len() as u64);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

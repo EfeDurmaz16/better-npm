@@ -242,4 +242,15 @@ mod tests {
         let k2 = derive_machine_key();
         assert_eq!(k1, k2);
     }
+
+    #[test]
+    fn test_aes_ciphertext_differs_from_plaintext() {
+        let key = [7u8; 32];
+        let plaintext = b"sensitive credentials data";
+        let ciphertext = aes_256_gcm_encrypt(&key, plaintext).unwrap();
+        // Ciphertext should differ from plaintext
+        assert_ne!(ciphertext.as_slice(), plaintext.as_slice());
+        // Ciphertext should be longer (includes nonce + tag)
+        assert!(ciphertext.len() > plaintext.len());
+    }
 }

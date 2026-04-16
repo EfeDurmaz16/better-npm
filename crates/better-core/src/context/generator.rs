@@ -226,4 +226,17 @@ mod tests {
         // (it uses if nm_dir.exists() so it should succeed)
         assert!(result.is_ok());
     }
+
+    #[test]
+    fn generate_all_generated_count_is_zero_for_empty_project() {
+        let tmp = std::env::temp_dir().join("ctx-gen-test-count");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let cache = std::env::temp_dir().join("ctx-gen-test-count-cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let report = generate_all(&tmp, &cache, false).unwrap();
+        // Empty project has no node_modules → no packages to generate
+        assert_eq!(report.generated, 0);
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_dir_all(&cache);
+    }
 }

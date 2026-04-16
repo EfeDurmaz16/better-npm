@@ -247,4 +247,16 @@ mod tests {
     fn test_escrow_status_refunded_ne_disputed() {
         assert_ne!(EscrowStatus::Refunded, EscrowStatus::Disputed);
     }
+
+    #[test]
+    fn test_wallet_id_stored_in_wallet_info() {
+        let w = WalletInfo {
+            wallet_id: "wallet-abc".into(),
+            balance: "0.00".into(),
+            currency: "USD".into(),
+            trust_tier: 0,
+        };
+        assert_eq!(w.wallet_id, "wallet-abc");
+        assert_eq!(w.trust_tier, 0);
+    }
 }

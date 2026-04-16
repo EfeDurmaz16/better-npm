@@ -217,4 +217,12 @@ mod tests {
         assert_eq!(graph.packages[0].name, "rake");
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn materialize_returns_ok() {
+        let tmp = std::env::temp_dir().join("ruby-engine-mat");
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert!(RubyEngine.materialize(&[], &tmp).is_ok());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

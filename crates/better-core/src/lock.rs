@@ -184,5 +184,14 @@ mod tests {
         assert_eq!(meta.lockfile_file, "pnpm-lock.yaml");
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn bun_lock_lockfile_detected() {
+        let tmp = std::env::temp_dir().join("lock-test-bun-lock");
+        write_lock(&tmp, "bun.lock", b"# bun.lock\n");
+        let meta = build_lock_metadata(&tmp).unwrap();
+        assert_eq!(meta.lockfile_file, "bun.lock");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
 
