@@ -399,4 +399,48 @@ mod tests {
         let result = find_dep_version("debug", &packages[0], &packages);
         assert_eq!(result, Some("debug@2.6.9".into()));
     }
+
+    #[test]
+    fn find_dep_version_missing_returns_none() {
+        let packages = vec![ResolvedPackage {
+            name: "express".into(),
+            version: "4.18.2".into(),
+            rel_path: "node_modules/express".into(),
+            resolved_url: "".into(),
+            integrity: "".into(),
+        }];
+        let result = find_dep_version("nonexistent", &packages[0], &packages);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn pathdiff_relative_same_dir_returns_filename() {
+        let from = Path::new("/a/b/link");
+        let to = Path::new("/a/b/target");
+        let result = pathdiff_relative(from, to);
+        assert_eq!(result, PathBuf::from("target"));
+    }
+
+    #[test]
+    fn read_direct_deps_missing_file_returns_empty() {
+        let tmp = std::env::temp_dir().join("strict-test-no-pkg");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let deps = read_direct_deps(&tmp);
+        assert!(deps.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn read_direct_deps_parses_all_sections() {
+        let tmp = std::env::temp_dir().join("strict-test-direct-deps");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            tmp.join("package.json"),
+            r#"{"dependencies":{"express":"^4"},"devDependencies":{"jest":"^29"}}"#,
+        ).unwrap();
+        let deps = read_direct_deps(&tmp);
+        assert!(deps.contains(&"express".to_string()));
+        assert!(deps.contains(&"jest".to_string()));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

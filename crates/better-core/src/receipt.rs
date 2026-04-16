@@ -258,4 +258,51 @@ mod tests {
         assert_eq!(h1, h2);
         assert!(h1.starts_with("sha256:"));
     }
+
+    #[test]
+    fn write_receipt_json_contains_package_name() {
+        let receipt = InstallReceipt {
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            better_version: "1.0.0".to_string(),
+            packages_installed: 1,
+            packages: vec![ReceiptPackage {
+                name: "lodash".to_string(),
+                version: "4.17.21".to_string(),
+                integrity: "sha512-abc".to_string(),
+                provenance: false,
+            }],
+            policy_score: Some(90),
+            lockfile_hash: None,
+        };
+        let json = write_receipt_json(&receipt);
+        assert!(json.contains("lodash"));
+        assert!(json.contains("4.17.21"));
+        assert!(json.contains("policy_score"));
+    }
+
+    #[test]
+    fn write_receipt_verify_json_contains_ok_field() {
+        let result = ReceiptVerifyResult {
+            receipt_exists: true,
+            timestamp: "2026-01-01".to_string(),
+            packages_installed: 5,
+            lockfile_matches: true,
+            node_modules_present: true,
+            ok: true,
+        };
+        let json = write_receipt_verify_json(&result);
+        assert!(json.contains("\"ok\""));
+        assert!(json.contains("better.receipt.verify"));
+    }
+
+    #[test]
+    fn write_and_list_with_lockfile_hash() {
+        let tmp = std::env::temp_dir().join("receipt-test-lockfile-hash");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let pkgs = vec![make_pkg("react", "18.0.0")];
+        write_install_receipt(&tmp, &pkgs, None, Some("sha256:abc123"), &[]).unwrap();
+        let receipts = list_receipts(&tmp).unwrap();
+        assert_eq!(receipts[0].lockfile_hash.as_deref(), Some("sha256:abc123"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
