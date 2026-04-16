@@ -306,5 +306,61 @@ mod tests {
         assert_eq!(score_to_severity(3.9), "LOW");
         assert_eq!(score_to_severity(0.0), "LOW");
     }
+
+    fn make_workspace_info(packages: Vec<(&str, Vec<&str>)>) -> WorkspaceInfo {
+        WorkspaceInfo {
+            workspace_type: "npm".to_string(),
+            packages: packages.into_iter().map(|(name, deps)| WorkspacePackage {
+                name: name.to_string(),
+                version: "1.0.0".to_string(),
+                dir: std::path::PathBuf::from(format!("/tmp/{}", name)),
+                relative_dir: name.to_string(),
+                workspace_deps: deps.into_iter().map(|s| s.to_string()).collect(),
+                scripts: vec![],
+            }).collect(),
+        }
+    }
+
+    #[test]
+    fn workspace_graph_empty_returns_empty() {
+        let info = make_workspace_info(vec![]);
+        let result = workspace_graph(&info);
+        assert!(result.sorted.is_empty());
+        assert!(result.cycles.is_empty());
+    }
+
+    #[test]
+    fn workspace_graph_linear_ordering() {
+        // a depends on b, b has no deps → b should come before a
+        let info = make_workspace_info(vec![
+            ("a", vec!["b"]),
+            ("b", vec![]),
+        ]);
+        let result = workspace_graph(&info);
+        let a_pos = result.sorted.iter().position(|s| s == "a").unwrap();
+        let b_pos = result.sorted.iter().position(|s| s == "b").unwrap();
+        assert!(b_pos < a_pos, "b should come before a");
+    }
+
+    #[test]
+    fn workspace_graph_independent_packages_no_cycles() {
+        let info = make_workspace_info(vec![
+            ("pkg-a", vec![]),
+            ("pkg-b", vec![]),
+            ("pkg-c", vec![]),
+        ]);
+        let result = workspace_graph(&info);
+        assert!(result.cycles.is_empty());
+        assert_eq!(result.sorted.len(), 3);
+    }
+
+    #[test]
+    fn detect_workspaces_no_pkg_json_returns_error() {
+        let tmp = std::env::temp_dir().join("ws-test-no-pkg");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let result = detect_workspaces(&tmp);
+        assert!(result.is_err());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
 

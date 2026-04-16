@@ -313,4 +313,45 @@ mod tests {
         assert_eq!(needed[0].name, "new-pkg");
         let _ = fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn ecosystem_cas_subdirs_are_correct() {
+        assert_eq!(Ecosystem::Npm.cas_subdir(), "npm");
+        assert_eq!(Ecosystem::Python.cas_subdir(), "pypi");
+        assert_eq!(Ecosystem::Cargo.cas_subdir(), "crates");
+        assert_eq!(Ecosystem::Go.cas_subdir(), "go");
+    }
+
+    #[test]
+    fn integrity_to_filename_replaces_slashes_and_colons() {
+        let filename = integrity_to_filename("sha512:abc/def");
+        assert_eq!(filename, "sha512-abc_def");
+    }
+
+    #[test]
+    fn sanitise_name_removes_scoped_chars() {
+        assert_eq!(sanitise_name("@scope/pkg"), "scope__pkg");
+        assert_eq!(sanitise_name("lodash"), "lodash");
+    }
+
+    #[test]
+    fn offline_error_display_shows_missing_packages() {
+        let err = OfflineError::MissingPackages(vec![
+            "lodash@4.17.21".to_string(),
+            "express@4.0.0".to_string(),
+        ]);
+        let msg = err.to_string();
+        assert!(msg.contains("2 package(s)"));
+        assert!(msg.contains("lodash"));
+    }
+
+    #[test]
+    fn cas_stats_empty_cas_returns_zero() {
+        let tmp = std::env::temp_dir().join("better-cas-stats-empty");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let stats = cas_stats(&tmp);
+        assert_eq!(stats.total_files, 0);
+        assert_eq!(stats.total_bytes, 0);
+        let _ = fs::remove_dir_all(&tmp);
+    }
 }
