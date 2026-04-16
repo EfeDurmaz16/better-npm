@@ -167,4 +167,36 @@ mod tests {
         assert!(cache.get("to-remove").is_none());
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn stats_reflects_entries() {
+        let tmp = std::env::temp_dir().join("audit-cache-test-stats");
+        let cache = OsvCache::with_dir(tmp.clone());
+        cache.put("s1", "hello world").unwrap();
+        cache.put("s2", "test data 2").unwrap();
+        let stats = cache.stats();
+        assert_eq!(stats.entries, 2);
+        assert!(stats.total_bytes >= 11); // "hello world" = 11 bytes
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn clear_on_empty_dir_returns_zero() {
+        let tmp = std::env::temp_dir().join("audit-cache-test-empty-clear");
+        let cache = OsvCache::with_dir(tmp.clone());
+        // Don't create the directory — clear should still succeed
+        let count = cache.clear().unwrap();
+        assert_eq!(count, 0);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn put_overwrites_existing_entry() {
+        let tmp = std::env::temp_dir().join("audit-cache-test-overwrite");
+        let cache = OsvCache::with_dir(tmp.clone());
+        cache.put("key", "first value").unwrap();
+        cache.put("key", "second value").unwrap();
+        assert_eq!(cache.get("key").as_deref(), Some("second value"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

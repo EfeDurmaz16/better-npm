@@ -181,4 +181,58 @@ mod tests {
         let (decision, _) = check_script_permission(&policy, "@myco/utils", "postinstall");
         assert_eq!(decision, "allowed");
     }
+
+    #[test]
+    fn unknown_package_uses_default_policy() {
+        let policy = ScriptPolicy {
+            default_policy: "deny".to_string(),
+            allowed_packages: vec![],
+            blocked_packages: vec![],
+            allowed_script_types: vec![],
+            trusted_scopes: vec![],
+        };
+        let (decision, _) = check_script_permission(&policy, "unknown-pkg", "preinstall");
+        assert_eq!(decision, "deny");
+    }
+
+    #[test]
+    fn allowed_script_type_permits_execution() {
+        let policy = ScriptPolicy {
+            default_policy: "deny".to_string(),
+            allowed_packages: vec![],
+            blocked_packages: vec![],
+            allowed_script_types: vec!["postinstall".to_string()],
+            trusted_scopes: vec![],
+        };
+        let (decision, _) = check_script_permission(&policy, "any-pkg", "postinstall");
+        assert_eq!(decision, "allowed");
+    }
+
+    #[test]
+    fn parse_script_policy_json_parses_default_policy() {
+        let json = r#"{"defaultPolicy":"deny","blockedPackages":["bad-pkg"]}"#;
+        let policy = parse_script_policy_json(json);
+        assert_eq!(policy.default_policy, "deny");
+        assert!(policy.blocked_packages.contains(&"bad-pkg".to_string()));
+    }
+
+    #[test]
+    fn scripts_allow_creates_policy_file() {
+        let tmp = std::env::temp_dir().join("scripts-test-allow");
+        std::fs::create_dir_all(&tmp).unwrap();
+        scripts_allow(&tmp, "safe-pkg").unwrap();
+        let policy = load_script_policy(&tmp);
+        assert!(policy.allowed_packages.contains(&"safe-pkg".to_string()));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn scripts_block_creates_policy_file() {
+        let tmp = std::env::temp_dir().join("scripts-test-block");
+        std::fs::create_dir_all(&tmp).unwrap();
+        scripts_block(&tmp, "evil-pkg").unwrap();
+        let policy = load_script_policy(&tmp);
+        assert!(policy.blocked_packages.contains(&"evil-pkg".to_string()));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

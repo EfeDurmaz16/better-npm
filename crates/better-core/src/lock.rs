@@ -151,5 +151,38 @@ mod tests {
         assert!(!verify.lockfile_matches);
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn generate_metadata_hash_changes_with_content() {
+        let tmp1 = std::env::temp_dir().join("lock-test-hash1");
+        let tmp2 = std::env::temp_dir().join("lock-test-hash2");
+        write_lock(&tmp1, "package-lock.json", b"{\"lockfileVersion\":3}");
+        write_lock(&tmp2, "package-lock.json", b"{\"lockfileVersion\":3,\"extra\":true}");
+        let meta1 = generate_lock_metadata(&tmp1).unwrap();
+        let meta2 = generate_lock_metadata(&tmp2).unwrap();
+        assert_ne!(meta1.lockfile_hash, meta2.lockfile_hash);
+        let _ = std::fs::remove_dir_all(&tmp1);
+        let _ = std::fs::remove_dir_all(&tmp2);
+    }
+
+    #[test]
+    fn verify_without_better_lock_json_returns_err() {
+        let tmp = std::env::temp_dir().join("lock-test-no-betterlock");
+        std::fs::create_dir_all(&tmp).unwrap();
+        // Has a lockfile but no better.lock.json
+        write_lock(&tmp, "package-lock.json", b"{\"lockfileVersion\":3}");
+        let result = verify_lock_metadata(&tmp);
+        assert!(result.is_err() || result.map(|r| !r.ok).unwrap_or(true));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn build_lock_metadata_detects_pnpm_lockfile() {
+        let tmp = std::env::temp_dir().join("lock-test-pnpm");
+        write_lock(&tmp, "pnpm-lock.yaml", b"lockfileVersion: '6.0'\n");
+        let meta = build_lock_metadata(&tmp).unwrap();
+        assert_eq!(meta.lockfile_file, "pnpm-lock.yaml");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
 

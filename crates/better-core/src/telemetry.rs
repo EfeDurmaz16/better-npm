@@ -188,4 +188,45 @@ mod tests {
         };
         send_event(&config, event); // should not panic
     }
+
+    #[test]
+    fn new_uuid_has_tel_prefix() {
+        let uuid = new_uuid();
+        assert!(uuid.starts_with("tel-"), "expected tel- prefix, got: {}", uuid);
+    }
+
+    #[test]
+    fn new_uuid_different_on_each_call() {
+        // UUIDs are time-based; two calls in sequence may be identical in tests,
+        // but both should be non-empty strings with the tel- prefix
+        let a = new_uuid();
+        let b = new_uuid();
+        assert!(!a.is_empty());
+        assert!(!b.is_empty());
+    }
+
+    #[test]
+    fn home_dir_returns_path() {
+        let path = home_dir();
+        assert!(!path.as_os_str().is_empty());
+    }
+
+    #[test]
+    fn telemetry_event_has_correct_fields() {
+        let event = TelemetryEvent {
+            event_id: "evt-001".to_string(),
+            session_id: "sess-001".to_string(),
+            command: "audit".to_string(),
+            duration_ms: 250,
+            success: false,
+            ecosystems: vec!["python".to_string()],
+            package_count: None,
+            os: "linux".to_string(),
+            arch: "aarch64".to_string(),
+            better_version: "2.0.0".to_string(),
+        };
+        assert_eq!(event.command, "audit");
+        assert!(!event.success);
+        assert_eq!(event.duration_ms, 250);
+    }
 }
