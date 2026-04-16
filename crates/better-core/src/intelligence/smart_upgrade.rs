@@ -386,4 +386,38 @@ Initial
         let result = smart_upgrade(&input).unwrap();
         assert_eq!(result.risk_level, RiskLevel::Low);
     }
+
+    #[test]
+    fn is_target_file_matches_js_pattern() {
+        let path = std::path::Path::new("src/app.js");
+        assert!(is_target_file(path, "**/*.{js,ts,jsx,tsx}"));
+    }
+
+    #[test]
+    fn is_target_file_rejects_non_matching() {
+        let path = std::path::Path::new("src/app.css");
+        assert!(!is_target_file(path, "**/*.{js,ts,jsx,tsx}"));
+    }
+
+    #[test]
+    fn is_target_file_no_braces_returns_false() {
+        let path = std::path::Path::new("src/app.js");
+        assert!(!is_target_file(path, "**/*.js")); // no braces → no extensions parsed
+    }
+
+    #[test]
+    fn build_summary_dry_run_label() {
+        let summary = build_summary("express", "4.0.0", "5.0.0", 2, &RiskLevel::High, 3, true);
+        assert!(summary.contains("[dry-run]"));
+        assert!(summary.contains("express"));
+        assert!(summary.contains("4.0.0"));
+        assert!(summary.contains("5.0.0"));
+    }
+
+    #[test]
+    fn build_summary_live_has_no_dry_run_label() {
+        let summary = build_summary("lodash", "4.0.0", "4.17.21", 0, &RiskLevel::Low, 0, false);
+        assert!(!summary.contains("[dry-run]"));
+        assert!(summary.contains("lodash"));
+    }
 }

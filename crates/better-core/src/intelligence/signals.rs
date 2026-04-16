@@ -229,4 +229,39 @@ mod tests {
         let history = vec![100u64, 100, 100, 100, 100, 10000];
         assert_eq!(PackageSignals::classify_trend(&history), DownloadTrend::Anomalous);
     }
+
+    #[test]
+    fn trend_stable() {
+        let history = vec![100u64, 102, 98, 101, 100, 103];
+        assert_eq!(PackageSignals::classify_trend(&history), DownloadTrend::Stable);
+    }
+
+    #[test]
+    fn trend_too_short_returns_stable() {
+        let history = vec![100u64, 200];
+        assert_eq!(PackageSignals::classify_trend(&history), DownloadTrend::Stable);
+    }
+
+    #[test]
+    fn compute_typosquat_empty_popular_returns_max() {
+        let dist = PackageSignals::compute_typosquat_distance("lodash", &[]);
+        assert_eq!(dist, u32::MAX);
+    }
+
+    #[test]
+    fn from_local_builds_signal() {
+        let sig = PackageSignals::from_local(
+            "react", "npm", "18.0.0", 3, true, true, Some("MIT".into()), 2000, 1_000_000,
+        );
+        assert_eq!(sig.package, "react");
+        assert_eq!(sig.ecosystem, "npm");
+        assert_eq!(sig.weekly_downloads, 1_000_000);
+        assert!(sig.has_provenance);
+    }
+
+    #[test]
+    fn download_trend_default_is_stable() {
+        let trend: DownloadTrend = Default::default();
+        assert_eq!(trend, DownloadTrend::Stable);
+    }
 }

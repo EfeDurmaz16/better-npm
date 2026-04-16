@@ -350,4 +350,56 @@ mod tests {
         assert!(matches!(classify_risk(0, 0, 0), ImpactRisk::Safe));
         assert!(matches!(classify_risk(10, 5, 3), ImpactRisk::Critical));
     }
+
+    #[test]
+    fn is_valid_ident_alphanumeric() {
+        assert!(is_valid_ident("get"));
+        assert!(is_valid_ident("_private"));
+        assert!(is_valid_ident("$jQuery"));
+    }
+
+    #[test]
+    fn is_valid_ident_rejects_invalid() {
+        assert!(!is_valid_ident(""));
+        assert!(!is_valid_ident("123abc")); // starts with digit
+        assert!(!is_valid_ident("hello-world")); // hyphen
+    }
+
+    #[test]
+    fn extract_braces_extracts_inner() {
+        let s = "import { foo, bar } from 'pkg'";
+        let inner = extract_braces(s).unwrap();
+        assert!(inner.contains("foo"));
+        assert!(inner.contains("bar"));
+    }
+
+    #[test]
+    fn extract_braces_no_braces_returns_none() {
+        let s = "import something from 'pkg'";
+        assert!(extract_braces(s).is_none());
+    }
+
+    #[test]
+    fn classify_risk_moderate_range() {
+        // 1-5 score range
+        assert!(matches!(classify_risk(1, 0, 0), ImpactRisk::Moderate));
+        assert!(matches!(classify_risk(0, 2, 0), ImpactRisk::Moderate)); // 2*2=4
+    }
+
+    #[test]
+    fn known_alternatives_unknown_package_returns_empty() {
+        let alts = known_alternatives("totally-unknown-pkg-xyz");
+        assert!(alts.is_empty());
+    }
+
+    #[test]
+    fn known_alternatives_for_lodash() {
+        let alts = known_alternatives("lodash");
+        assert!(!alts.is_empty());
+        // All should have a name and description
+        for alt in &alts {
+            assert!(!alt.name.is_empty());
+            assert!(!alt.description.is_empty());
+        }
+    }
 }

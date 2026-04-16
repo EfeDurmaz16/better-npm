@@ -347,4 +347,43 @@ mod tests {
         let score = compute_score(&sig);
         assert!(score.flags.iter().any(|f| f.flag_type == FlagType::MissingLicense));
     }
+
+    #[test]
+    fn grade_all_variants_have_labels() {
+        assert_eq!(Grade::A.label(), "A");
+        assert_eq!(Grade::B.label(), "B");
+        assert_eq!(Grade::C.label(), "C");
+        assert_eq!(Grade::D.label(), "D");
+        assert_eq!(Grade::F.label(), "F");
+    }
+
+    #[test]
+    fn new_package_flagged() {
+        let mut sig = ideal_signals("brand-new-pkg");
+        sig.age_days = 3; // < 7 days threshold
+        let score = compute_score(&sig);
+        assert!(score.flags.iter().any(|f| f.flag_type == FlagType::NewPackage));
+    }
+
+    #[test]
+    fn no_tests_flagged() {
+        let mut sig = ideal_signals("no-tests-pkg");
+        sig.has_tests = false;
+        let score = compute_score(&sig);
+        assert!(score.flags.iter().any(|f| f.flag_type == FlagType::NoTests));
+    }
+
+    #[test]
+    fn score_is_capped_at_100() {
+        let sig = ideal_signals("perfect");
+        let score = compute_score(&sig);
+        assert!(score.score <= 100);
+    }
+
+    #[test]
+    fn flag_severity_ordering() {
+        assert!(FlagSeverity::Critical < FlagSeverity::High);
+        assert!(FlagSeverity::High < FlagSeverity::Medium);
+        assert!(FlagSeverity::Medium < FlagSeverity::Low);
+    }
 }
