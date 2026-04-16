@@ -323,4 +323,50 @@ mod tests {
         assert!(detected.is_empty());
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn ecosystem_display_all_variants() {
+        assert_eq!(Ecosystem::Npm.to_string(), "npm");
+        assert_eq!(Ecosystem::Python.to_string(), "python");
+        assert_eq!(Ecosystem::Cargo.to_string(), "cargo");
+        assert_eq!(Ecosystem::Go.to_string(), "go");
+        assert_eq!(Ecosystem::Swift.to_string(), "swift");
+        assert_eq!(Ecosystem::CocoaPods.to_string(), "cocoapods");
+        assert_eq!(Ecosystem::Ruby.to_string(), "ruby");
+        assert_eq!(Ecosystem::Php.to_string(), "php");
+        assert_eq!(Ecosystem::DotNet.to_string(), "dotnet");
+    }
+
+    #[test]
+    fn engine_error_kind_display_all_variants() {
+        assert!(EngineErrorKind::ManifestNotFound.to_string().contains("manifest"));
+        assert!(EngineErrorKind::LockfileNotFound.to_string().contains("lockfile"));
+        assert!(EngineErrorKind::ResolutionFailed.to_string().contains("resolution"));
+        assert!(EngineErrorKind::FetchFailed.to_string().contains("fetch"));
+        assert!(EngineErrorKind::NetworkError.to_string().contains("network"));
+        assert!(EngineErrorKind::IntegrityMismatch.to_string().contains("integrity"));
+    }
+
+    #[test]
+    fn engine_error_display_includes_kind_and_message() {
+        let err = EngineError {
+            message: "file not found".into(),
+            kind: EngineErrorKind::LockfileNotFound,
+        };
+        let s = err.to_string();
+        assert!(s.contains("lockfile"));
+        assert!(s.contains("file not found"));
+    }
+
+    #[test]
+    fn engine_registry_detects_npm_from_package_json() {
+        let tmp = std::env::temp_dir().join("engine-reg-test-npm");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("package.json"), r#"{"name":"app"}"#).unwrap();
+        let reg = EngineRegistry::new();
+        let detected = reg.detect(&tmp);
+        let names: Vec<&str> = detected.iter().map(|e| e.name()).collect();
+        assert!(names.contains(&"npm"), "expected npm in {:?}", names);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
