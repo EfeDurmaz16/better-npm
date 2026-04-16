@@ -390,4 +390,30 @@ mod tests {
         let result = cleanup_expired_previews();
         assert!(result.ok);
     }
+
+    #[test]
+    fn sanitize_branch_lowercases() {
+        assert_eq!(sanitize_branch("Feature/MyBranch"), "feature-mybranch");
+    }
+
+    #[test]
+    fn sanitize_branch_trims_leading_trailing_dashes() {
+        // "/" at start/end becomes "-", then trimmed
+        assert_eq!(sanitize_branch("/main/"), "main");
+    }
+
+    #[test]
+    fn generate_preview_id_long_branch_truncated() {
+        let id = generate_preview_id("a-very-long-branch-name-that-exceeds-the-limit", None);
+        // br- prefix + max 16 chars of branch
+        assert!(id.len() <= 3 + 16, "id too long: {}", id);
+    }
+
+    #[test]
+    fn list_previews_returns_vec() {
+        // Should not panic; may return empty list
+        let previews = list_previews();
+        // Just verifying it returns a Vec
+        let _ = previews.len();
+    }
 }

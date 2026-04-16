@@ -380,6 +380,30 @@ mod tests {
     }
 
     #[test]
+    fn parse_osp_uri_valid_uri() {
+        let svc = parse_osp_uri("DATABASE_URL", "osp://supabase.com/postgres/conn?tier=pro").unwrap();
+        assert_eq!(svc.provider_domain, "supabase.com");
+        assert_eq!(svc.service_type, "postgres");
+        assert_eq!(svc.credential_path, "conn");
+        assert_eq!(svc.tier, "pro");
+        assert_eq!(svc.env_var, "DATABASE_URL");
+    }
+
+    #[test]
+    fn parse_osp_uri_invalid_scheme_returns_error() {
+        let result = parse_osp_uri("URL", "https://example.com/postgres");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("invalid OSP URI"));
+    }
+
+    #[test]
+    fn parse_osp_uri_default_credential_path() {
+        let svc = parse_osp_uri("REDIS_URL", "osp://upstash.com/redis?tier=free").unwrap();
+        assert_eq!(svc.credential_path, "default");
+        assert_eq!(svc.tier, "free");
+    }
+
+    #[test]
     fn provision_idempotent_on_second_call() {
         let dir = tmp_dir("idempotent");
         let _ = fs::remove_dir_all(&dir);

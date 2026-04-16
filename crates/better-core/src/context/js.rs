@@ -549,4 +549,55 @@ mod tests {
         assert!(!ctx.markdown.is_empty());
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn parse_function_export_extracts_name() {
+        let sym = parse_function_export("function debounce(fn: Function, delay: number): Function;");
+        assert!(sym.is_some());
+        let sym = sym.unwrap();
+        assert_eq!(sym.name, "debounce");
+    }
+
+    #[test]
+    fn parse_function_export_no_prefix_returns_none() {
+        let sym = parse_function_export("class Foo {}");
+        assert!(sym.is_none());
+    }
+
+    #[test]
+    fn parse_class_export_extracts_name() {
+        let sym = parse_class_export("class EventEmitter {");
+        assert!(sym.is_some());
+        assert_eq!(sym.unwrap().name, "EventEmitter");
+    }
+
+    #[test]
+    fn parse_interface_export_extracts_name() {
+        let sym = parse_interface_export("interface Options {");
+        assert!(sym.is_some());
+        assert_eq!(sym.unwrap().name, "Options");
+    }
+
+    #[test]
+    fn parse_variable_export_extracts_name_and_type() {
+        let sym = parse_variable_export("const VERSION: string;");
+        assert!(sym.is_some());
+        let sym = sym.unwrap();
+        assert_eq!(sym.name, "VERSION");
+        assert_eq!(sym.return_type.as_deref(), Some("string"));
+    }
+
+    #[test]
+    fn parse_type_export_extracts_name() {
+        let sym = parse_type_export("type Callback = () => void;");
+        assert!(sym.is_some());
+        assert_eq!(sym.unwrap().name, "Callback");
+    }
+
+    #[test]
+    fn parse_enum_export_extracts_name() {
+        let sym = parse_enum_export("enum Status {");
+        assert!(sym.is_some());
+        assert_eq!(sym.unwrap().name, "Status");
+    }
 }
