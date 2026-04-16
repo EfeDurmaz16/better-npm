@@ -165,4 +165,43 @@ mod tests {
         assert!(actions.iter().any(|a| a.applied));
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[test]
+    fn healing_action_serializes() {
+        let action = HealingAction {
+            issue: "test issue".into(),
+            action: "fix it".into(),
+            applied: true,
+            details: "some details".into(),
+        };
+        let json = serde_json::to_string(&action).unwrap();
+        assert!(json.contains("\"applied\":true"));
+        assert!(json.contains("test issue"));
+    }
+
+    #[test]
+    fn env_dry_run_not_applied() {
+        let tmp = std::env::temp_dir().join("heal-test-env-dry");
+        std::fs::create_dir_all(&tmp).unwrap();
+        write_file(&tmp.join(".env.example"), b"KEY=val");
+        let _ = std::fs::remove_file(tmp.join(".env"));
+        let actions = SelfHealingEngine::heal(&tmp, true);
+        // In dry_run mode the action is NOT applied
+        let env_action = actions.iter().find(|a| a.issue.contains(".env"));
+        assert!(env_action.is_some());
+        assert!(!env_action.unwrap().applied);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn project_with_lockfile_and_node_modules_no_missing_actions() {
+        let tmp = std::env::temp_dir().join("heal-test-complete");
+        write_file(&tmp.join("package.json"), b"{}");
+        write_file(&tmp.join("package-lock.json"), b"{}");
+        std::fs::create_dir_all(tmp.join("node_modules")).unwrap();
+        let actions = SelfHealingEngine::heal(&tmp, true);
+        // No missing lockfile or node_modules actions
+        assert!(!actions.iter().any(|a| a.issue.contains("lockfile") || a.issue.contains("node_modules")));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

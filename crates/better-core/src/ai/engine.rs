@@ -254,4 +254,35 @@ mod tests {
         assert_eq!(plan.steps[0].tool_call.tool, "install");
         assert!(!plan.requires_confirmation);
     }
+
+    #[test]
+    fn from_env_uses_openai_key_when_no_anthropic() {
+        std::env::remove_var("ANTHROPIC_API_KEY");
+        std::env::set_var("OPENAI_API_KEY", "sk-test-openai");
+        let engine = AiEngine::from_env().unwrap();
+        assert!(matches!(engine.provider, AiProvider::OpenAI { .. }));
+        std::env::remove_var("OPENAI_API_KEY");
+    }
+
+    #[test]
+    fn standard_tools_all_have_descriptions() {
+        let tools = standard_tools();
+        assert!(!tools.is_empty());
+        for t in &tools {
+            assert!(!t.description.is_empty(), "tool '{}' has no description", t.name);
+        }
+    }
+
+    #[test]
+    fn dep_summary_serde_roundtrip() {
+        let dep = DepSummary {
+            name: "lodash".into(),
+            version: "4.17.21".into(),
+            ecosystem: "npm".into(),
+        };
+        let json = serde_json::to_string(&dep).unwrap();
+        let back: DepSummary = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.name, "lodash");
+        assert_eq!(back.version, "4.17.21");
+    }
 }
