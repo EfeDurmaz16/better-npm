@@ -173,4 +173,37 @@ mod tests {
         assert!(names.contains(&"webpack"));
         assert!(names.contains(&"express"));
     }
+
+    #[test]
+    fn default_filter_keeps_everything() {
+        let vulns = vec![
+            make_vuln("a@1.0.0", Severity::Low, DepContext::Dev),
+            make_vuln("b@1.0.0", Severity::Critical, DepContext::Production),
+        ];
+        let filter = AuditFilter::default();
+        let result = filter.apply(&vulns);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn min_severity_filter() {
+        let vulns = vec![
+            make_vuln("a@1.0.0", Severity::Critical, DepContext::Production),
+            make_vuln("b@1.0.0", Severity::Low, DepContext::Production),
+            make_vuln("c@1.0.0", Severity::Medium, DepContext::Production),
+        ];
+        let mut filter = AuditFilter::default();
+        filter.min_severity = Some(Severity::High);
+        let result = filter.apply(&vulns);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].package_name, "a");
+    }
+
+    #[test]
+    fn from_args_prod_only_implies_ignore_dev_and_build() {
+        let filter = AuditFilter::from_args(true, None, false, false);
+        assert!(filter.ignore_dev);
+        assert!(filter.ignore_build);
+        assert!(filter.prod_only);
+    }
 }

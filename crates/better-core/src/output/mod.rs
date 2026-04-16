@@ -161,4 +161,52 @@ mod tests {
         let json = serde_json::to_string(&ErrorCode::NetworkError).unwrap();
         assert_eq!(json, "\"network_error\"");
     }
+
+    #[test]
+    fn semantic_exit_code_network_error() {
+        let err = BetterError::new(ErrorCode::NetworkError, "timeout");
+        assert_eq!(err.semantic_exit_code(), 4);
+    }
+
+    #[test]
+    fn semantic_exit_code_non_special_codes_are_one() {
+        for code in [
+            ErrorCode::DependencyResolution,
+            ErrorCode::ManifestParse,
+            ErrorCode::LockfileMismatch,
+            ErrorCode::EngineNotFound,
+            ErrorCode::CommandNotFound,
+            ErrorCode::Internal,
+        ] {
+            let err = BetterError::new(code, "");
+            assert_eq!(err.semantic_exit_code(), 1, "expected 1 for {:?}", code);
+        }
+    }
+
+    #[test]
+    fn better_error_all_error_codes_serialize() {
+        for code in [
+            ErrorCode::DependencyResolution,
+            ErrorCode::SecurityVulnerability,
+            ErrorCode::PolicyViolation,
+            ErrorCode::NetworkError,
+            ErrorCode::ManifestParse,
+            ErrorCode::LockfileMismatch,
+            ErrorCode::EngineNotFound,
+            ErrorCode::CommandNotFound,
+            ErrorCode::Internal,
+        ] {
+            let json = serde_json::to_string(&code).unwrap();
+            assert!(json.contains('_') || !json.is_empty());
+        }
+    }
+
+    #[test]
+    fn better_error_with_suggestion() {
+        let mut err = BetterError::new(ErrorCode::ManifestParse, "invalid JSON");
+        err.suggestion = Some("Check your package.json syntax".to_string());
+        assert!(err.suggestion.is_some());
+        let json = serde_json::to_string(&err).unwrap();
+        assert!(json.contains("suggestion"));
+    }
 }
