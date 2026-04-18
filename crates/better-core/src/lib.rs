@@ -79,6 +79,7 @@ pub mod analyze;
 pub use analyze::*;
 
 pub mod engine;
+pub use engine::{cross_ecosystem_audit, CrossSeverity, UnifiedAuditReport, UnifiedVulnerability};
 
 pub mod binlinks;
 pub use binlinks::*;

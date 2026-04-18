@@ -1,3 +1,4 @@
+pub mod audit;
 pub mod cargo;
 pub mod cocoapods;
 pub mod dotnet;
@@ -7,6 +8,8 @@ pub mod php;
 pub mod python;
 pub mod ruby;
 pub mod swift;
+
+pub use audit::{cross_ecosystem_audit, CrossSeverity, UnifiedAuditReport, UnifiedVulnerability};
 
 use std::fmt;
 use std::path::Path;
@@ -39,6 +42,21 @@ pub trait PackageEngine: Send + Sync {
 
     /// Check for outdated packages
     fn outdated(&self, project_root: &Path) -> Result<Vec<OutdatedPackage>, EngineError>;
+
+    /// Run a command in the engine's managed environment (e.g. venv for Python).
+    /// Returns the process exit code.
+    /// Default: exec the command directly without special environment setup.
+    fn run(&self, command: &str, args: &[String], project_root: &Path) -> Result<i32, EngineError> {
+        let status = std::process::Command::new(command)
+            .args(args)
+            .current_dir(project_root)
+            .status()
+            .map_err(|e| EngineError {
+                kind: EngineErrorKind::FetchFailed,
+                message: format!("failed to run '{}': {}", command, e),
+            })?;
+        Ok(status.code().unwrap_or(1))
+    }
 }
 
 // ---------------------------------------------------------------------------
