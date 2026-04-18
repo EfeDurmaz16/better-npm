@@ -6,6 +6,7 @@ pub mod pypi;
 pub mod wheel;
 pub mod fetch;
 pub mod resolver;
+pub mod migrate;
 
 use std::path::Path;
 
@@ -185,6 +186,70 @@ impl PackageEngine for PythonEngine {
         let _ = project_root;
         Ok(Vec::new())
     }
+
+    /// Run a command in the Python virtual environment.
+    ///
+    /// Looks for `.venv/bin/<command>` first, then falls back to PATH.
+    /// Loads `.env` if present. Activates the venv by setting VIRTUAL_ENV
+    /// and prepending `.venv/bin` to PATH.
+    fn run(&self, command: &str, args: &[String], project_root: &Path) -> Result<i32, EngineError> {
+        let venv_dir = project_root.join(".venv");
+
+        // Build env vars: activate venv if it exists
+        let mut extra_env: Vec<(String, String)> = Vec::new();
+        let cmd_path = if venv_dir.exists() {
+            let bin_dir = venv_dir.join("bin");
+            // Set VIRTUAL_ENV so Python picks up the venv
+            extra_env.push(("VIRTUAL_ENV".to_string(), venv_dir.display().to_string()));
+            // Prepend venv bin to PATH
+            let current_path = std::env::var("PATH").unwrap_or_default();
+            extra_env.push(("PATH".to_string(), format!("{}:{}", bin_dir.display(), current_path)));
+            // Try venv bin first
+            let venv_cmd = bin_dir.join(command);
+            if venv_cmd.exists() {
+                venv_cmd.display().to_string()
+            } else {
+                command.to_string()
+            }
+        } else {
+            command.to_string()
+        };
+
+        // Load .env file
+        let dotenv_vars = load_dotenv(project_root);
+        extra_env.extend(dotenv_vars);
+
+        let status = std::process::Command::new(&cmd_path)
+            .args(args)
+            .current_dir(project_root)
+            .envs(extra_env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+            .status()
+            .map_err(|e| EngineError {
+                kind: EngineErrorKind::FetchFailed,
+                message: format!("failed to run '{}': {}", command, e),
+            })?;
+
+        Ok(status.code().unwrap_or(1))
+    }
+}
+
+/// Parse a `.env` file into key=value pairs.
+fn load_dotenv(project_root: &Path) -> Vec<(String, String)> {
+    let path = project_root.join(".env");
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    content
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.trim().starts_with('#'))
+        .filter_map(|l| {
+            let (k, v) = l.split_once('=')?;
+            let k = k.trim().to_string();
+            let v = v.trim().trim_matches('"').trim_matches('\'').to_string();
+            Some((k, v))
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
