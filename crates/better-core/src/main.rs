@@ -134,6 +134,10 @@ enum Command {
         add_ignore: Option<String>,
         ignore_reason: Option<String>,
     },
+    CrossAudit {
+        lock_path: PathBuf,
+        min_severity: String,
+    },
     Benchmark {
         project_root: PathBuf,
         rounds: usize,
@@ -839,8 +843,14 @@ fn parse_args() -> (Command, GlobalFlags) {
         },
         "audit" => {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
-            let lf = lockfile.unwrap_or_else(|| pr.join("package-lock.json"));
-            Command::Audit { project_root: pr, lockfile: lf, min_severity, strict, add_ignore, ignore_reason }
+            // cross-ecosystem audit when better.lock is present
+            let better_lock = pr.join("better.lock");
+            if better_lock.exists() && positional.first().map(|s| s.as_str()) != Some("npm") {
+                Command::CrossAudit { lock_path: better_lock, min_severity }
+            } else {
+                let lf = lockfile.unwrap_or_else(|| pr.join("package-lock.json"));
+                Command::Audit { project_root: pr, lockfile: lf, min_severity, strict, add_ignore, ignore_reason }
+            }
         },
         "benchmark" | "bench" => {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
@@ -3350,6 +3360,60 @@ fn main() {
             w.end_object(); w.out.push('\n');
             print!("{}", w.finish());
             if !result.ok { std::process::exit(1); }
+        }
+
+        Command::CrossAudit { lock_path, min_severity } => {
+            let sev = better_core::CrossSeverity::from_str(&min_severity);
+            match better_core::cross_ecosystem_audit(&lock_path, sev) {
+                Ok(report) => {
+                    let mut w = JsonWriter::new();
+                    w.begin_object();
+                    w.key("ok"); w.value_bool(true);
+                    w.key("kind"); w.value_string("better.crossAudit");
+                    w.key("npmPackagesScanned"); w.value_u64(report.npm_packages_scanned as u64);
+                    w.key("pythonPackagesScanned"); w.value_u64(report.python_packages_scanned as u64);
+                    w.key("totalVulnerabilities"); w.value_u64(report.total_vulnerabilities as u64);
+                    w.key("scanMs"); w.value_u64(report.scan_ms);
+                    w.key("bySeverity"); w.begin_object();
+                    w.key("critical"); w.value_u64(report.by_severity.critical as u64);
+                    w.key("high"); w.value_u64(report.by_severity.high as u64);
+                    w.key("medium"); w.value_u64(report.by_severity.medium as u64);
+                    w.key("low"); w.value_u64(report.by_severity.low as u64);
+                    w.key("unknown"); w.value_u64(report.by_severity.unknown as u64);
+                    w.end_object();
+                    w.key("vulnerabilities"); w.begin_array();
+                    for v in &report.vulnerabilities {
+                        w.begin_object();
+                        w.key("id"); w.value_string(&v.id);
+                        w.key("ecosystem"); w.value_string(&v.ecosystem);
+                        w.key("package"); w.value_string(&v.package);
+                        w.key("version"); w.value_string(&v.installed_version);
+                        w.key("severity"); w.value_string(v.severity.as_str());
+                        w.key("summary"); w.value_string(&v.summary);
+                        if let Some(ref fixed) = v.fixed_version {
+                            w.key("fixedVersion"); w.value_string(fixed);
+                        }
+                        w.key("vulnerableRange"); w.value_string(&v.vulnerable_range);
+                        w.end_object();
+                    }
+                    w.end_array();
+                    w.end_object(); w.out.push('\n');
+                    print!("{}", w.finish());
+                    if report.total_vulnerabilities > 0 {
+                        std::process::exit(agent_exit("security", 1, agent_mode));
+                    }
+                }
+                Err(reason) => {
+                    let mut w = JsonWriter::new();
+                    w.begin_object();
+                    w.key("ok"); w.value_bool(false);
+                    w.key("kind"); w.value_string("better.crossAudit");
+                    w.key("reason"); w.value_string(&reason);
+                    w.end_object(); w.out.push('\n');
+                    print!("{}", w.finish());
+                    std::process::exit(agent_exit("security", 1, agent_mode));
+                }
+            }
         }
 
         Command::Audit { project_root, lockfile, min_severity, strict, add_ignore, ignore_reason } => {
