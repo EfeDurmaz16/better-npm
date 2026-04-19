@@ -214,10 +214,92 @@ impl PackageEngine for SwiftEngine {
         Ok(vulns)
     }
 
-    fn outdated(&self, _project_root: &Path) -> Result<Vec<OutdatedPackage>, EngineError> {
-        // Swift Package Index doesn't have a simple stable API; skip for now
-        Ok(vec![])
+    fn outdated(&self, project_root: &Path) -> Result<Vec<OutdatedPackage>, EngineError> {
+        // Re-read Package.resolved to get both version and repository URL
+        let graph = self.resolve(project_root)?;
+        if graph.packages.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let client = reqwest::blocking::Client::builder()
+            .use_rustls_tls()
+            .timeout(std::time::Duration::from_secs(10))
+            .user_agent("better-pkg/1.0")
+            .build()
+            .map_err(|e| EngineError { message: e.to_string(), kind: EngineErrorKind::NetworkError })?;
+
+        let mut outdated = Vec::new();
+
+        for pkg in &graph.packages {
+            let current = pkg.version.trim_start_matches('v').to_string();
+            // Only check semver versions (skip revision-pinned packages)
+            if current.len() <= 8 && !current.contains('.') {
+                continue;
+            }
+
+            let Some(repo_url) = &pkg.resolved_url else { continue };
+
+            // Extract {owner}/{repo} from GitHub URLs
+            let Some(github_path) = extract_github_path(repo_url) else { continue };
+
+            let api_url = format!("https://api.github.com/repos/{}/releases/latest", github_path);
+            let resp = match client.get(&api_url).header("Accept", "application/vnd.github+json").send() {
+                Ok(r) if r.status().is_success() => r.text().unwrap_or_default(),
+                _ => continue,
+            };
+
+            // Extract tag_name from JSON response
+            let Some(tag) = resp.split("\"tag_name\"").nth(1)
+                .and_then(|s| s.split('"').nth(1)) else { continue };
+
+            let latest = tag.trim_start_matches('v').to_string();
+            if latest.is_empty() || latest == current { continue; }
+
+            let update_type = classify_semver(&current, &latest);
+            outdated.push(OutdatedPackage {
+                name: pkg.name.clone(),
+                current: current.clone(),
+                latest: latest.clone(),
+                update_type,
+            });
+        }
+
+        Ok(outdated)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Extract `{owner}/{repo}` from a GitHub URL.
+/// Handles https://github.com/owner/repo and https://github.com/owner/repo.git
+fn extract_github_path(url: &str) -> Option<String> {
+    let url = url.trim_end_matches('/').trim_end_matches(".git");
+    let idx = url.find("github.com/")?;
+    let after = &url[idx + "github.com/".len()..];
+    let parts: Vec<&str> = after.splitn(2, '/').collect();
+    if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
+        Some(format!("{}/{}", parts[0], parts[1]))
+    } else {
+        None
+    }
+}
+
+/// Classify a version bump as major/minor/patch/unknown.
+fn classify_semver(current: &str, latest: &str) -> String {
+    let parse = |v: &str| -> (u64, u64, u64) {
+        let mut parts = v.split('.');
+        let major = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+        let minor = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+        let patch = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+        (major, minor, patch)
+    };
+    let (cm, cmin, _cp) = parse(current);
+    let (lm, lmin, _lp) = parse(latest);
+    if lm > cm { "major".to_string() }
+    else if lmin > cmin { "minor".to_string() }
+    else { "patch".to_string() }
 }
 
 // ---------------------------------------------------------------------------
@@ -323,5 +405,49 @@ mod tests {
         std::fs::create_dir_all(&tmp).unwrap();
         assert!(SwiftEngine.materialize(&[], &tmp).is_ok());
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn extract_github_path_standard_url() {
+        assert_eq!(
+            extract_github_path("https://github.com/apple/swift-argument-parser"),
+            Some("apple/swift-argument-parser".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_github_path_git_suffix() {
+        assert_eq!(
+            extract_github_path("https://github.com/Alamofire/Alamofire.git"),
+            Some("Alamofire/Alamofire".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_github_path_trailing_slash() {
+        assert_eq!(
+            extract_github_path("https://github.com/vapor/vapor/"),
+            Some("vapor/vapor".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_github_path_non_github() {
+        assert_eq!(extract_github_path("https://gitlab.com/owner/repo"), None);
+    }
+
+    #[test]
+    fn classify_semver_major_bump() {
+        assert_eq!(classify_semver("1.3.0", "2.0.0"), "major");
+    }
+
+    #[test]
+    fn classify_semver_minor_bump() {
+        assert_eq!(classify_semver("1.3.0", "1.4.0"), "minor");
+    }
+
+    #[test]
+    fn classify_semver_patch_bump() {
+        assert_eq!(classify_semver("1.3.0", "1.3.1"), "patch");
     }
 }
