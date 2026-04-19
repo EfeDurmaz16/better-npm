@@ -56,13 +56,23 @@ impl InstallProgress {
     }
 
     // --- JSON progress helper ---
+    // Emits in the agent::ProgressEvent NDJSON format: {"type":"progress",...}
     fn emit_json(&self, phase: &str, current: u64, total: u64, bytes: u64) {
         if !self.json_progress {
             return;
         }
+        let percent = if total > 0 {
+            format!(",\"percent\":{:.1}", (current as f64 / total as f64) * 100.0)
+        } else {
+            String::new()
+        };
+        let bytes_field = if bytes > 0 {
+            format!(",\"bytes\":{bytes}")
+        } else {
+            String::new()
+        };
         let line = format!(
-            "{{\"phase\":\"{}\",\"current\":{},\"total\":{},\"bytes\":{}}}\n",
-            phase, current, total, bytes
+            "{{\"type\":\"progress\",\"phase\":\"{phase}\",\"message\":\"{phase}\",\"done\":{current},\"total\":{total}{percent}{bytes_field}}}\n"
         );
         let _ = std::io::stderr().write_all(line.as_bytes());
     }
