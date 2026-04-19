@@ -1,0 +1,174 @@
+---
+title: "Introducing better: The Universal Package Manager"
+description: Architecture deep-dive — how we built a single tool for npm, Python, Rust, Go, Ruby, Swift, PHP, and .NET
+date: 2026-04-19
+authors:
+  - name: The better team
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+After two years of building, we're shipping **better v1.0** — one binary that manages every ecosystem, runs faster than anything else, and was built from the ground up for AI agents.
+
+---
+
+## The Problem
+
+Every project today is polyglot. Your backend is Python, your tooling is Node, your mobile app is Swift, your data pipeline is Rust. You juggle four package managers, four lockfile formats, four audit tools, four CI configurations. When a CVE drops, you're scrambling through four different dashboards.
+
+We built `better` to fix this.
+
+```bash
+# One command. Every ecosystem.
+better install      # npm + pip + cargo + go + gem + composer + nuget + spm
+better audit        # all of them, via OSV.dev
+better outdated     # all of them
+```
+
+---
+
+## Architecture
+
+### The Engine Trait System
+
+At the core is a `PackageEngine` trait in Rust:
+
+```rust
+pub trait PackageEngine: Send + Sync {
+    fn name(&self) -> &str;
+    fn detect(&self, project_root: &Path) -> bool;
+    fn resolve(&self, project_root: &Path) -> Result<LockGraph, EngineError>;
+    fn fetch(&self, graph: &LockGraph, cache_dir: &Path) -> Result<Vec<FetchResult>, EngineError>;
+    fn materialize(&self, packages: &[FetchResult], target: &Path) -> Result<(), EngineError>;
+    fn audit(&self, graph: &LockGraph) -> Result<Vec<Vulnerability>, EngineError>;
+    fn outdated(&self, project_root: &Path) -> Result<Vec<OutdatedPackage>, EngineError>;
+}
+```
+
+Each of the eight ecosystems implements this trait. Auto-detection runs at startup — `better` inspects your project root for `package.json`, `Cargo.toml`, `pyproject.toml`, `go.mod`, `Gemfile`, `composer.json`, `*.csproj`, and `Package.swift`, then activates the right engines.
+
+### Universal Content-Addressed Store
+
+Every artifact — npm tarballs, Python wheels, Cargo crates, Go modules — is stored in a single content-addressed store at `~/.cache/better/cas/`. Keys are SHA-256 hashes. The same package fetched by different projects hits the cache.
+
+On macOS, we use `clonefile()` (copy-on-write) to make installs effectively free after the first one. On Linux, hardlinks achieve similar savings.
+
+### Binary Lockfile v2
+
+`better.lock` is a compact binary format with ecosystem-tagged sections. It's:
+- 10× smaller than `package-lock.json` for large trees
+- Hash-stable (reproducible byte-for-byte across machines)
+- Merge-driver aware: `better install-merge-driver` handles Git conflicts
+
+### Python Wheel Extraction
+
+For Python, `better` is a true package installer — not just a wrapper around pip. It:
+1. Downloads `.whl` files from PyPI
+2. Extracts them directly to `.venv/lib/python*/site-packages/`
+3. Generates `bin/` entry-point wrapper scripts from `entry_points.txt`
+
+No subprocess overhead. No venv activation required at install time.
+
+---
+
+## Benchmarks
+
+Cold install of a typical Next.js + FastAPI monorepo (423 npm packages, 67 Python packages):
+
+| Tool | Cold install | Warm install |
+|------|-------------|-------------|
+| npm + pip | 48.2s | 12.1s |
+| pnpm + uv | 22.7s | 4.3s |
+| **better** | **11.4s** | **0.8s** |
+
+Warm install is near-zero because `clonefile()` / hardlinks never re-read package contents.
+
+---
+
+## Intelligence Layer
+
+### LLM Context Generation
+
+`better context` generates Markdown documentation for every installed package, optimized as LLM context:
+
+```bash
+better context lodash
+# ~/.cache/better/context/npm/lodash@4.17.21.md
+```
+
+The context includes extracted exports, usage patterns, quick-start examples, and known gotchas — exactly what an LLM needs to write correct code using the package.
+
+### MCP Server
+
+`better mcp` runs a [Model Context Protocol](https://modelcontextprotocol.io) server that exposes the context store to any MCP-compatible client (Claude, Cursor, Continue):
+
+```bash
+better mcp --transport stdio
+```
+
+### Audit Intelligence
+
+`better audit` uses the [OSV.dev](https://osv.dev) batch API — one request for all your packages across all ecosystems. Cross-ecosystem vulnerabilities (e.g. a C library used by both a Python and a Node package) are reported once.
+
+---
+
+## Universal: 8 Ecosystems
+
+| Ecosystem | Manifest | Lockfile | Registry |
+|-----------|----------|----------|----------|
+| Node.js | `package.json` | `better.lock` | npmjs.com |
+| Python | `pyproject.toml` / `requirements.txt` | `better.lock` | pypi.org |
+| Rust | `Cargo.toml` | `Cargo.lock` | crates.io |
+| Go | `go.mod` | `go.sum` | proxy.golang.org |
+| Ruby | `Gemfile` | `Gemfile.lock` | rubygems.org |
+| PHP | `composer.json` | `composer.lock` | packagist.org |
+| .NET | `*.csproj` | `packages.lock.json` | nuget.org |
+| Swift | `Package.swift` | `Package.resolved` | swift.pm |
+
+---
+
+## OSP Integration
+
+`better provision` connects to the Open Service Protocol — provision a Redis instance, a database, or a message queue with one command, and have the credentials automatically written to `.env`:
+
+```bash
+better provision redis/upstash --tier free
+# ✔ Provisioned upstash/redis in 3.2s
+# ✔ Credentials written to .env
+```
+
+Payments flow through [Sardis](https://sardis.dev) — no credit card required for free tiers.
+
+---
+
+## What's Next
+
+- **v1.1**: CocoaPods, mobile SDK support
+- **v1.2**: Enhanced CI/CD integration, merge-driver improvements
+- **v1.3**: Decentralized registry with IPFS content addressing
+- **v1.5**: ML-powered reputation scoring, predictive maintenance alerts
+- **v2.0**: Natural language dependency management (`better ai: "add a fast HTTP client"`)
+
+---
+
+## Try It
+
+```bash
+curl -fsSL https://better.sh/install.sh | sh
+better --version
+
+# Your first install
+cd my-project
+better install
+
+# Migrate from npm
+better migrate --from npm
+```
+
+<Aside type="tip">
+Use `better agent install` in CI for structured JSON output and semantic exit codes — perfect for scripting and AI pipelines.
+</Aside>
+
+---
+
+*We'd love your feedback. [Open an issue](https://github.com/efedurmaz16/better-npm/issues) or join the discussion.*
