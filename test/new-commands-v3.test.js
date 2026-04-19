@@ -361,3 +361,53 @@ test("better init --json returns actions list", async () => {
     await rmrf(dir);
   }
 });
+
+test("better init --context-template creates .better-context.md and better.context.json", async () => {
+  const dir = await makeTempDir();
+  try {
+    await writeJson(path.join(dir, "package.json"), {
+      name: "my-pkg",
+      version: "1.0.0",
+    });
+    const result = await runBetter(["init", "--context-template"], dir);
+    const ctxMd = path.join(dir, ".better-context.md");
+    const ctxJson = path.join(dir, "better.context.json");
+    const mdExists = await fs.access(ctxMd).then(() => true).catch(() => false);
+    const jsonExists = await fs.access(ctxJson).then(() => true).catch(() => false);
+    assert.ok(mdExists, ".better-context.md should be created");
+    assert.ok(jsonExists, "better.context.json should be created");
+    if (mdExists) {
+      const md = await fs.readFile(ctxMd, "utf8");
+      assert.ok(md.includes("Quick Start"), ".better-context.md should have Quick Start section");
+    }
+    if (jsonExists) {
+      const json = JSON.parse(await fs.readFile(ctxJson, "utf8"));
+      assert.ok(json.name === "my-pkg", "better.context.json should have correct name");
+      assert.ok(json.schema === "1", "better.context.json should have schema version");
+    }
+  } finally {
+    await rmrf(dir);
+  }
+});
+
+test("better init --context-template --json includes context files in actions list", async () => {
+  const dir = await makeTempDir();
+  try {
+    const result = await runBetter(["init", "--context-template", "--json", "--dry-run"], dir);
+    if (result.stdout?.startsWith("{")) {
+      const json = JSON.parse(result.stdout);
+      assert.ok(json.ok, "Should succeed");
+      const fileNames = json.actions.map(a => a.file);
+      assert.ok(
+        fileNames.includes(".better-context.md"),
+        "Should list .better-context.md in actions"
+      );
+      assert.ok(
+        fileNames.includes("better.context.json"),
+        "Should list better.context.json in actions"
+      );
+    }
+  } finally {
+    await rmrf(dir);
+  }
+});
