@@ -99,6 +99,90 @@ All better commands support `--json` for machine-readable output.
 }
 ```
 
+### better add
+
+```json
+{
+  "ok": true,
+  "kind": "better.add",
+  "added": ["express@4.18.2"],
+  "pm": "npm",
+  "installed": true
+}
+```
+
+### better remove
+
+```json
+{
+  "ok": true,
+  "kind": "better.remove",
+  "removed": ["lodash@4.17.21"],
+  "pm": "npm"
+}
+```
+
+### better changelog-gen
+
+```json
+{
+  "ok": true,
+  "kind": "better.changelog-gen",
+  "from": "v1.2.0",
+  "to": "HEAD",
+  "commits": 8,
+  "markdown": "## Unreleased\n\n### Features\n- add new feature (#42)\n"
+}
+```
+
+### better lockfile-lint
+
+```json
+{
+  "ok": true,
+  "kind": "better.lockfile-lint",
+  "lockfileVersion": 3,
+  "totalPackages": 142,
+  "errors": 0,
+  "issues": []
+}
+```
+
+### better sbom
+
+See the [sbom command reference](/commands/sbom/) for the full CycloneDX / SPDX schemas.
+
+### better ci
+
+```json
+{
+  "ok": true,
+  "kind": "better.ci",
+  "steps": [
+    { "name": "install",    "ok": true, "durationMs": 3200 },
+    { "name": "audit",      "ok": true, "durationMs": 800  },
+    { "name": "policy",     "ok": true, "durationMs": 120  },
+    { "name": "sbom",       "ok": true, "durationMs": 200  }
+  ],
+  "totalDurationMs": 4320
+}
+```
+
+### better init
+
+```json
+{
+  "ok": true,
+  "kind": "better.init",
+  "dryRun": false,
+  "actions": [
+    { "file": "package.json", "action": "created" },
+    { "file": ".gitignore",   "action": "created" },
+    { "file": ".nvmrc",       "action": "created" }
+  ]
+}
+```
+
 ## Error Response
 
 ```json
@@ -108,3 +192,15 @@ All better commands support `--json` for machine-readable output.
   "error": "description of what went wrong"
 }
 ```
+
+## Semantic Exit Codes (Agent Mode)
+
+When running with `better agent <cmd>` prefix or `BETTER_AGENT=1`, exit codes are:
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success |
+| `1` | Dependency error |
+| `2` | Security blocked |
+| `3` | Policy failure |
+| `4` | Network error |
