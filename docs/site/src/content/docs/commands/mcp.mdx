@@ -1,0 +1,80 @@
+---
+title: better mcp
+description: Start the Model Context Protocol server for AI assistant integration
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## Synopsis
+
+```bash
+better mcp [options]
+better mcp --transport stdio
+better mcp --transport sse --port 3000
+```
+
+Starts a [Model Context Protocol](https://modelcontextprotocol.io) server that exposes
+`better`'s capabilities to MCP-compatible AI clients (Claude, Cursor, Continue, Codeium).
+
+## Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--transport` | `stdio` | Transport: `stdio` or `sse` |
+| `--port N` | `3000` | Port for SSE transport |
+| `--project-root PATH` | `.` | Project root directory |
+
+## Available MCP Tools
+
+When connected, the AI assistant can use these tools:
+
+| Tool | Description |
+|------|-------------|
+| `install` | Install all project dependencies |
+| `add` | Add a package to the project |
+| `remove` | Remove a package |
+| `audit` | Scan for security vulnerabilities |
+| `outdated` | Check for newer versions |
+| `why` | Explain why a package is installed |
+| `search` | Search npm/PyPI for packages |
+| `context` | Get LLM-friendly package documentation |
+
+## Claude Desktop Integration
+
+Add to `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "better": {
+      "command": "better",
+      "args": ["mcp", "--transport", "stdio"]
+    }
+  }
+}
+```
+
+## VS Code / Continue Integration
+
+Add to `.continue/config.json`:
+
+```json
+{
+  "mcpServers": [
+    {
+      "name": "better",
+      "command": "better mcp --transport stdio"
+    }
+  ]
+}
+```
+
+<Aside type="tip">
+Run `better context --all` once to pre-generate context for all installed packages.
+The MCP server then serves context from cache without additional network calls.
+</Aside>
+
+## See Also
+
+- [`better context`](/commands/context/) — pre-generate package context
+- [`better ai`](/commands/ai/) — AI-powered dependency analysis

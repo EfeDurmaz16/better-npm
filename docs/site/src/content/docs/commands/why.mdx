@@ -1,0 +1,63 @@
+---
+title: better why
+description: Explain why a package is installed by tracing the dependency path
+---
+
+## Synopsis
+
+```bash
+better why <package> [options]
+```
+
+Traces all dependency paths from your direct dependencies to the specified package.
+Useful for understanding why a transitive dependency exists.
+
+## Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--json` | `false` | Machine-readable JSON output |
+
+## Examples
+
+```bash
+# Why is lodash installed?
+better why lodash
+
+# Why is semver installed?
+better why semver --json
+```
+
+## Output
+
+```
+lodash — why is it here?
+
+  Direct: yes (dependencies.lodash)
+  Used in 4 import paths:
+
+  ● express → lodash
+  ● jest → jest-jasmine2 → lodash
+  ● typescript → lodash
+  ● webpack → lodash
+```
+
+## JSON Output
+
+```json
+{
+  "ok": true,
+  "kind": "better.why",
+  "package": "lodash",
+  "is_direct": true,
+  "paths": [
+    ["express", "lodash"],
+    ["jest", "jest-jasmine2", "lodash"]
+  ]
+}
+```
+
+## See Also
+
+- [`better outdated`](/commands/outdated/) — check for newer versions
+- [`better doctor`](/commands/doctor/) — overall project health
