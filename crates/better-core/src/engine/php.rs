@@ -58,7 +58,110 @@ impl PackageEngine for PhpEngine {
         Ok(vulns)
     }
 
-    fn outdated(&self, _: &Path) -> Result<Vec<OutdatedPackage>, EngineError> { Ok(vec![]) }
+    fn outdated(&self, project_root: &Path) -> Result<Vec<OutdatedPackage>, EngineError> {
+        check_composer_outdated(project_root)
+    }
+}
+
+/// Compare `require` + `require-dev` entries in `composer.json` against the
+/// latest stable release from the Packagist v2 API.
+fn check_composer_outdated(project_root: &Path) -> Result<Vec<OutdatedPackage>, EngineError> {
+    let manifest = project_root.join("composer.json");
+    if !manifest.exists() {
+        return Ok(vec![]);
+    }
+
+    let content = std::fs::read_to_string(&manifest)
+        .map_err(|e| EngineError { message: e.to_string(), kind: EngineErrorKind::ManifestNotFound })?;
+    let v: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| EngineError { message: e.to_string(), kind: EngineErrorKind::ResolutionFailed })?;
+
+    // Collect (name, current_version) from require + require-dev
+    let mut deps: Vec<(String, String)> = Vec::new();
+    for section in &["require", "require-dev"] {
+        if let Some(map) = v[section].as_object() {
+            for (name, ver) in map {
+                if name == "php" || name.starts_with("ext-") {
+                    continue; // skip platform requirements
+                }
+                let ver_str = ver.as_str().unwrap_or("")
+                    .trim_start_matches('^')
+                    .trim_start_matches('~')
+                    .trim_start_matches(">=")
+                    .trim_start_matches("<=")
+                    .trim_start_matches('>')
+                    .trim_start_matches('<')
+                    .trim()
+                    .to_string();
+                if !ver_str.is_empty() && ver_str != "*" {
+                    deps.push((name.clone(), ver_str));
+                }
+            }
+        }
+    }
+
+    if deps.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let client = reqwest::blocking::Client::builder()
+        .use_rustls_tls()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| EngineError { message: e.to_string(), kind: EngineErrorKind::NetworkError })?;
+
+    let mut outdated = Vec::new();
+
+    for (name, current) in deps.iter().take(20) {
+        // Packagist v2 API: https://repo.packagist.org/p2/{vendor}/{package}.json
+        // Name format is "vendor/package"
+        let url = format!("https://repo.packagist.org/p2/{}.json", name);
+        if let Ok(resp) = client.get(&url).send() {
+            if let Ok(text) = resp.text() {
+                // packages key → array of versions; first entry is latest stable
+                if let Some(latest) = extract_latest_packagist_version(&text, name) {
+                    if latest != current.as_str() {
+                        let update_type = classify_semver(current, &latest);
+                        outdated.push(OutdatedPackage {
+                            name: name.clone(),
+                            current: current.clone(),
+                            latest,
+                            update_type,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    Ok(outdated)
+}
+
+/// Extract the latest non-dev version from a Packagist v2 JSON response.
+fn extract_latest_packagist_version(text: &str, name: &str) -> Option<String> {
+    // Response format: {"packages":{"vendor/package":[{"version":"1.2.3",...},{...}]}}
+    // Versions are ordered newest-first.
+    let key = format!("\"{}\":[", name);
+    let start = text.find(&key)?;
+    let after = &text[start + key.len()..];
+    // Scan versions array for first stable release (no -dev, -alpha, -beta, -RC)
+    for segment in after.split("\"version\":").skip(1) {
+        // segment starts with `"1.2.3",...` so split on `"` gives ["", "1.2.3", ...]
+        let ver = segment.split('"').nth(1)?;
+        let lower = ver.to_lowercase();
+        if !lower.contains("dev") && !lower.contains("alpha") && !lower.contains("beta") && !lower.contains("-rc") {
+            return Some(ver.trim_start_matches('v').to_string());
+        }
+    }
+    None
+}
+
+/// Very lightweight semver major/minor/patch classifier.
+fn classify_semver(current: &str, latest: &str) -> String {
+    let cur: Vec<&str> = current.splitn(3, '.').collect();
+    let lat: Vec<&str> = latest.splitn(3, '.').collect();
+    if cur.first() != lat.first() { "major".to_string() }
+    else if cur.get(1) != lat.get(1) { "minor".to_string() }
+    else { "patch".to_string() }
 }
 
 // ---------------------------------------------------------------------------
@@ -99,5 +202,55 @@ mod tests {
         let graph = PhpEngine.resolve(&tmp).unwrap();
         assert!(graph.packages.is_empty());
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn outdated_no_composer_json_returns_empty() {
+        let tmp = std::env::temp_dir().join("php-outdated-nofile");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let result = check_composer_outdated(&tmp).unwrap();
+        assert!(result.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn outdated_skips_platform_requirements() {
+        let tmp = std::env::temp_dir().join("php-outdated-platform");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let manifest = r#"{"require":{"php":">=8.0","ext-json":"*"},"require-dev":{}}"#;
+        std::fs::write(tmp.join("composer.json"), manifest).unwrap();
+        // Only platform deps — network calls are skipped because deps list is empty
+        let result = check_composer_outdated(&tmp).unwrap();
+        assert!(result.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn classify_semver_major() {
+        assert_eq!(classify_semver("1.0.0", "2.0.0"), "major");
+    }
+
+    #[test]
+    fn classify_semver_minor() {
+        assert_eq!(classify_semver("1.0.0", "1.1.0"), "minor");
+    }
+
+    #[test]
+    fn classify_semver_patch() {
+        assert_eq!(classify_semver("1.0.0", "1.0.1"), "patch");
+    }
+
+    #[test]
+    fn extract_latest_packagist_skips_dev_versions() {
+        let json = r#"{"packages":{"vendor/pkg":[{"version":"2.0.0-dev"},{"version":"1.5.0"},{"version":"1.4.0"}]}}"#;
+        let result = extract_latest_packagist_version(json, "vendor/pkg");
+        assert_eq!(result.as_deref(), Some("1.5.0"));
+    }
+
+    #[test]
+    fn extract_latest_packagist_returns_none_for_unknown_package() {
+        let json = r#"{"packages":{}}"#;
+        let result = extract_latest_packagist_version(json, "no/pkg");
+        assert!(result.is_none());
     }
 }
