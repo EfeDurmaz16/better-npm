@@ -1,0 +1,93 @@
+---
+title: better sbom
+description: Generate a Software Bill of Materials (SBOM)
+---
+
+## Synopsis
+
+```bash
+better sbom [options]
+```
+
+Generates a Software Bill of Materials listing all installed dependencies with their
+names, versions, licenses, and integrity hashes. Supports industry-standard formats
+for supply chain compliance.
+
+## Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--format <fmt>` | `cyclonedx` | Output format: `cyclonedx` or `spdx` |
+| `--output <file>` | stdout | Write to a file instead of stdout |
+| `--json` | `false` | Raw JSON output (same as `--format cyclonedx`) |
+
+## Examples
+
+```bash
+# CycloneDX JSON to stdout
+better sbom
+
+# SPDX format written to a file
+better sbom --format spdx --output sbom.spdx
+
+# CycloneDX written to file
+better sbom --output bom.json
+```
+
+## Output Format: CycloneDX
+
+```json
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:...",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2024-01-15T10:00:00Z",
+    "component": { "name": "my-app", "version": "1.0.0" }
+  },
+  "components": [
+    {
+      "type": "library",
+      "name": "express",
+      "version": "4.18.2",
+      "purl": "pkg:npm/express@4.18.2",
+      "licenses": [{ "license": { "id": "MIT" } }],
+      "hashes": [{ "alg": "SHA-512", "content": "..." }]
+    }
+  ]
+}
+```
+
+## Output Format: SPDX
+
+```
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: my-app
+...
+
+PackageName: express
+SPDXID: SPDXRef-Package-express
+PackageVersion: 4.18.2
+PackageLicenseConcluded: MIT
+```
+
+## CI Integration
+
+```yaml
+- name: Generate SBOM
+  run: better sbom --output sbom.json
+
+- name: Upload SBOM artifact
+  uses: actions/upload-artifact@v3
+  with:
+    name: sbom
+    path: sbom.json
+```
+
+## See Also
+
+- [`better audit`](/commands/audit/) — security vulnerability scan
+- [`better license`](/commands/license/) — license compliance check

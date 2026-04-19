@@ -1,0 +1,68 @@
+---
+title: better dedupe
+description: Remove duplicate versions of packages from node_modules
+---
+
+## Synopsis
+
+```bash
+better dedupe [options]
+```
+
+Finds packages that appear in multiple places in the dependency tree with different
+version ranges that could be collapsed to a single shared version. Rewrites
+`node_modules` and optionally updates the lockfile.
+
+## Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--dry-run` | `false` | Preview deduplication without making changes |
+| `--json` | `false` | Machine-readable JSON output |
+
+## Examples
+
+```bash
+# Deduplicate dependencies
+better dedupe
+
+# Preview what would be deduped
+better dedupe --dry-run
+
+# Machine-readable output
+better dedupe --json
+```
+
+## Output
+
+```
+Deduplication report
+
+  Before: 312 packages (23 duplicates)
+  After:  289 packages
+
+  Removed duplicates:
+    lodash        4.17.20 → 4.17.21  (8 usages collapsed)
+    debug         4.3.3   → 4.3.4    (3 usages collapsed)
+    semver        7.5.3   → 7.5.4    (2 usages collapsed)
+```
+
+## JSON Output
+
+```json
+{
+  "ok": true,
+  "kind": "better.dedupe",
+  "before": 312,
+  "after": 289,
+  "removed": 23,
+  "deduplicated": [
+    { "name": "lodash", "from": "4.17.20", "to": "4.17.21", "usages": 8 }
+  ]
+}
+```
+
+## See Also
+
+- [`better doctor`](/commands/doctor/) — general project health check
+- [`better install`](/commands/install/) — install dependencies

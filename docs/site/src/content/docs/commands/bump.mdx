@@ -1,0 +1,66 @@
+---
+title: better bump
+description: Bump the package version and create a git tag
+---
+
+## Synopsis
+
+```bash
+better bump <major|minor|patch|prerelease> [options]
+better bump <version>
+```
+
+Bumps the version in `package.json`, updates the lockfile, and optionally creates
+a git commit and tag.
+
+## Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--tag` | `true` | Create a git tag after bumping |
+| `--commit` | `true` | Create a git commit with the version bump |
+| `--changelog` | `false` | Update `CHANGELOG.md` (uses `better changelog-gen`) |
+| `--push` | `false` | Push the commit and tag to the remote |
+| `--dry-run` | `false` | Preview changes without writing files |
+| `--json` | `false` | Machine-readable JSON output |
+
+## Examples
+
+```bash
+# Bump patch version (1.0.0 → 1.0.1)
+better bump patch
+
+# Bump minor version (1.0.0 → 1.1.0)
+better bump minor
+
+# Bump major version (1.0.0 → 2.0.0)
+better bump major
+
+# Set to a specific version
+better bump 3.2.1
+
+# Bump, update changelog, push
+better bump minor --changelog --push
+
+# Preview without writing
+better bump patch --dry-run
+```
+
+## JSON Output
+
+```json
+{
+  "ok": true,
+  "kind": "better.bump",
+  "from": "1.0.0",
+  "to": "1.1.0",
+  "tag": "v1.1.0",
+  "commit": "abc1234",
+  "dryRun": false
+}
+```
+
+## See Also
+
+- [`better changelog-gen`](/commands/changelog-gen/) — generate changelog from commits
+- [`better publish`](/commands/publish/) — publish to npm registry

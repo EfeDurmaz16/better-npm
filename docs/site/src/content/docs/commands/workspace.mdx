@@ -1,0 +1,74 @@
+---
+title: better workspace
+description: Manage monorepo workspaces
+---
+
+## Synopsis
+
+```bash
+better workspace <subcommand> [options]
+better workspace list
+better workspace run <script>
+better workspace add <package>
+```
+
+Manages npm/pnpm/yarn workspaces in a monorepo. All workspace-aware subcommands
+respect the `workspaces` field in the root `package.json`.
+
+## Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `list` | List all workspace packages |
+| `run <script>` | Run a script in all (or filtered) workspaces |
+| `add <pkg>` | Add a dependency to one or all workspaces |
+| `deps` | Show cross-workspace dependency graph |
+
+## Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--filter <glob>` | `*` | Only operate on matching workspace packages |
+| `--parallel` | `false` | Run `workspace run` in parallel |
+| `--json` | `false` | Machine-readable JSON output |
+
+## Examples
+
+```bash
+# List all workspaces
+better workspace list
+
+# Run tests in all workspaces
+better workspace run test
+
+# Run build in parallel across all workspaces
+better workspace run build --parallel
+
+# Only operate on packages matching "api/*"
+better workspace run lint --filter "api/*"
+
+# Add a dependency to a specific workspace
+better workspace add lodash --filter packages/core
+
+# Show cross-workspace dependency graph
+better workspace deps --json
+```
+
+## JSON Output (list)
+
+```json
+{
+  "ok": true,
+  "kind": "better.workspace.list",
+  "workspaces": [
+    { "name": "packages/core",  "version": "1.0.0", "location": "packages/core" },
+    { "name": "packages/utils", "version": "1.0.0", "location": "packages/utils" },
+    { "name": "apps/web",       "version": "0.1.0", "location": "apps/web" }
+  ]
+}
+```
+
+## See Also
+
+- [`better run`](/commands/run/) — run scripts in a single package
+- [`better install`](/commands/install/) — install all workspace dependencies

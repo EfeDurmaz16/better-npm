@@ -1,0 +1,38 @@
+---
+title: better exec
+description: Run a binary from node_modules/.bin without installing globally
+---
+
+## Synopsis
+
+```bash
+better exec <binary> [-- args...]
+```
+
+Runs a binary from `node_modules/.bin` directly, without requiring it to be installed
+globally. Equivalent to `npx` but uses the local binary first, falling back to the
+registry only if not installed.
+
+## Examples
+
+```bash
+# Run a locally installed binary
+better exec tsc --version
+
+# Run with arguments
+better exec jest -- --coverage --testPathPattern=auth
+
+# Run a one-off binary from the registry (if not in node_modules)
+better exec create-react-app my-app
+```
+
+## Behavior
+
+1. Checks `./node_modules/.bin/<binary>` first
+2. If not found locally and the binary is a known npm package, downloads and runs it
+3. Never installs to the global registry
+
+## See Also
+
+- [`better run`](/commands/run/) — run scripts defined in package.json
+- [`better install`](/commands/install/) — install dependencies
