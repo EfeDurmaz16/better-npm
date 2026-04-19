@@ -1,0 +1,55 @@
+---
+title: .npmrc Configuration
+description: Configure the npm registry and install behavior via .npmrc
+---
+
+`better` respects `.npmrc` for npm ecosystem settings. Generate a recommended
+`.npmrc` with:
+
+```bash
+better init --npmrc
+```
+
+## Recommended Settings
+
+```ini
+# Registry (override with BETTER_REGISTRY env var)
+registry=https://registry.npmjs.org
+
+# Save exact versions by default
+save-exact=true
+
+# Audit level — fail on high or critical
+audit-level=high
+
+# Engine strict mode — respect "engines" in package.json
+engine-strict=true
+
+# Lockfile version
+lockfile-version=3
+```
+
+## Environment Overrides
+
+| Variable | Description |
+|----------|-------------|
+| `BETTER_REGISTRY` | Override the npm registry URL |
+| `BETTER_CACHE` | Override the cache directory |
+| `BETTER_AGENT=1` | Enable agent mode (JSON output, no interactive prompts) |
+| `BETTER_NO_COLOR=1` | Disable ANSI color output |
+| `ANTHROPIC_API_KEY` | API key for `better ai` subcommands |
+| `OPENAI_API_KEY` | API key for `better ai` subcommands (alternative) |
+
+## Private Registries
+
+```ini
+# Scope-specific private registry
+@myorg:registry=https://npm.myorg.com
+//npm.myorg.com/:_authToken=${NPM_TOKEN}
+```
+
+Or use `better registry add`:
+
+```bash
+better registry add https://npm.myorg.com --scope @myorg --token-env NPM_TOKEN
+```

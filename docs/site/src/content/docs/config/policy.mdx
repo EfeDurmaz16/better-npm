@@ -1,0 +1,77 @@
+---
+title: Policy Configuration
+description: Configure license policies and audit rules in .better/policy.json
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+`better` enforces license and security policies via `.better/policy.json`.
+Generate a starter file with:
+
+```bash
+better init --policy
+```
+
+## Schema
+
+```json
+{
+  "$schema": "https://better.sh/schema/v1/policy.json",
+  "version": 1,
+  "license": {
+    "allow": ["MIT", "ISC", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause"],
+    "deny": ["GPL-2.0", "GPL-3.0", "AGPL-3.0"],
+    "unknown": "warn"
+  },
+  "audit": {
+    "minSeverity": "high",
+    "ignoreDevDeps": true,
+    "fail": true
+  },
+  "firewall": {
+    "blockTyposquats": true,
+    "blockMaintainerlessPackages": false,
+    "maxDepAge": 730
+  }
+}
+```
+
+## Fields
+
+### `license`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `allow` | `string[]` | SPDX identifiers of allowed licenses |
+| `deny` | `string[]` | SPDX identifiers of blocked licenses |
+| `unknown` | `"warn" \| "error" \| "allow"` | Action for unrecognized license strings |
+
+### `audit`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `minSeverity` | `"low" \| "moderate" \| "high" \| "critical"` | `"low"` | Minimum severity to enforce |
+| `ignoreDevDeps` | `boolean` | `false` | Skip audit for devDependencies |
+| `fail` | `boolean` | `true` | Exit non-zero on violation |
+
+### `firewall`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `blockTyposquats` | `boolean` | `false` | Block packages with names similar to popular packages |
+| `blockMaintainerlessPackages` | `boolean` | `false` | Block packages with no active maintainer |
+| `maxDepAge` | `number` | — | Maximum age in days before a package is flagged as stale |
+
+## Usage
+
+```bash
+# Check policy compliance
+better policy check
+
+# Initialize policy scaffold
+better policy init
+```
+
+<Aside type="tip">
+Run `better init --all` to generate policy, hooks, security, and context templates in one step.
+</Aside>

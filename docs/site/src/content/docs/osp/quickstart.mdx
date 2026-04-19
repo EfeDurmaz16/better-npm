@@ -1,0 +1,97 @@
+---
+title: OSP Quick Start
+description: Provision services with the Open Service Protocol
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+The Open Service Protocol (OSP) lets you provision cloud services — databases, caches,
+message queues — directly from the command line, with credentials automatically written
+to your `.env` file.
+
+## Prerequisites
+
+1. A [Sardis](https://sardis.dev) account (free)
+2. `SARDIS_API_KEY` environment variable set (or run `better login --sardis`)
+
+## Quickstart
+
+<Steps>
+
+1. **Log in to Sardis**
+
+   ```bash
+   better login --sardis
+   # Opens browser for OAuth
+   ```
+
+2. **Discover available services**
+
+   ```bash
+   better discover database
+   # Lists PostgreSQL, MySQL, Redis, MongoDB providers with pricing
+   ```
+
+3. **Provision a service**
+
+   ```bash
+   better provision redis/upstash --tier free
+   # ✔ Provisioned upstash/redis in 3.2s
+   # ✔ Credentials written to .env
+   ```
+
+4. **Use the credentials**
+
+   Your `.env` is automatically updated:
+   ```env
+   REDIS_URL=rediss://default:xxxx@us1-xxx.upstash.io:6379
+   REDIS_TLS=true
+   ```
+
+5. **Check service status**
+
+   ```bash
+   better services list
+   better services status redis/upstash
+   ```
+
+</Steps>
+
+## Supported Providers
+
+| Provider | Services | Free Tier |
+|----------|----------|-----------|
+| Upstash | Redis, Kafka | ✓ |
+| Neon | PostgreSQL | ✓ |
+| PlanetScale | MySQL | ✓ |
+| Cloudflare | Workers KV, R2, D1 | ✓ |
+| Railway | PostgreSQL, MySQL, Redis | Trial |
+| Supabase | PostgreSQL, Auth, Storage | ✓ |
+
+## Credential Management
+
+```bash
+# Rotate credentials
+better credentials rotate <resource-id>
+
+# Remove a provisioned service
+better deprovision <resource-id>
+
+# Generate .env from all provisioned services
+better env-generate
+```
+
+<Aside type="note">
+All credentials are encrypted at rest in `~/.better/vault/` using X25519 + AES-256-GCM.
+</Aside>
+
+## Agent Mode
+
+In CI or AI agent pipelines:
+
+```bash
+better agent provision redis/upstash --tier free --json
+```
+
+Returns structured JSON with `"ok": true` and credential keys on success,
+or semantic exit code `9` (OSP_ERROR) on failure.

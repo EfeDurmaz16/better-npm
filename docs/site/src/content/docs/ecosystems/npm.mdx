@@ -1,0 +1,75 @@
+---
+title: npm / Node.js
+description: Using better with npm and Node.js projects
+---
+
+## Detection
+
+`better` activates the npm engine when it finds `package.json` in the project root.
+
+## Supported Files
+
+| File | Role |
+|------|------|
+| `package.json` | Manifest — declares dependencies |
+| `package-lock.json` | npm's lockfile (read on first install) |
+| `better.lock` | better's binary lockfile (written on install) |
+| `.npmrc` | Registry and install configuration |
+
+## Installation
+
+```bash
+# Install all dependencies
+better install
+
+# Install a specific package
+better add lodash
+
+# Install a dev dependency
+better add -D typescript
+
+# Frozen install for CI
+better install --frozen
+```
+
+## Node Layouts
+
+`better install` supports two layouts:
+
+| Layout | Flag | Description |
+|--------|------|-------------|
+| Hoisted (default) | `--node-layout hoist` | npm-compatible flat `node_modules` |
+| Strict | `--node-layout strict` | Isolated — only direct deps accessible |
+
+## Lifecycle Scripts
+
+Lifecycle scripts (`preinstall`, `postinstall`, `prepare`) run by default.
+Control them with:
+
+```bash
+# Skip all lifecycle scripts
+better install --no-scripts
+
+# Sandbox lifecycle scripts (macOS/Linux)
+better install --sandbox
+```
+
+## Workspaces
+
+`better` auto-detects npm workspaces from `package.json`:
+
+```bash
+better workspace list
+better workspace run test
+better workspace changed --since main
+```
+
+## Registry
+
+```bash
+# Use a custom registry
+better install --registry https://registry.npmjs.org
+
+# Add a scoped registry
+better registry add https://npm.myorg.com --scope @myorg
+```

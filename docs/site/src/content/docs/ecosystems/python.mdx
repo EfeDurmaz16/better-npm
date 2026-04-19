@@ -1,0 +1,74 @@
+---
+title: Python / PyPI
+description: Using better with Python projects
+---
+
+## Detection
+
+`better` activates the Python engine when it finds:
+- `pyproject.toml`
+- `requirements.txt` / `requirements-dev.txt`
+- `setup.py` / `setup.cfg`
+- `Pipfile`
+
+## How It Works
+
+`better` installs Python packages directly — it downloads `.whl` files from PyPI and
+extracts them into your virtual environment's `site-packages/`. No subprocess calls to
+`pip` required.
+
+Entry-point scripts (from `entry_points.txt`) are generated as shell wrapper scripts
+in `.venv/bin/`.
+
+## Installation
+
+```bash
+# Install all dependencies (creates .venv if not present)
+better install
+
+# Install a specific package
+better add requests
+
+# Install a dev dependency
+better add -D pytest
+```
+
+## Virtual Environments
+
+`better` expects a `.venv` directory in your project root. It creates one automatically
+if it doesn't exist.
+
+```bash
+# Activate the venv in your shell
+better shell
+
+# Or use the standard activation
+source .venv/bin/activate
+```
+
+## Requirements Files
+
+`better` reads the following requirement file formats:
+
+```
+requests==2.31.0
+flask>=3.0,<4.0
+-r requirements-common.txt
+```
+
+## Manifest Formats
+
+| File | Notes |
+|------|-------|
+| `pyproject.toml` | PEP 517/518 — preferred |
+| `requirements.txt` | Classic pip format |
+| `Pipfile` | Pipenv-style |
+| `setup.py` | Legacy — read for `install_requires` |
+
+## Audit
+
+```bash
+better audit --ecosystem python
+```
+
+Uses OSV.dev with PyPI ecosystem IDs for accurate CVE matching.
