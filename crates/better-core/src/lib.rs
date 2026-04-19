@@ -162,6 +162,7 @@ pub use suggest::*;
 pub mod output;
 pub use output::{OutputMode, GlobalFlags, CommandOutput, BetterError, ErrorCode};
 
+pub mod agent;
 pub mod context;
 pub mod mcp;
 pub mod search;
