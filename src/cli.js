@@ -11,6 +11,8 @@ Usage:
 
 Commands:
   install            Wrap your package manager install
+  add <pkg...>       Add package(s) to your project
+  remove <pkg...>    Remove package(s) from your project
   analyze            Analyze node_modules sizes and duplication
   cache <subcmd>     Inspect/manage Better cache (stats, gc, explain)
   doctor             Dependency health checks and score
@@ -361,6 +363,14 @@ export async function runCli(argv) {
     switch (command) {
       case "install":
         await (await import("./commands/install.js")).cmdInstall(rest);
+        break;
+      case "add":
+        await (await import("./commands/add.js")).cmdAdd(rest);
+        break;
+      case "remove":
+      case "rm":
+      case "uninstall":
+        await (await import("./commands/remove.js")).cmdRemove(rest);
         break;
       case "analyze":
         await (await import("./commands/analyze.js")).cmdAnalyze(rest);
