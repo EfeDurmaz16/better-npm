@@ -1,0 +1,64 @@
+---
+title: better context
+description: Generate LLM-friendly context for packages
+---
+
+## Synopsis
+
+```bash
+better context [package] [options]
+better context --all [options]
+```
+
+Generates Markdown context files for packages, optimized for use as LLM context in AI coding assistants.
+Context includes: exported APIs, usage patterns, quick-start examples, and known gotchas.
+
+## Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--all` | `false` | Generate context for all installed packages |
+| `--gc` | `false` | Garbage-collect stale context files |
+| `--force` | `false` | Regenerate even if cached |
+| `--ecosystem` | auto | Ecosystem: `npm`, `python`, `cargo`, etc. |
+| `--json` | `false` | Machine-readable JSON output |
+
+## Examples
+
+```bash
+# Generate context for a single package
+better context lodash
+
+# Generate context for all installed packages
+better context --all
+
+# Force regenerate (ignores cache)
+better context lodash --force
+
+# Clean up stale context files
+better context --gc
+```
+
+## Output
+
+Context files are written to `~/.cache/better/context/{ecosystem}/{name}@{version}.md`.
+
+They can be passed directly to LLMs or used via the [MCP server](/commands/mcp/).
+
+## Authored Context
+
+Package authors can provide authoritative context by creating:
+- **`.better-context.md`** — Human-readable Markdown template
+- **`better.context.json`** — Structured JSON with exports, patterns, and gotchas
+
+Generate templates with:
+
+```bash
+better init --context-template
+```
+
+## See Also
+
+- [`better mcp`](/commands/mcp/) — Serve context to AI assistants via MCP
+- [`better ai`](/commands/ai/) — AI-powered dependency analysis
+- [`better init --context-template`](/commands/init/) — Scaffold context templates

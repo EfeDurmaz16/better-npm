@@ -1,0 +1,101 @@
+---
+title: better install
+description: Install all dependencies from the project lockfile
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+## Synopsis
+
+```bash
+better install [options]
+better i [options]
+```
+
+Installs all packages listed in the lockfile into the project.
+Uses the content-addressed store (CAS) at `~/.cache/better/` to avoid redundant downloads.
+
+## Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--frozen` | `false` | Fail if the lockfile would change (for CI) |
+| `--offline` | `false` | Use only cached packages; fail if any are missing |
+| `--no-scripts` | `false` | Skip lifecycle scripts (postinstall etc.) |
+| `--dedup` | `false` | Deduplicate transitive dependencies after install |
+| `--sandbox` | `false` | Run lifecycle scripts in a sandboxed environment |
+| `--verify-provenance` | `false` | Warn on packages without SLSA provenance |
+| `--require-provenance` | `false` | Block packages without SLSA provenance |
+| `--node-layout` | `hoist` | Dependency layout strategy: `hoist` or `strict` |
+| `--jobs N` | CPU×2 | Parallel fetch/extract workers |
+| `--json` | `false` | Machine-readable JSON output |
+| `--json-progress` | `false` | NDJSON progress events on stderr |
+
+## Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success |
+| `1` | Dependency error |
+| `2` | Security violation (audit failed) |
+| `3` | Policy violation |
+| `4` | Network error |
+
+## Examples
+
+<Tabs>
+<TabItem label="Basic">
+```bash
+# Install all dependencies
+better install
+
+# CI-safe install (fails if lockfile is out of date)
+better install --frozen
+```
+</TabItem>
+<TabItem label="Offline / Air-gapped">
+```bash
+# Pack the cache for distribution
+better cache pack --output cache.tar.zst
+
+# On the air-gapped machine:
+better cache unpack --input cache.tar.zst
+better install --offline
+```
+</TabItem>
+<TabItem label="Agent / CI">
+```bash
+# Structured JSON output for CI scripts
+better agent install --json
+
+# NDJSON progress events on stderr
+better install --json-progress 2>progress.ndjson
+```
+</TabItem>
+</Tabs>
+
+## JSON Output
+
+When `--json` is passed, `better install` emits a single JSON object:
+
+```json
+{
+  "ok": true,
+  "kind": "better.install.report",
+  "packages": 423,
+  "fetched": 12,
+  "cached": 411,
+  "bytes_downloaded": 1048576,
+  "phase_resolve_ms": 12,
+  "phase_fetch_ms": 340,
+  "phase_extract_ms": 120,
+  "phase_link_ms": 80,
+  "total_ms": 552
+}
+```
+
+## See Also
+
+- [`better audit`](/commands/audit/) — scan for vulnerabilities after install
+- [`better outdated`](/commands/outdated/) — check for newer versions
+- [`better lock`](/commands/lock/) — lockfile management

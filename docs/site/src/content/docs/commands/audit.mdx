@@ -1,0 +1,104 @@
+---
+title: better audit
+description: Scan dependencies for known vulnerabilities via OSV.dev
+---
+
+import { Tabs, TabItem, Aside } from '@astrojs/starlight/components';
+
+## Synopsis
+
+```bash
+better audit [options]
+better audit fix [options]
+```
+
+Queries the [OSV.dev](https://osv.dev) batch API for all packages in the lockfile.
+Supports npm, Python (PyPI), Rust (crates.io), Ruby (RubyGems), Go, PHP (Packagist),
+.NET (NuGet), Swift, and CocoaPods ecosystems.
+
+## Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--min-severity` | `low` | Minimum severity to report: `low`, `moderate`, `high`, `critical` |
+| `--strict` | `false` | Exit code 2 on any vulnerability (not just high/critical) |
+| `--add-ignore CVE-ID` | — | Add a CVE to the ignore list with `--ignore-reason` |
+| `--ignore-reason TEXT` | — | Reason for ignoring a CVE (used with `--add-ignore`) |
+| `--json` | `false` | Machine-readable JSON output |
+
+## Subcommands
+
+### `better audit fix`
+
+Attempts to automatically upgrade vulnerable packages to their patched version.
+
+```bash
+better audit fix
+better audit fix --dry-run   # preview changes without applying
+```
+
+## Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | No vulnerabilities found (or all below `--min-severity`) |
+| `2` | Vulnerabilities found at or above `--min-severity` |
+
+## Examples
+
+<Tabs>
+<TabItem label="Basic">
+```bash
+# Audit all packages
+better audit
+
+# Only fail on high+ severity
+better audit --min-severity high
+```
+</TabItem>
+<TabItem label="CI Integration">
+```bash
+# In CI: fail build on any vulnerability
+better audit --strict --json
+```
+</TabItem>
+<TabItem label="Ignore a known false positive">
+```bash
+better audit --add-ignore GHSA-abc-123 --ignore-reason "Only affects server-side, not exposed"
+```
+</TabItem>
+</Tabs>
+
+## JSON Output
+
+```json
+{
+  "ok": false,
+  "kind": "better.audit.report",
+  "total": 3,
+  "critical": 1,
+  "high": 2,
+  "moderate": 0,
+  "low": 0,
+  "vulnerabilities": [
+    {
+      "id": "GHSA-abc-123",
+      "package": "lodash",
+      "version": "4.17.20",
+      "severity": "high",
+      "summary": "Prototype pollution via `merge`",
+      "fixed_in": "4.17.21"
+    }
+  ]
+}
+```
+
+<Aside type="tip">
+Use `better audit fix` to automatically upgrade vulnerable packages to their patched version.
+</Aside>
+
+## See Also
+
+- [`better install`](/commands/install/) — install with provenance verification
+- [`better policy`](/commands/policy/) — enforce license and audit policies
+- [`better sbom`](/commands/sbom/) — generate a Software Bill of Materials

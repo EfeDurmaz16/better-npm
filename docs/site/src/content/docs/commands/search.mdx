@@ -1,0 +1,61 @@
+---
+title: better search
+description: Search for packages across npm, PyPI, and other registries
+---
+
+## Synopsis
+
+```bash
+better search <query> [options]
+```
+
+Searches the npm registry and PyPI simultaneously and returns ranked results.
+Results include weekly download counts, description, and a quality score.
+
+## Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--ecosystem` | — | Filter to a specific ecosystem: `npm`, `python`, `cargo`, etc. |
+| `--limit N` | `10` | Maximum results to return |
+| `--json` | `false` | Machine-readable JSON output |
+
+## Examples
+
+```bash
+# Search npm
+better search lodash
+
+# Search PyPI only
+better search requests --ecosystem python
+
+# Return 20 results
+better search http-client --limit 20
+```
+
+## JSON Output
+
+```json
+{
+  "ok": true,
+  "kind": "better.search.results",
+  "query": "http client",
+  "results": [
+    {
+      "ecosystem": "npm",
+      "name": "axios",
+      "version": "1.7.9",
+      "description": "Promise based HTTP client for the browser and node.js",
+      "weekly_downloads": 52000000,
+      "score": 0.97
+    }
+  ],
+  "total": 10
+}
+```
+
+## See Also
+
+- [`better ai`](/commands/ai/) — AI-powered package recommendations
+- [`better suggest`](/commands/suggest/) — suggest packages for your project
+- [`better context`](/commands/context/) — generate LLM context for a package

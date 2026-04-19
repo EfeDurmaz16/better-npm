@@ -1,0 +1,99 @@
+---
+title: better ai
+description: AI-powered dependency management
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## Synopsis
+
+```bash
+better ai <subcommand> [options]
+```
+
+AI-powered dependency management. Requires `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`
+environment variable.
+
+## Subcommands
+
+### `better ai advise`
+
+Analyze your project's dependencies and get AI-powered improvement recommendations.
+
+```bash
+better ai advise
+better ai advise --json
+```
+
+### `better ai explain <package>`
+
+Get a plain-language explanation of what a package does and whether you need it.
+
+```bash
+better ai explain lodash
+better ai explain requests --ecosystem python
+```
+
+### `better ai alternatives <package>`
+
+Find AI-ranked alternatives to a package, scored by bundle size, maintenance, and API quality.
+
+```bash
+better ai alternatives moment
+better ai alternatives axios
+```
+
+### `better ai review`
+
+Review how your codebase uses dependencies — identify deprecated APIs, security risks,
+and opportunities to reduce bundle size.
+
+```bash
+better ai review
+better ai review --json
+```
+
+### `better ai migrate <from> [to]`
+
+Get a step-by-step migration guide from one package to another, including code examples
+and automated codemod suggestions.
+
+```bash
+better ai migrate moment dayjs
+better ai migrate request axios
+```
+
+## Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--json` | `false` | Machine-readable JSON output |
+| `--project-root PATH` | `.` | Project root directory |
+
+<Aside type="caution">
+AI subcommands make API calls to Anthropic or OpenAI. Set `ANTHROPIC_API_KEY` or
+`OPENAI_API_KEY` in your environment before using these commands.
+</Aside>
+
+## Examples
+
+```bash
+# Get AI advice about your project's dependencies
+ANTHROPIC_API_KEY=sk-... better ai advise
+
+# Explain what a package does
+better ai explain zod
+
+# Find alternatives to a heavy package
+better ai alternatives moment
+
+# Migration guide: moment → dayjs
+better ai migrate moment dayjs
+```
+
+## See Also
+
+- [`better suggest`](/commands/suggest/) — suggest new packages for your project
+- [`better search`](/commands/search/) — search for packages
+- [`better context`](/commands/context/) — generate LLM context for packages
+- [`better mcp`](/commands/mcp/) — Model Context Protocol server for IDE integration

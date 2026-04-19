@@ -1,0 +1,51 @@
+---
+title: better outdated
+description: Check which dependencies have newer versions available
+---
+
+## Synopsis
+
+```bash
+better outdated [options]
+```
+
+Compares the installed package versions against their latest releases on the
+respective registries (npm, PyPI, crates.io, RubyGems, Packagist, NuGet, etc.).
+
+## Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--json` | `false` | Machine-readable JSON output |
+
+## Output
+
+```
+Package              Current   Wanted    Latest   Type
+lodash               4.17.20   4.17.21   4.17.21  patch
+react                17.0.2    18.3.1    18.3.1   major
+dayjs                1.11.0    1.11.13   1.11.13  minor
+```
+
+## JSON Output
+
+```json
+{
+  "ok": true,
+  "kind": "better.outdated.report",
+  "packages": [
+    {
+      "name": "lodash",
+      "current": "4.17.20",
+      "latest": "4.17.21",
+      "update_type": "patch"
+    }
+  ],
+  "total": 1
+}
+```
+
+## See Also
+
+- [`better upgrade --smart`](/commands/upgrade/) — AI-assisted upgrade with changelog analysis
+- [`better audit`](/commands/audit/) — scan for security vulnerabilities
