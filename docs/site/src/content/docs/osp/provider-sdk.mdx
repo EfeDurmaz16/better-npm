@@ -1,0 +1,160 @@
+---
+title: OSP Provider SDK
+description: Build OSP-compliant service providers with better provider init
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+## Overview
+
+The Open Service Protocol (OSP) Provider SDK lets you build a service that any
+`better` user can provision with a single command. The SDK handles:
+
+- Manifest discovery (`/.well-known/osp.json`)
+- Ed25519 request signature verification
+- Idempotent provisioning
+- Credential rotation
+- Conformance testing
+
+## Scaffold a New Provider
+
+```bash
+better provider init my-db-provider \
+  --service-type database \
+  --domain db.example.com
+```
+
+Generated structure:
+
+```
+my-db-provider/
+  .well-known/
+    osp.json              # OSP v1.1 manifest
+  src/
+    provision.js          # ProvisionRequest handler
+    deprovision.js        # DeprovisionRequest handler
+    credentials.js        # Credential rotation handler
+    server.js             # HTTP server with Ed25519 verification
+  tests/
+    conformance.test.js   # OSP conformance suite
+  better.provider.toml    # Provider config
+  package.json
+  .gitignore
+```
+
+## Implementing provision.js
+
+The scaffolded `provision.js` includes a working idempotency cache and stub
+resource creation:
+
+```js
+import crypto from "node:crypto";
+
+// In-memory idempotency store — replace with a persistent store in production.
+const idempotencyStore = new Map();
+
+export async function handleProvision(req) {
+  const { idempotency_key, tier_id } = req;
+
+  const cached = await checkIdempotencyCache(idempotency_key);
+  if (cached) return cached;
+
+  // TODO: Create the actual resource here.
+  const credentials = {
+    host: process.env.SERVICE_HOST ?? "localhost",
+    port: 5432,
+    database: `db_${idempotency_key.slice(0, 8)}`,
+    username: `user_${idempotency_key.slice(0, 8)}`,
+    password: generatePassword(),
+    ssl: true,
+  };
+
+  const response = {
+    ok: true,
+    tier_id,
+    credentials,
+    expires_at: null,
+  };
+
+  await saveIdempotencyCache(idempotency_key, response);
+  return response;
+}
+```
+
+<Aside type="tip">
+Replace the in-memory `Map` with Redis or a database in production to survive
+server restarts.
+</Aside>
+
+## Ed25519 Signature Verification
+
+The scaffolded `server.js` already includes signature verification using
+Node.js's built-in `node:crypto`:
+
+```js
+import { createVerify, createPublicKey } from "node:crypto";
+import { readFileSync } from "node:fs";
+
+const ospPublicKey = createPublicKey(
+  readFileSync(".well-known/osp-public-key.pem", "utf8")
+);
+
+function verifyOspSignature(rawBody, signatureHeader) {
+  if (!signatureHeader) return false;
+  const verify = createVerify("Ed25519");
+  verify.update(rawBody);
+  return verify.verify(ospPublicKey, Buffer.from(signatureHeader, "base64"));
+}
+```
+
+`better` signs all OSP requests with Ed25519 using the user's vault key.
+
+## OSP Manifest
+
+The `.well-known/osp.json` manifest declares your provider's capabilities:
+
+```json
+{
+  "ospVersion": "1.1",
+  "name": "my-db-provider",
+  "serviceType": "database",
+  "auth": {
+    "type": "ed25519",
+    "publicKeyUrl": "https://db.example.com/.well-known/osp-public-key.pem"
+  },
+  "endpoints": {
+    "provision":   "https://db.example.com/osp/provision",
+    "deprovision": "https://db.example.com/osp/deprovision",
+    "credentials": "https://db.example.com/osp/credentials/rotate",
+    "status":      "https://db.example.com/osp/status"
+  },
+  "tiers": [
+    { "id": "free",    "price": { "amount": 0,  "currency": "USD", "period": "month" } },
+    { "id": "starter", "price": { "amount": 9,  "currency": "USD", "period": "month" } }
+  ]
+}
+```
+
+## Running the Conformance Suite
+
+```bash
+npm install
+node --test tests/conformance.test.js
+```
+
+The conformance suite checks:
+- Manifest format and required fields
+- Provision idempotency
+- Deprovision and credential rotation
+- Signature verification
+
+## Publishing Your Provider
+
+Once conformance tests pass, submit your provider to the
+[OSP Provider Registry](https://osp.dev/providers) so users can discover it with
+`better discover <type>`.
+
+## See Also
+
+- [OSP Quick Start](/osp/quickstart/) — use existing providers
+- [OSP Providers](/osp/providers/) — built-in provider directory

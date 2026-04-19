@@ -1,0 +1,91 @@
+---
+title: OSP Providers
+description: Directory of Open Service Protocol providers and their offerings
+---
+
+## Built-in Providers
+
+`better` ships with support for the following OSP-compliant providers:
+
+| Provider | Services | Free Tier | Region |
+|----------|----------|-----------|--------|
+| [Upstash](https://upstash.com) | Redis, Kafka | ✓ | Global edge |
+| [Neon](https://neon.tech) | PostgreSQL | ✓ | AWS/GCP/Azure |
+| [PlanetScale](https://planetscale.com) | MySQL | ✓ | AWS |
+| [Cloudflare](https://cloudflare.com) | Workers KV, R2, D1 | ✓ | Global edge |
+| [Railway](https://railway.app) | PostgreSQL, MySQL, Redis | Trial | AWS |
+| [Supabase](https://supabase.com) | PostgreSQL, Auth, Storage | ✓ | AWS |
+| [Turso](https://turso.tech) | SQLite (libSQL) | ✓ | Global edge |
+
+## Discovering Providers
+
+```bash
+# Search for database providers
+better discover database
+
+# Search for cache providers
+better discover cache
+
+# Search by keyword
+better discover redis
+```
+
+## Provisioning
+
+```bash
+# Provision a Redis instance on Upstash (free tier)
+better provision redis/upstash --tier free
+
+# Provision a PostgreSQL database on Neon
+better provision postgres/neon --tier free
+
+# Provision with a specific region
+better provision postgres/neon --tier free --region us-east-1
+```
+
+## Credential Output
+
+After provisioning, credentials are written to `.env`:
+
+```env
+# Upstash Redis
+REDIS_URL=rediss://default:TOKEN@us1-xxx.upstash.io:6379
+REDIS_TLS=true
+
+# Neon PostgreSQL
+DATABASE_URL=postgresql://user:pass@ep-xxx.us-east-2.aws.neon.tech/neondb?sslmode=require
+
+# Cloudflare R2
+R2_ACCOUNT_ID=abc123
+R2_ACCESS_KEY_ID=key123
+R2_SECRET_ACCESS_KEY=secret123
+R2_BUCKET=my-bucket
+```
+
+## Third-Party Providers
+
+You can add any OSP-compliant provider by pointing `better` at its manifest URL:
+
+```bash
+# Provision from a third-party provider
+better provision my-db --from https://db.example.com/.well-known/osp.json
+```
+
+## Building a Provider
+
+Use `better provider init` to scaffold a conformant provider:
+
+```bash
+better provider init my-db-provider \
+  --service-type database \
+  --domain db.example.com
+```
+
+This creates a complete OSP provider scaffold. See the
+[Provider SDK documentation](/osp/provider-sdk/) for details.
+
+## See Also
+
+- [OSP Quick Start](/osp/quickstart/) — get started with service provisioning
+- [`better discover`](/commands/discover/) — search for providers
+- [`better provision`](/commands/provision/) — provision a service
