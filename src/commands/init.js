@@ -131,6 +131,8 @@ export async function cmdInit(argv) {
       policy:   { type: "boolean", default: false },
       hooks:    { type: "boolean", default: false },
       all:      { type: "boolean", default: false },
+      // v0.7 context template
+      "context-template": { type: "boolean", default: false },
     },
     allowPositionals: false,
     strict: false,
@@ -151,15 +153,17 @@ Actions:
   • Optionally creates .npmrc with safe defaults (--npmrc)
   • Optionally creates .better/policy.json scaffold (--policy)
   • Optionally creates .better/hooks.json scaffold (--hooks)
+  • Optionally creates .better-context.md and better.context.json templates (--context-template)
 
 Options:
-  --ci         Create GitHub Actions CI workflow
-  --readme     Create README.md if missing
-  --security   Create SECURITY.md vulnerability disclosure template
-  --npmrc      Create .npmrc with safe registry defaults
-  --policy     Create .better/policy.json license + security policy scaffold
-  --hooks      Create .better/hooks.json pre/post install hooks scaffold
-  --all        Enable all optional scaffolds (ci + readme + security + npmrc + policy + hooks)
+  --ci                Create GitHub Actions CI workflow
+  --readme            Create README.md if missing
+  --security          Create SECURITY.md vulnerability disclosure template
+  --npmrc             Create .npmrc with safe registry defaults
+  --policy            Create .better/policy.json license + security policy scaffold
+  --hooks             Create .better/hooks.json pre/post install hooks scaffold
+  --context-template  Create .better-context.md and better.context.json for AI context authoring
+  --all               Enable all optional scaffolds (ci + readme + security + npmrc + policy + hooks + context-template)
   --force      Overwrite existing files
   --dry-run    Preview without writing
   --json       Machine-readable output
@@ -275,10 +279,11 @@ Options:
   }
 
   // Resolve --all flag
-  const wantSecurity = values.security || values.all;
-  const wantNpmrc    = values.npmrc    || values.all;
-  const wantPolicy   = values.policy   || values.all;
-  const wantHooks    = values.hooks    || values.all;
+  const wantSecurity         = values.security              || values.all;
+  const wantNpmrc            = values.npmrc                 || values.all;
+  const wantPolicy           = values.policy                || values.all;
+  const wantHooks            = values.hooks                 || values.all;
+  const wantContextTemplate  = values["context-template"]   || values.all;
   if (values.all) {
     values.ci     = true;
     values.readme = true;
@@ -436,6 +441,78 @@ lockfile-version=3
     }
   }
 
+  // --- .better-context.md + better.context.json ---
+  if (wantContextTemplate) {
+    const pkgName = updatedPkg.name || dirName;
+
+    const ctxMdPath = path.join(projectRoot, ".better-context.md");
+    const ctxMdExists = await fs.access(ctxMdPath).then(() => true).catch(() => false);
+    if (!ctxMdExists || values.force) {
+      const ctxMdContent = `# ${pkgName} — AI Context
+
+> This file is read by \`better context\` and AI coding assistants to understand your package.
+
+## Overview
+
+<!-- One-paragraph description of what this package does and its primary use case. -->
+
+## Quick Start
+
+\`\`\`js
+// TODO: add a minimal working example
+\`\`\`
+
+## Key APIs
+
+<!-- List your most important exports with brief descriptions. -->
+
+| Export | Kind | Description |
+|--------|------|-------------|
+| \`example\` | function | Does something useful |
+
+## Common Patterns
+
+### Pattern 1: Basic usage
+
+\`\`\`js
+// TODO
+\`\`\`
+
+## Gotchas
+
+- <!-- List known footguns, non-obvious behavior, or version-specific quirks -->
+
+## Migration
+
+<!-- If migrating from another package, describe the mapping here. -->
+
+## See Also
+
+- <!-- Links to related packages or documentation -->
+`;
+      actions.push({ file: ".better-context.md", action: ctxMdExists ? "overwrite" : "create", content: ctxMdContent });
+    }
+
+    const ctxJsonPath = path.join(projectRoot, "better.context.json");
+    const ctxJsonExists = await fs.access(ctxJsonPath).then(() => true).catch(() => false);
+    if (!ctxJsonExists || values.force) {
+      const ctxJsonContent = JSON.stringify({
+        "$schema": "https://better.sh/schema/v1/context.json",
+        "schema": "1",
+        "name": pkgName,
+        "version": updatedPkg.version || "0.1.0",
+        "description": updatedPkg.description || "",
+        "exports": [],
+        "quick_start": `import ${pkgName.replace(/[^a-zA-Z0-9_]/g, "_")} from '${pkgName}';`,
+        "patterns": [],
+        "gotchas": [],
+        "migration": null,
+        "see_also": [],
+      }, null, 2) + "\n";
+      actions.push({ file: "better.context.json", action: ctxJsonExists ? "overwrite" : "create", content: ctxJsonContent });
+    }
+  }
+
   if (values.json) {
     printJson({
       ok: true,
@@ -488,5 +565,6 @@ lockfile-version=3
     if (values.ci) printText(`\x1b[90mCI workflow written to .github/workflows/ci.yml\x1b[0m`);
     if (wantPolicy) printText(`\x1b[90mPolicy scaffold at .better/policy.json — edit to tune license/audit rules\x1b[0m`);
     if (wantHooks) printText(`\x1b[90mHooks scaffold at .better/hooks.json — edit to add pre/post install hooks\x1b[0m`);
+    if (wantContextTemplate) printText(`\x1b[90mContext templates at .better-context.md + better.context.json — fill in to improve AI suggestions\x1b[0m`);
   }
 }
