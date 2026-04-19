@@ -1,0 +1,107 @@
+---
+title: better ci
+description: Full CI pipeline — install, audit, policy, SBOM, and receipt in one command
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+## Synopsis
+
+```bash
+better ci [options]
+```
+
+Runs the full CI pipeline in a single command:
+
+<Steps>
+
+1. **install `--frozen --strict`** — Fail if lockfile is missing or out of sync
+2. **provenance verify** — Verify npm attestations (skip with `--no-provenance`)
+3. **audit** — Security vulnerability scan via OSV.dev (skip with `--no-audit`)
+4. **policy check** — License and firewall policy (skip with `--no-policy`)
+5. **sbom-gen** — Generate a Software Bill of Materials (skip with `--no-sbom`)
+6. **receipt** — Record the install receipt (always runs)
+
+</Steps>
+
+## Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--no-provenance` | `false` | Skip provenance verification |
+| `--no-audit` | `false` | Skip security audit |
+| `--no-policy` | `false` | Skip policy check |
+| `--no-sbom` | `false` | Skip SBOM generation |
+| `--no-fail-fast` | `false` | Continue on failure instead of aborting |
+| `--sbom-format <fmt>` | `cyclonedx` | SBOM format: `cyclonedx` or `spdx` |
+| `--audit-severity <lvl>` | `high` | Min severity to fail: `low`, `moderate`, `high`, `critical` |
+| `--json` | `false` | Machine-readable JSON output with per-step results |
+
+## Examples
+
+```bash
+# Full pipeline
+better ci
+
+# Skip SBOM and provenance (faster)
+better ci --no-sbom --no-provenance
+
+# Fail on moderate+ vulnerabilities
+better ci --audit-severity moderate
+
+# Continue even if one step fails (collect all results)
+better ci --no-fail-fast --json
+```
+
+## GitHub Actions Integration
+
+```yaml
+name: CI
+on: [push, pull_request]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install -g better
+      - run: better ci
+```
+
+## JSON Output
+
+```json
+{
+  "ok": true,
+  "kind": "better.ci",
+  "steps": [
+    { "name": "install",    "ok": true,  "durationMs": 3200 },
+    { "name": "provenance", "ok": true,  "durationMs": 1100 },
+    { "name": "audit",      "ok": true,  "durationMs": 800  },
+    { "name": "policy",     "ok": true,  "durationMs": 120  },
+    { "name": "sbom",       "ok": true,  "durationMs": 200  },
+    { "name": "receipt",    "ok": true,  "durationMs": 40   }
+  ],
+  "totalDurationMs": 5460
+}
+```
+
+## Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | All steps passed |
+| `1` | One or more steps failed |
+
+<Aside type="tip">
+Use `better init --ci` to generate a ready-to-use GitHub Actions workflow that calls `better ci`.
+</Aside>
+
+## See Also
+
+- [`better audit`](/commands/audit/) — standalone security audit
+- [`better sbom`](/commands/sbom/) — standalone SBOM generation
+- [`better install`](/commands/install/) — install dependencies
