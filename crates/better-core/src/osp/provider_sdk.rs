@@ -740,6 +740,37 @@ mod tests {
     }
 
     #[test]
+    fn provision_handler_js_has_real_idempotency_cache() {
+        let opts = ProviderScaffoldOpts {
+            name: "my-provider".into(),
+            service_type: "database".into(),
+            domain: "db.example.com".into(),
+            output_dir: None,
+        };
+        let js = provision_handler_js(&opts);
+        // Real Map-based cache, not TODO stubs
+        assert!(js.contains("idempotencyStore"), "Should have named idempotency store");
+        assert!(js.contains("new Map()"), "Should initialize Map");
+        assert!(!js.contains("/* TODO */"), "Should not have TODO stubs");
+    }
+
+    #[test]
+    fn server_js_has_ed25519_signature_verification() {
+        let opts = ProviderScaffoldOpts {
+            name: "my-provider".into(),
+            service_type: "database".into(),
+            domain: "db.example.com".into(),
+            output_dir: None,
+        };
+        let js = server_js(&opts);
+        assert!(js.contains("createVerify"), "Should have createVerify from node:crypto");
+        assert!(js.contains("Ed25519"), "Should verify Ed25519 signature");
+        assert!(js.contains("verifyOspSignature"), "Should call verifyOspSignature");
+        assert!(js.contains("x-osp-signature"), "Should check x-osp-signature header");
+        assert!(!js.contains("// TODO: Verify"), "Should not have TODO for verification");
+    }
+
+    #[test]
     fn scaffold_result_serializes() {
         let result = ScaffoldResult {
             ok: true,
