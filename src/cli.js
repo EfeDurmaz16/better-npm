@@ -33,6 +33,7 @@ Commands:
   maintenance        Predictive maintenance — risk-score packages needing attention
   dashboard          Interactive TUI dashboard for project health
   run <script>       Run package.json scripts via npm/pnpm/yarn
+  shell              Spawn interactive shell with project env activated (venv/node_modules)
   why <package>      Show why a package is installed (dependency paths)
   dedupe             Detect duplicate packages in node_modules
   license            Scan node_modules for package licenses
@@ -429,6 +430,9 @@ export async function runCli(argv) {
         break;
       case "run":
         await (await import("./commands/run.js")).cmdRun(rest);
+        break;
+      case "shell":
+        await (await import("./commands/shell.js")).cmdShell(rest);
         break;
       case "why":
         await (await import("./commands/why.js")).cmdWhy(rest);
