@@ -41,6 +41,7 @@ impl PackageEngine for CargoEngine {
                 version: p.version.clone(),
                 cached: true,
                 bytes_downloaded: 0,
+                artifact_path: None,
             })
             .collect())
     }

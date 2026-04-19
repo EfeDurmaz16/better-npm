@@ -114,6 +114,9 @@ pub struct FetchResult {
     pub version: String,
     pub cached: bool,
     pub bytes_downloaded: u64,
+    /// Absolute path to the artifact in the CAS (wheel, tarball, …).
+    /// Engines may leave this `None` when they manage extraction themselves.
+    pub artifact_path: Option<std::path::PathBuf>,
 }
 
 /// A vulnerability found during audit.

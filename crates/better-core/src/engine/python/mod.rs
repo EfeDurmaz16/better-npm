@@ -143,6 +143,7 @@ impl PackageEngine for PythonEngine {
             };
 
             let cached = fetch::cas_hit(&cas_root, sha256);
+            let artifact_path = fetch::pypi_cas_path(&cas_root, sha256);
             let bytes = if !cached {
                 match fetch::download_and_verify(&release_file, &cas_root) {
                     Ok(_) => release_file.size,
@@ -162,6 +163,7 @@ impl PackageEngine for PythonEngine {
                 version: node.version.clone(),
                 cached,
                 bytes_downloaded: bytes,
+                artifact_path: Some(artifact_path),
             });
         }
 
@@ -170,22 +172,163 @@ impl PackageEngine for PythonEngine {
 
     fn materialize(
         &self,
-        _packages: &[EngineFetchResult],
-        _target: &Path,
+        packages: &[EngineFetchResult],
+        target: &Path,
     ) -> Result<(), EngineError> {
-        // Materialization into venv site-packages is deferred to the venv task.
+        let venv_dir = target.join(".venv");
+        if !venv_dir.exists() {
+            // No .venv present — skip silent; `better install` creates it separately.
+            return Ok(());
+        }
+
+        // Determine site-packages by finding lib/python*/site-packages under .venv
+        let site_packages = find_site_packages(&venv_dir).map_err(|e| EngineError {
+            kind: EngineErrorKind::ManifestNotFound,
+            message: e,
+        })?;
+        let bin_dir = if cfg!(windows) {
+            venv_dir.join("Scripts")
+        } else {
+            venv_dir.join("bin")
+        };
+
+        for pkg in packages {
+            let artifact = match &pkg.artifact_path {
+                Some(p) => p.clone(),
+                None => continue, // no CAS path recorded — skip
+            };
+
+            if !artifact.exists() {
+                continue; // CAS miss after fetch — shouldn't happen but be defensive
+            }
+
+            let filename = artifact
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+
+            if filename.ends_with(".whl") || artifact.extension().map_or(false, |e| e == "whl") {
+                // The CAS stores the raw file bytes; the filename comes from the URL
+                extract::extract_wheel(&artifact, &site_packages, &bin_dir).map_err(|e| EngineError {
+                    kind: EngineErrorKind::FetchFailed,
+                    message: format!("failed to extract {} wheel: {}", pkg.name, e),
+                })?;
+            }
+            // sdist / other artifact types: skip for now (require build toolchain)
+        }
+
         Ok(())
     }
 
-    fn audit(&self, _graph: &LockGraph) -> Result<Vec<Vulnerability>, EngineError> {
-        // Python audit via OSV/PyPI advisory DB — deferred.
-        Ok(Vec::new())
+    fn audit(&self, graph: &LockGraph) -> Result<Vec<Vulnerability>, EngineError> {
+        // Query OSV.dev batch API for PyPI vulnerabilities.
+        let py_packages: Vec<_> = graph
+            .packages
+            .iter()
+            .filter(|p| p.ecosystem == Ecosystem::Python)
+            .collect();
+
+        if py_packages.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Build OSV batch query JSON
+        let mut queries = String::new();
+        queries.push('[');
+        for (i, pkg) in py_packages.iter().enumerate() {
+            if i > 0 {
+                queries.push(',');
+            }
+            queries.push_str(&format!(
+                r#"{{"package":{{"name":"{}","ecosystem":"PyPI"}},"version":"{}"}}"#,
+                pkg.name, pkg.version
+            ));
+        }
+        queries.push(']');
+        let body = format!(r#"{{"queries":{}}}"#, queries);
+
+        let resp = reqwest::blocking::Client::new()
+            .post("https://api.osv.dev/v1/querybatch")
+            .header("Content-Type", "application/json")
+            .body(body)
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .map_err(|e| EngineError {
+                kind: EngineErrorKind::NetworkError,
+                message: format!("OSV query failed: {}", e),
+            })?;
+
+        let text = resp.text().map_err(|e| EngineError {
+            kind: EngineErrorKind::NetworkError,
+            message: format!("OSV response read failed: {}", e),
+        })?;
+
+        // Parse response and build Vulnerability list
+        parse_osv_batch_response(&text, &py_packages)
     }
 
     fn outdated(&self, project_root: &Path) -> Result<Vec<OutdatedPackage>, EngineError> {
-        // Parse manifest, compare with latest PyPI versions — deferred.
-        let _ = project_root;
-        Ok(Vec::new())
+        // Read the installed manifest to get the current set of dependencies.
+        let deps = if project_root.join("pyproject.toml").exists() {
+            let manifest =
+                manifest::PyProjectManifest::parse_file(&project_root.join("pyproject.toml"))
+                    .map_err(|e| EngineError {
+                        kind: EngineErrorKind::ManifestNotFound,
+                        message: e,
+                    })?;
+            manifest.dependencies
+        } else if project_root.join("requirements.txt").exists() {
+            let rf = requirements::RequirementsFile::parse_file(
+                &project_root.join("requirements.txt"),
+            )
+            .map_err(|e| EngineError {
+                kind: EngineErrorKind::ManifestNotFound,
+                message: e,
+            })?;
+            rf.packages
+        } else {
+            return Ok(Vec::new());
+        };
+
+        // For each dependency, fetch the latest version from PyPI and compare.
+        let mut outdated = Vec::new();
+        for dep in &deps {
+            let info = match pypi::fetch_package_info(&dep.name) {
+                Ok(i) => i,
+                Err(_) => continue, // network issues — skip this package
+            };
+
+            let latest = match info.versions.iter().filter(|v| !v.is_prerelease()).max() {
+                Some(v) => v.normalize(),
+                None => continue,
+            };
+
+            // Determine current installed version from the constraint (best-effort: ==)
+            let current = dep.constraint.specifiers.iter().find_map(|s| {
+                use crate::engine::python::specifier::VersionOp;
+                if matches!(s.op, VersionOp::Equal) && !s.wildcard {
+                    Some(s.version.normalize())
+                } else {
+                    None
+                }
+            });
+
+            let current = match current {
+                Some(c) => c,
+                None => continue, // can't determine installed version from constraint alone
+            };
+
+            if current != latest {
+                outdated.push(OutdatedPackage {
+                    name: dep.name.clone(),
+                    current,
+                    latest,
+                    update_type: "unknown".to_string(),
+                });
+            }
+        }
+
+        Ok(outdated)
     }
 
     /// Run a command in the Python virtual environment.
@@ -235,6 +378,139 @@ impl PackageEngine for PythonEngine {
 }
 
 /// Parse a `.env` file into key=value pairs.
+/// Find the `site-packages` directory inside a virtualenv.
+///
+/// Looks for `.venv/lib/python3.X/site-packages` and returns the first one
+/// found.  Falls back to creating `lib/site-packages` if nothing is found.
+fn find_site_packages(venv_dir: &Path) -> Result<std::path::PathBuf, String> {
+    let lib_dir = venv_dir.join("lib");
+    if lib_dir.exists() {
+        if let Ok(read) = std::fs::read_dir(&lib_dir) {
+            for entry in read.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.starts_with("python") {
+                    let sp = entry.path().join("site-packages");
+                    if sp.exists() || std::fs::create_dir_all(&sp).is_ok() {
+                        return Ok(sp);
+                    }
+                }
+            }
+        }
+    }
+    // Fallback: use a flat site-packages directly under .venv/lib
+    let fallback = lib_dir.join("site-packages");
+    std::fs::create_dir_all(&fallback)
+        .map_err(|e| format!("failed to create site-packages: {}", e))?;
+    Ok(fallback)
+}
+
+/// Parse an OSV.dev `/v1/querybatch` JSON response into `Vulnerability` entries.
+fn parse_osv_batch_response(
+    text: &str,
+    packages: &[&super::ResolvedNode],
+) -> Result<Vec<Vulnerability>, EngineError> {
+    // OSV response shape:
+    // { "results": [ { "vulns": [ { "id": "...", "summary": "...", "severity": [...] } ] }, … ] }
+    let mut vulns: Vec<Vulnerability> = Vec::new();
+
+    let results_start = match text.find("\"results\"") {
+        Some(i) => i,
+        None => return Ok(vulns),
+    };
+
+    // Walk through each result entry (one per query)
+    let results_json = &text[results_start..];
+    let mut pkg_idx = 0usize;
+    let mut remaining = results_json;
+
+    while let Some(vuln_start) = remaining.find("\"vulns\"") {
+        let vuln_section = &remaining[vuln_start..];
+        // Find all "id" fields in this vuln array
+        let bracket_start = match vuln_section.find('[') {
+            Some(i) => i,
+            None => break,
+        };
+        let array_json = &vuln_section[bracket_start..];
+        let bracket_end = find_matching_bracket(array_json).unwrap_or(array_json.len());
+        let array = &array_json[..bracket_end];
+
+        let pkg_name = packages.get(pkg_idx).map(|p| p.name.as_str()).unwrap_or("unknown");
+        let pkg_ver = packages.get(pkg_idx).map(|p| p.version.as_str()).unwrap_or("");
+
+        // Extract IDs and summaries from the array
+        let mut search = array;
+        while let Some(id_pos) = search.find("\"id\"") {
+            let after = &search[id_pos + 4..];
+            if let Some(colon) = after.find(':') {
+                let val_part = after[colon + 1..].trim_start();
+                if val_part.starts_with('"') {
+                    let end = val_part[1..].find('"').unwrap_or(val_part.len() - 1);
+                    let id = &val_part[1..end + 1];
+
+                    // Extract summary (best-effort)
+                    let summary = extract_json_string(search, "summary").unwrap_or_default();
+                    let severity = extract_json_string(search, "severity").unwrap_or_else(|| "UNKNOWN".to_string());
+
+                    vulns.push(Vulnerability {
+                        id: id.to_string(),
+                        summary,
+                        severity,
+                        package: pkg_name.to_string(),
+                        version: pkg_ver.to_string(),
+                        fixed_in: None,
+                    });
+
+                    search = &search[id_pos + id.len()..];
+                    continue;
+                }
+            }
+            search = &search[id_pos + 4..];
+        }
+
+        pkg_idx += 1;
+        remaining = &remaining[vuln_start + 6..];
+    }
+
+    Ok(vulns)
+}
+
+/// Extract a JSON string field value (simple, non-recursive).
+fn extract_json_string(haystack: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{}\"", key);
+    let pos = haystack.find(&needle)?;
+    let after = &haystack[pos + needle.len()..];
+    let colon = after.find(':')?;
+    let val = after[colon + 1..].trim_start();
+    if !val.starts_with('"') {
+        return None;
+    }
+    let end = val[1..].find('"')?;
+    Some(val[1..end + 1].to_string())
+}
+
+/// Find the position of the matching closing bracket for a JSON array starting with '['.
+fn find_matching_bracket(s: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape = false;
+    for (i, c) in s.char_indices() {
+        if escape { escape = false; continue; }
+        if c == '\\' && in_string { escape = true; continue; }
+        if c == '"' { in_string = !in_string; continue; }
+        if in_string { continue; }
+        match c {
+            '[' | '{' => depth += 1,
+            ']' | '}' => {
+                depth -= 1;
+                if depth == 0 { return Some(i + 1); }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn load_dotenv(project_root: &Path) -> Vec<(String, String)> {
     let path = project_root.join(".env");
     let content = match std::fs::read_to_string(&path) {

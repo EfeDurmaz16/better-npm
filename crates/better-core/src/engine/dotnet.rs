@@ -34,7 +34,7 @@ impl PackageEngine for DotNetEngine {
 
     fn fetch(&self, graph: &LockGraph, _: &Path) -> Result<Vec<FetchResult>, EngineError> {
         Ok(graph.packages.iter().map(|p| FetchResult {
-            name: p.name.clone(), version: p.version.clone(), cached: true, bytes_downloaded: 0
+            name: p.name.clone(), version: p.version.clone(), cached: true, bytes_downloaded: 0, artifact_path: None
         }).collect())
     }
     fn materialize(&self, _: &[FetchResult], _: &Path) -> Result<(), EngineError> { Ok(()) }

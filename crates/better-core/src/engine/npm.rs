@@ -92,6 +92,7 @@ impl PackageEngine for NpmEngine {
             version: String::new(),
             cached: result.packages_cached > 0 && result.packages_fetched == 0,
             bytes_downloaded: result.bytes_downloaded,
+            artifact_path: None,
         }])
     }
 
