@@ -1,0 +1,92 @@
+---
+title: better.config.js
+description: Project-level configuration for better
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## Config File Locations
+
+`better` searches for a config file in the project root, in this order:
+
+1. `better.config.js` (ES module)
+2. `better.config.mjs`
+3. `better.config.cjs`
+4. `.betterrc`
+5. `.betterrc.json`
+
+## Format
+
+```js
+// better.config.js
+export default {
+  json: false,
+  telemetry: false,
+  logLevel: "info",
+  cacheRoot: null,
+  coreMode: "auto",
+  fsConcurrency: 16,
+  doctor: {
+    threshold: 70,
+    maxDepth: 15,
+    p95Depth: 10,
+    largeNodeModulesBytes: 524288000
+  },
+  policy: {
+    threshold: 70,
+    rules: [],
+    waivers: []
+  }
+};
+```
+
+Or as JSON (`.betterrc.json`):
+
+```json
+{
+  "logLevel": "warn",
+  "telemetry": false,
+  "doctor": {
+    "threshold": 80
+  }
+}
+```
+
+## Options
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `json` | boolean | `false` | Default to JSON output for all commands |
+| `telemetry` | boolean | `false` | Enable anonymous usage telemetry |
+| `logLevel` | string | `"info"` | Log verbosity: `debug`, `info`, `warn`, `error`, `silent` |
+| `cacheRoot` | string | null | Override the cache directory (default: OS-specific) |
+| `coreMode` | string | `"auto"` | How to invoke the Rust core: `auto`, `napi`, `subprocess` |
+| `fsConcurrency` | number | `16` | Max concurrent file system operations during install |
+| `doctor.threshold` | number | `70` | Health score threshold below which doctor reports failure |
+| `doctor.maxDepth` | number | `15` | Max dependency tree depth before warning |
+| `doctor.p95Depth` | number | `10` | 95th-percentile depth threshold |
+| `doctor.largeNodeModulesBytes` | number | 500 MB | Threshold for large `node_modules` warning |
+| `policy.threshold` | number | `70` | Policy score threshold |
+| `policy.rules` | array | `[]` | Custom policy rules (see [Policy docs](/config/policy/)) |
+| `policy.waivers` | array | `[]` | Policy rule waivers |
+
+## Environment Variables
+
+All config keys can be overridden with environment variables:
+
+| Variable | Config key |
+|----------|-----------|
+| `BETTER_JSON=1` | `json: true` |
+| `BETTER_LOG_LEVEL=debug` | `logLevel: "debug"` |
+| `BETTER_CACHE_ROOT=/tmp/better` | `cacheRoot: "/tmp/better"` |
+| `BETTER_TELEMETRY=0` | `telemetry: false` |
+| `NO_COLOR=1` | Disables color output |
+
+<Aside type="tip">
+Environment variables take precedence over the config file.
+</Aside>
+
+## See Also
+
+- [`.npmrc` settings](/config/npmrc/) — npm-specific configuration
+- [Policy configuration](/config/policy/) — license and security policy
