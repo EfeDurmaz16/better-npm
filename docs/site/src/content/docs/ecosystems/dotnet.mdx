@@ -1,0 +1,77 @@
+---
+title: .NET / NuGet
+description: Using better with .NET projects
+---
+
+## Detection
+
+`better` activates the .NET engine when it finds:
+- `*.csproj`
+- `*.fsproj`
+- `*.vbproj`
+- `packages.config`
+- `NuGet.Config`
+
+## How It Works
+
+`better` downloads NuGet packages directly from `api.nuget.org`, extracting `.nupkg`
+archives into the global cache and linking them into the project's `packages/` or the
+SDK-style `obj/` directories.
+
+## Installation
+
+```bash
+# Install all packages (reads *.csproj)
+better install
+
+# Add a NuGet package
+better add Newtonsoft.Json
+
+# Add at a specific version
+better add Newtonsoft.Json@13.0.3
+
+# Add a dev/test dependency
+better add -D xunit
+
+# Remove a package
+better remove Newtonsoft.Json
+```
+
+## .csproj Integration
+
+`better add` inserts a `<PackageReference>` into the target `.csproj`:
+
+```xml
+<ItemGroup>
+  <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+</ItemGroup>
+```
+
+## Audit
+
+```bash
+better audit
+```
+
+Uses the [OSV.dev NuGet database](https://osv.dev) and the
+[GitHub Advisory Database](https://github.com/advisories) for CVE matching against
+NuGet package IDs and version ranges.
+
+## Outdated
+
+```bash
+better outdated
+```
+
+Queries `api.nuget.org/v3/registration5-semver1/<id>/index.json` for the latest
+stable version of each `<PackageReference>`.
+
+## Target Framework Support
+
+`better` respects `<TargetFramework>` and `<TargetFrameworks>` to determine which
+packages are compatible with your project's target.
+
+## See Also
+
+- [`better audit`](/commands/audit/) — security vulnerability scan
+- [`better outdated`](/commands/outdated/) — check for newer versions

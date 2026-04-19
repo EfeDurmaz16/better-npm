@@ -1,0 +1,92 @@
+---
+title: Swift / Swift Package Manager
+description: Using better with Swift projects
+---
+
+## Detection
+
+`better` activates the Swift engine when it finds:
+- `Package.swift`
+- `Package.resolved`
+
+## How It Works
+
+`better` wraps the Swift Package Manager (`swift package`) toolchain, providing a
+unified interface and adding AI tooling, audit, and cross-ecosystem workflow support.
+
+## Installation
+
+```bash
+# Resolve and fetch all packages
+better install
+
+# Add a package dependency
+better add https://github.com/apple/swift-argument-parser
+
+# Add at a specific version
+better add https://github.com/vapor/vapor --from 4.89.0
+
+# Add a test-only dependency
+better add -D https://github.com/Quick/Quick
+
+# Remove a dependency
+better remove swift-argument-parser
+```
+
+## Package.swift Integration
+
+`better add` updates `Package.swift`:
+
+```swift
+let package = Package(
+    name: "MyApp",
+    dependencies: [
+        .package(
+            url: "https://github.com/apple/swift-argument-parser",
+            from: "1.3.0"
+        ),
+    ],
+    targets: [
+        .executableTarget(
+            name: "MyApp",
+            dependencies: [
+                .product(name: "ArgumentParser", package: "swift-argument-parser")
+            ]
+        ),
+    ]
+)
+```
+
+## Audit
+
+```bash
+better audit
+```
+
+Cross-references OSV.dev and the GitHub Advisory Database for known vulnerabilities
+in Swift packages identified by their repository URLs.
+
+## Outdated
+
+```bash
+better outdated
+```
+
+Queries the GitHub API and the Swift Package Index for the latest stable releases of
+each dependency in `Package.resolved`.
+
+## Platforms
+
+`better` respects `Package.swift` platform constraints:
+
+```swift
+platforms: [
+    .macOS(.v13),
+    .iOS(.v16),
+]
+```
+
+## See Also
+
+- [`better audit`](/commands/audit/) — security vulnerability scan
+- [`better outdated`](/commands/outdated/) — check for newer versions

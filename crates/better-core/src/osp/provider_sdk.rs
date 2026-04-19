@@ -244,8 +244,16 @@ function generatePassword() {{
     .join("");
 }}
 
-async function checkIdempotencyCache(_key) {{ return null; /* TODO */ }}
-async function saveIdempotencyCache(_key, _value) {{ /* TODO */ }}
+// In-memory idempotency store — replace with a persistent store (Redis, DB) in production.
+const idempotencyStore = new Map();
+
+async function checkIdempotencyCache(key) {{
+  return idempotencyStore.get(key) ?? null;
+}}
+
+async function saveIdempotencyCache(key, value) {{
+  idempotencyStore.set(key, value);
+}}
 "#)
 }
 
@@ -319,20 +327,40 @@ fn server_js(opts: &ProviderScaffoldOpts) -> String {
  */
 
 import {{ createServer }} from "node:http";
+import {{ createVerify, createPublicKey }} from "node:crypto";
+import {{ readFileSync }} from "node:fs";
 import {{ handleProvision }} from "./provision.js";
 import {{ handleDeprovision }} from "./deprovision.js";
 import {{ handleRotateCredentials }} from "./credentials.js";
 
 const PORT = Number(process.env.PORT ?? 3000);
 
-async function parseBody(req) {{
-  return new Promise((resolve) => {{
-    let body = "";
-    req.on("data", (chunk) => (body += chunk));
-    req.on("end", () => {{
-      try {{ resolve(JSON.parse(body)); }} catch {{ resolve({{}}); }}
-    }});
-  }});
+// Load the OSP public key once at startup.
+// Set OSP_PUBLIC_KEY_PATH env var or place it at .well-known/osp-public-key.pem
+const PUBLIC_KEY_PATH = process.env.OSP_PUBLIC_KEY_PATH
+  ?? new URL("../.well-known/osp-public-key.pem", import.meta.url).pathname;
+
+let ospPublicKey = null;
+try {{
+  ospPublicKey = createPublicKey(readFileSync(PUBLIC_KEY_PATH, "utf8"));
+}} catch {{
+  console.warn("[osp] No public key found at", PUBLIC_KEY_PATH, "— signature verification disabled");
+}}
+
+/**
+ * Verify the Ed25519 `X-OSP-Signature` header against the raw request body.
+ * Returns true if the signature is valid (or if no public key is loaded).
+ */
+function verifyOspSignature(rawBody, signatureHeader) {{
+  if (!ospPublicKey) return true; // disabled — warn in production
+  if (!signatureHeader) return false;
+  try {{
+    const verify = createVerify("Ed25519");
+    verify.update(rawBody);
+    return verify.verify(ospPublicKey, Buffer.from(signatureHeader, "base64"));
+  }} catch {{
+    return false;
+  }}
 }}
 
 function send(res, status, body) {{
@@ -344,7 +372,6 @@ const server = createServer(async (req, res) => {{
   const url = new URL(req.url, `http://localhost`);
 
   if (req.method === "GET" && url.pathname === "/.well-known/osp.json") {{
-    const {{ readFileSync }} = await import("node:fs");
     const manifest = readFileSync(new URL("../.well-known/osp.json", import.meta.url), "utf8");
     res.writeHead(200, {{ "Content-Type": "application/json" }});
     res.end(manifest);
@@ -355,10 +382,17 @@ const server = createServer(async (req, res) => {{
     return send(res, 405, {{ error: "method not allowed" }});
   }}
 
-  const body = await parseBody(req);
+  let rawBody = "";
+  const body = await new Promise((resolve) => {{
+    req.on("data", (chunk) => (rawBody += chunk));
+    req.on("end", () => {{
+      try {{ resolve(JSON.parse(rawBody)); }} catch {{ resolve({{}}); }}
+    }});
+  }});
 
-  // TODO: Verify Ed25519 signature from `X-OSP-Signature` header
-  // before processing any request in production.
+  if (!verifyOspSignature(rawBody, req.headers["x-osp-signature"])) {{
+    return send(res, 401, {{ error: "invalid or missing OSP signature" }});
+  }}
 
   try {{
     if (url.pathname === "/osp/provision") {{

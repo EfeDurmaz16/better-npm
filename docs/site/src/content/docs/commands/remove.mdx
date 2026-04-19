@@ -1,0 +1,52 @@
+---
+title: better remove
+description: Remove a package from your project
+---
+
+## Synopsis
+
+```bash
+better remove <package> [package...]
+```
+
+Removes one or more packages from your project manifest and `node_modules` (or the
+ecosystem-appropriate package directory). Also cleans up any orphaned transitive
+dependencies that are no longer needed.
+
+## Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--no-save` | `false` | Uninstall without updating the manifest |
+| `--json` | `false` | Machine-readable JSON output |
+
+## Examples
+
+```bash
+# Remove a package
+better remove lodash
+
+# Remove multiple packages at once
+better remove mocha chai sinon
+
+# Remove without updating package.json
+better remove unused-pkg --no-save
+```
+
+## JSON Output
+
+```json
+{
+  "ok": true,
+  "kind": "better.remove",
+  "removed": ["lodash@4.17.21"],
+  "orphaned_removed": ["lodash.merge@4.6.2"],
+  "manifest": "package.json"
+}
+```
+
+## See Also
+
+- [`better add`](/commands/add/) — add a package
+- [`better dedupe`](/commands/dedupe/) — remove duplicate packages
+- [`better clean`](/commands/clean/) — remove build artifacts

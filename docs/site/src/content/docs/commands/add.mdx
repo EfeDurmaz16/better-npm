@@ -1,0 +1,66 @@
+---
+title: better add
+description: Add a package to your project
+---
+
+## Synopsis
+
+```bash
+better add <package> [options]
+better add <package>@<version>
+better add -D <package>
+```
+
+Adds one or more packages to your project, updates the manifest, and installs immediately.
+Works across all supported ecosystems — `npm`, `PyPI`, `crates.io`, `RubyGems`, `Packagist`, `pkg.go.dev`.
+
+## Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-D`, `--dev` | `false` | Save as a dev dependency |
+| `-P`, `--peer` | `false` | Save as a peer dependency (npm only) |
+| `-O`, `--optional` | `false` | Save as an optional dependency |
+| `--exact` | `false` | Pin to exact version instead of `^` range |
+| `--no-save` | `false` | Install without updating the manifest |
+| `--json` | `false` | Machine-readable JSON output |
+
+## Examples
+
+```bash
+# Add a production dependency
+better add express
+
+# Add a dev dependency
+better add -D typescript
+
+# Add exact version
+better add lodash@4.17.21 --exact
+
+# Add multiple packages at once
+better add react react-dom
+
+# Python — adds to pyproject.toml [dependencies]
+better add requests
+
+# Python dev dependency
+better add -D pytest
+```
+
+## JSON Output
+
+```json
+{
+  "ok": true,
+  "kind": "better.add",
+  "added": ["express@4.18.2"],
+  "manifest": "package.json",
+  "installed": true
+}
+```
+
+## See Also
+
+- [`better remove`](/commands/remove/) — remove a package
+- [`better install`](/commands/install/) — install all dependencies
+- [`better outdated`](/commands/outdated/) — check for newer versions

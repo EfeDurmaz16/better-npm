@@ -1,0 +1,69 @@
+---
+title: Rust / Cargo
+description: Using better with Rust projects
+---
+
+## Detection
+
+`better` activates the Rust engine when it finds:
+- `Cargo.toml`
+- `Cargo.lock`
+
+## How It Works
+
+`better` delegates to the `cargo` toolchain for fetching and building, but provides
+a unified interface and adds AI-assisted tooling, audit, and cross-ecosystem workflow
+support on top.
+
+## Installation
+
+```bash
+# Install all dependencies (resolves Cargo.lock)
+better install
+
+# Add a crate
+better add serde
+
+# Add with features
+better add serde --features derive
+
+# Add a dev dependency
+better add -D criterion
+
+# Remove a crate
+better remove serde
+```
+
+## Cargo.toml Integration
+
+`better add` updates `Cargo.toml` and runs `cargo fetch` to update `Cargo.lock`:
+
+```toml
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+
+[dev-dependencies]
+criterion = "0.5"
+```
+
+## Audit
+
+```bash
+better audit
+```
+
+Uses the [RustSec Advisory Database](https://rustsec.org/) via `cargo audit` for
+accurate vulnerability matching against published crates.
+
+## Outdated
+
+```bash
+better outdated
+```
+
+Queries `crates.io` for the latest stable version of each dependency.
+
+## See Also
+
+- [`better audit`](/commands/audit/) — security vulnerability scan
+- [`better outdated`](/commands/outdated/) — check for newer versions

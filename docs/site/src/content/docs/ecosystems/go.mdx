@@ -1,0 +1,70 @@
+---
+title: Go / pkg.go.dev
+description: Using better with Go modules
+---
+
+## Detection
+
+`better` activates the Go engine when it finds:
+- `go.mod`
+- `go.sum`
+
+## How It Works
+
+`better` wraps the `go` toolchain, providing a unified interface and adding AI tooling,
+audit, and cross-ecosystem workflow support.
+
+## Installation
+
+```bash
+# Download modules (go mod download)
+better install
+
+# Add a module
+better add github.com/gin-gonic/gin
+
+# Add at a specific version
+better add github.com/gin-gonic/gin@v1.9.1
+
+# Add a dev dependency (goes into go.mod as indirect if not imported)
+better add -D github.com/stretchr/testify
+
+# Remove a module
+better remove github.com/gin-gonic/gin
+```
+
+## go.mod Integration
+
+`better add` runs `go get` under the hood and updates `go.mod`:
+
+```
+module example.com/myapp
+
+go 1.21
+
+require (
+    github.com/gin-gonic/gin v1.9.1
+)
+```
+
+## Audit
+
+```bash
+better audit
+```
+
+Uses the [Go Vulnerability Database](https://pkg.go.dev/vuln/) (govulncheck) for
+accurate CVE matching against Go module paths and versions.
+
+## Outdated
+
+```bash
+better outdated
+```
+
+Queries `proxy.golang.org` for the latest version of each module in `go.mod`.
+
+## See Also
+
+- [`better audit`](/commands/audit/) — security vulnerability scan
+- [`better outdated`](/commands/outdated/) — check for newer versions

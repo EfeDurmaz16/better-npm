@@ -1,0 +1,84 @@
+---
+title: PHP / Packagist
+description: Using better with PHP projects
+---
+
+## Detection
+
+`better` activates the PHP engine when it finds:
+- `composer.json`
+- `composer.lock`
+
+## How It Works
+
+`better` downloads PHP packages directly from Packagist, extracting archives into
+`vendor/`. Autoload maps (`vendor/autoload.php`) are generated without requiring a
+`composer` subprocess.
+
+## Installation
+
+```bash
+# Install all packages (reads composer.json)
+better install
+
+# Add a package
+better add symfony/console
+
+# Add a dev dependency
+better add -D phpunit/phpunit
+
+# Remove a package
+better remove symfony/console
+```
+
+## composer.json Integration
+
+`better add` updates `composer.json`:
+
+```json
+{
+  "require": {
+    "symfony/console": "^7.0"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^11.0"
+  }
+}
+```
+
+## Audit
+
+```bash
+better audit
+```
+
+Uses the [PHP Security Advisories Database](https://github.com/FriendsOfPHP/security-advisories)
+and OSV.dev with the `Packagist` ecosystem for CVE matching.
+
+## Outdated
+
+```bash
+better outdated
+```
+
+Queries the [Packagist v2 API](https://packagist.org/apidoc#get-package-data) for
+the latest stable version of each package in `composer.lock`. Platform requirements
+(`php`, `ext-*`) are skipped.
+
+## Platform Requirements
+
+`better install` validates PHP version constraints from `composer.json`:
+
+```json
+{
+  "require": {
+    "php": "^8.2",
+    "ext-pdo": "*"
+  }
+}
+```
+
+## See Also
+
+- [`better audit`](/commands/audit/) — security vulnerability scan
+- [`better outdated`](/commands/outdated/) — check for newer versions

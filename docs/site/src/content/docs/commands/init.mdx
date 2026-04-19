@@ -1,0 +1,83 @@
+---
+title: better init
+description: Scaffold a new project or update an existing one
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+## Synopsis
+
+```bash
+better init [options]
+```
+
+Initializes a new project by creating `package.json`, `.gitignore`, `.nvmrc`, and other
+project scaffolding files. If the files already exist, `better init` fills in missing
+fields without overwriting existing values.
+
+## Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--ci` | `false` | Create a GitHub Actions CI workflow |
+| `--readme` | `false` | Generate a `README.md` from package metadata |
+| `--context-template` | `false` | Create `.better-context.md` + `better.context.json` for AI tooling |
+| `--all` | `false` | Run all scaffolding actions |
+| `--dry-run` | `false` | Preview changes without writing files |
+| `--json` | `false` | Machine-readable JSON output |
+
+## Examples
+
+```bash
+# Scaffold a new project
+better init
+
+# Preview what would be created
+better init --dry-run
+
+# Create CI workflow + README
+better init --ci --readme
+
+# Create everything
+better init --all
+
+# Create AI context templates for your package
+better init --context-template
+```
+
+## What Gets Created
+
+| File | Description |
+|------|-------------|
+| `package.json` | Project manifest (name, version, license, engines, scripts) |
+| `.gitignore` | Standard Node.js gitignore |
+| `.nvmrc` | Pins the active Node.js version |
+| `.github/workflows/ci.yml` | CI workflow (with `--ci`) |
+| `README.md` | Auto-generated from package metadata (with `--readme`) |
+| `.better-context.md` | LLM context template (with `--context-template`) |
+| `better.context.json` | Structured context manifest (with `--context-template`) |
+
+<Aside type="tip">
+`better init --context-template` creates documentation files that AI assistants
+can read to understand your package. See [`better context`](/commands/context/) for details.
+</Aside>
+
+## JSON Output
+
+```json
+{
+  "ok": true,
+  "kind": "better.init",
+  "dryRun": false,
+  "actions": [
+    { "file": "package.json", "action": "created" },
+    { "file": ".gitignore",   "action": "created" },
+    { "file": ".nvmrc",       "action": "created" }
+  ]
+}
+```
+
+## See Also
+
+- [`better context`](/commands/context/) — generate LLM-friendly package documentation
+- [`better doctor`](/commands/doctor/) — diagnose project health issues

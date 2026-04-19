@@ -1,0 +1,94 @@
+---
+title: better doctor
+description: Diagnose and report project health issues
+---
+
+## Synopsis
+
+```bash
+better doctor [options]
+```
+
+Runs a comprehensive health check on your project: missing or stale lockfile,
+mismatched Node.js version, deprecated dependencies, missing `engines` field,
+duplicate packages, and more.
+
+## Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--fix` | `false` | Automatically fix issues where possible |
+| `--json` | `false` | Machine-readable JSON output |
+
+## Checks Performed
+
+| Check | Auto-fixable |
+|-------|-------------|
+| Lockfile present and up to date | Yes |
+| Node.js version matches `.nvmrc` / `engines` | No |
+| Deprecated packages installed | No |
+| Duplicate package versions in lockfile | Yes (`--fix` dedupes) |
+| Missing `engines` field in `package.json` | Yes |
+| Missing `license` field | Yes |
+| Packages with known vulnerabilities | No — run `better audit` |
+| `node_modules` out of sync with lockfile | Yes |
+
+## Examples
+
+```bash
+# Run health check
+better doctor
+
+# Fix auto-fixable issues
+better doctor --fix
+
+# Machine-readable output for CI
+better doctor --json
+```
+
+## Output
+
+```
+better doctor — project health check
+
+  ✔ Lockfile up to date
+  ✔ Node.js 20.11.0 matches .nvmrc
+  ⚠  2 deprecated packages installed
+       lodash@3.10.1 — use lodash@4 or lodash-es
+       request@2.88.2 — use node-fetch or undici
+  ✔ No duplicate packages
+  ✘ Missing "engines" field in package.json
+
+  1 error, 1 warning
+  Run `better doctor --fix` to fix auto-fixable issues.
+```
+
+## JSON Output
+
+```json
+{
+  "ok": false,
+  "kind": "better.doctor",
+  "checks": [
+    { "name": "lockfile",    "status": "pass" },
+    { "name": "node-version","status": "pass" },
+    { "name": "deprecated",  "status": "warn", "details": ["lodash@3.10.1", "request@2.88.2"] },
+    { "name": "engines",     "status": "fail", "fixable": true }
+  ],
+  "errors": 1,
+  "warnings": 1
+}
+```
+
+## Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | All checks passed |
+| `1` | One or more errors found |
+
+## See Also
+
+- [`better audit`](/commands/audit/) — security vulnerability scan
+- [`better outdated`](/commands/outdated/) — check for newer versions
+- [`better init`](/commands/init/) — scaffold missing project files

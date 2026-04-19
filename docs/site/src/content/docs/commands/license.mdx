@@ -1,0 +1,100 @@
+---
+title: better license
+description: Audit dependency licenses for compliance
+---
+
+## Synopsis
+
+```bash
+better license [options]
+```
+
+Scans all installed dependencies and reports their SPDX license identifiers.
+Useful for open-source compliance, legal review, and policy enforcement.
+
+## Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--allow <list>` | — | Comma-separated list of allowed SPDX identifiers |
+| `--deny <list>` | — | Comma-separated list of denied SPDX identifiers |
+| `--json` | `false` | Machine-readable JSON output |
+
+## Examples
+
+```bash
+# List all licenses
+better license
+
+# Fail if any GPL license is present
+better license --deny GPL-2.0,GPL-3.0,AGPL-3.0
+
+# Only allow permissive licenses
+better license --allow MIT,Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC
+
+# JSON output for CI integration
+better license --json
+```
+
+## Policy File Integration
+
+Instead of passing flags every time, add license rules to `better.policy.json`:
+
+```json
+{
+  "license": {
+    "allow": ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC"],
+    "deny": ["GPL-2.0", "GPL-3.0", "AGPL-3.0"]
+  }
+}
+```
+
+Then just run:
+
+```bash
+better license
+```
+
+## Output
+
+```
+License Report — 142 packages
+
+  MIT          98 packages  ████████████████████
+  Apache-2.0   31 packages  ███████
+  BSD-3-Clause  9 packages  ██
+  ISC           4 packages  █
+
+  ✔ All licenses comply with policy
+```
+
+## JSON Output
+
+```json
+{
+  "ok": true,
+  "kind": "better.license",
+  "summary": {
+    "MIT": 98,
+    "Apache-2.0": 31,
+    "BSD-3-Clause": 9,
+    "ISC": 4
+  },
+  "violations": [],
+  "packages": [
+    { "name": "express", "version": "4.18.2", "license": "MIT" }
+  ]
+}
+```
+
+## Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | All licenses comply with policy |
+| `3` | Policy violation detected |
+
+## See Also
+
+- [`better audit`](/commands/audit/) — security vulnerability scan
+- [Policy configuration](/config/policy/) — configure license and security policy

@@ -1,0 +1,93 @@
+---
+title: better lockfile-lint
+description: Validate lockfile integrity, version, and registry sources
+---
+
+## Synopsis
+
+```bash
+better lockfile-lint [options]
+```
+
+Validates `package-lock.json` (or `yarn.lock` / `pnpm-lock.yaml`) for:
+
+- Presence and correct format version (v3+ required for npm)
+- All resolved packages have `integrity` hashes
+- No packages resolved from unexpected registries
+- Lockfile is not stale relative to `package.json`
+
+## Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--allow-registries <list>` | `https://registry.npmjs.org` | Comma-separated list of allowed registry URLs |
+| `--json` | `false` | Machine-readable JSON output |
+
+## Examples
+
+```bash
+# Validate lockfile
+better lockfile-lint
+
+# Allow private registry alongside npmjs
+better lockfile-lint --allow-registries https://registry.npmjs.org,https://npm.corp.example.com
+
+# JSON output for CI
+better lockfile-lint --json
+```
+
+## Output
+
+```
+Lockfile validation — package-lock.json
+
+  ✔ Lockfile version: 3
+  ✔ 142 packages have integrity hashes
+  ✘ 2 packages missing integrity hash:
+      node_modules/legacy-pkg@1.0.0
+      node_modules/internal-lib@2.1.0
+  ✔ All resolved URLs use allowed registries
+
+  1 error
+```
+
+## JSON Output
+
+```json
+{
+  "ok": false,
+  "kind": "better.lockfile-lint",
+  "lockfileVersion": 3,
+  "totalPackages": 142,
+  "errors": 2,
+  "issues": [
+    {
+      "type": "missing_integrity",
+      "package": "node_modules/legacy-pkg",
+      "version": "1.0.0"
+    }
+  ]
+}
+```
+
+## Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Lockfile is valid |
+| `1` | Validation errors found |
+| `1` | No lockfile found |
+
+## CI Integration
+
+Add to your GitHub Actions workflow:
+
+```yaml
+- name: Validate lockfile
+  run: better lockfile-lint
+```
+
+## See Also
+
+- [`better audit`](/commands/audit/) — security vulnerability scan
+- [`better install`](/commands/install/) — install dependencies

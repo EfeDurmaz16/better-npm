@@ -95,14 +95,11 @@ fn verify_attestation_structure(json: &str) -> ProvenanceVerification {
     let build_trigger = extract_json_field(json, "buildTrigger")
         .or_else(|| extract_json_field(json, "event_name"));
 
+    // Structural validation: presence of sig + payload fields in a DSSE envelope.
+    // Full cryptographic verification (Fulcio cert chain, Rekor log inclusion proof,
+    // OIDC claim checks) requires a native Sigstore client library and is not
+    // performed here. Use `npm audit signatures` for full cryptographic validation.
     let signature_valid = has_dsse_sig && has_payload;
-
-    // TODO: Full Sigstore verification would require:
-    // 1. Verify the DSSE envelope signature against the Fulcio certificate
-    // 2. Validate the Fulcio certificate chain against the root CA
-    // 3. Verify the Rekor transparency log inclusion proof
-    // 4. Check certificate OIDC claims match the expected build identity
-    // For now, we do structural validation only.
 
     if !signature_valid {
         return ProvenanceVerification {

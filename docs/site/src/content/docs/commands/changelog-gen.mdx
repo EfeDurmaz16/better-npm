@@ -1,0 +1,97 @@
+---
+title: better changelog-gen
+description: Generate a changelog from conventional commits
+---
+
+## Synopsis
+
+```bash
+better changelog-gen [options]
+```
+
+Reads git commits since the last tag (or all commits if no tags exist) and generates
+a formatted changelog using the [Conventional Commits](https://www.conventionalcommits.org/)
+specification. Commit types `feat`, `fix`, `perf`, `refactor`, `docs`, `chore`, and
+`BREAKING CHANGE` are all recognized.
+
+## Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--from <ref>` | last tag | Start from a specific git ref |
+| `--to <ref>` | `HEAD` | End at a specific git ref |
+| `--write` | `false` | Write output to `CHANGELOG.md` |
+| `--json` | `false` | Machine-readable JSON output |
+
+## Examples
+
+```bash
+# Preview changelog for unreleased commits
+better changelog-gen
+
+# Write to CHANGELOG.md
+better changelog-gen --write
+
+# Generate changelog between two tags
+better changelog-gen --from v1.2.0 --to v1.3.0
+
+# JSON output for automation
+better changelog-gen --json
+```
+
+## Output
+
+```markdown
+## Unreleased
+
+### Features
+
+- add new feature (#42)
+
+### Bug Fixes
+
+- resolve bug in parser (core)
+
+### Performance
+
+- optimize resolver cache
+```
+
+## JSON Output
+
+```json
+{
+  "ok": true,
+  "kind": "better.changelog-gen",
+  "from": "v1.2.0",
+  "to": "HEAD",
+  "commits": 8,
+  "markdown": "## Unreleased\n\n### Features\n..."
+}
+```
+
+## Conventional Commit Format
+
+`better changelog-gen` recognizes:
+
+```
+<type>(<scope>): <description>
+
+[optional body]
+
+[optional footer(s)]
+```
+
+| Type | Section |
+|------|---------|
+| `feat` | Features |
+| `fix` | Bug Fixes |
+| `perf` | Performance |
+| `refactor` | Refactoring |
+| `docs` | Documentation |
+| `BREAKING CHANGE` | ⚠ Breaking Changes |
+
+## See Also
+
+- [`better init`](/commands/init/) — scaffold project files
+- [`better bump`](/commands/bump/) — bump version and tag

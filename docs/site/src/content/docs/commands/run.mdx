@@ -1,0 +1,66 @@
+---
+title: better run
+description: Run a script from your package manifest
+---
+
+## Synopsis
+
+```bash
+better run <script> [-- args...]
+better run          # list available scripts
+```
+
+Runs a script defined in `package.json` `scripts`, `pyproject.toml` `[tool.scripts]`,
+or the ecosystem-appropriate manifest.
+
+## Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--json` | `false` | Machine-readable JSON output (for `better run` with no script) |
+
+## Examples
+
+```bash
+# Run a script
+better run build
+
+# Run with extra arguments
+better run test -- --coverage --watch
+
+# List all available scripts
+better run
+better run --json
+```
+
+## Listing Scripts
+
+Running `better run` with no arguments prints all available scripts:
+
+```
+Available scripts:
+
+  build    → tsc && rollup -c
+  test     → node --test
+  lint     → eslint src/
+  start    → node dist/index.js
+```
+
+## JSON Output (listing)
+
+```json
+{
+  "ok": true,
+  "kind": "better.run.list",
+  "scripts": {
+    "build": "tsc && rollup -c",
+    "test": "node --test",
+    "lint": "eslint src/"
+  }
+}
+```
+
+## See Also
+
+- [`better exec`](/commands/exec/) — run a package binary without installing globally
+- [`better ci`](/commands/ci/) — run install + test in CI mode

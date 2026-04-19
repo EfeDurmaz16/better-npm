@@ -1,0 +1,81 @@
+---
+title: Ruby / RubyGems
+description: Using better with Ruby projects
+---
+
+## Detection
+
+`better` activates the Ruby engine when it finds:
+- `Gemfile`
+- `Gemfile.lock`
+- `*.gemspec`
+
+## How It Works
+
+`better` installs Ruby gems directly from RubyGems.org, extracting `.gem` archives
+into the appropriate `gems/` directory under your `GEM_HOME`. No subprocess calls to
+`gem` or `bundler` required for installation.
+
+## Installation
+
+```bash
+# Install all gems (reads Gemfile)
+better install
+
+# Add a gem
+better add rails
+
+# Add at a specific version
+better add rails@7.1.0
+
+# Add a dev/test gem
+better add -D rspec
+
+# Remove a gem
+better remove rails
+```
+
+## Gemfile Integration
+
+`better add` appends to your `Gemfile`:
+
+```ruby
+source "https://rubygems.org"
+
+gem "rails", "~> 7.1.0"
+
+group :development, :test do
+  gem "rspec"
+end
+```
+
+## Virtual Environments
+
+`better` uses the project-local `.gems/` directory by default, keeping gems isolated
+per project. Set `GEM_HOME=.gems` in your shell or use `better shell` to activate.
+
+```bash
+better shell   # activates the project gem environment
+```
+
+## Audit
+
+```bash
+better audit
+```
+
+Uses the [Ruby Advisory Database](https://github.com/rubysec/ruby-advisory-db)
+for CVE matching. Also cross-references OSV.dev.
+
+## Outdated
+
+```bash
+better outdated
+```
+
+Queries `rubygems.org` API for the latest stable version of each gem in `Gemfile.lock`.
+
+## See Also
+
+- [`better audit`](/commands/audit/) — security vulnerability scan
+- [`better outdated`](/commands/outdated/) — check for newer versions
