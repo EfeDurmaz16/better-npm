@@ -1,3 +1,7 @@
+# better — a Rust-powered package manager for faster installs and safer Node.js workflows
+
+better is a zero-runtime-dependency Node.js package manager built around a Rust core, fast local installs, dependency intelligence, script policy, SBOM export, and workspace-aware automation.
+
 <p align="center">
   <img src="assets/banner.svg" alt="better — faster, smarter Node.js package manager" width="100%"/>
 </p>
@@ -20,7 +24,7 @@
 
 ## Performance
 
-Benchmarked on a real project with 15 dependencies (145 resolved packages):
+Benchmarked on a real local project with 15 direct dependencies and 145 resolved packages. Warm install means the package cache is already populated; cold install includes network fetch and cache population on the same machine.
 
 <table>
 <tr><th>Tool</th><th align="right">Warm Install</th><th align="right">Cold Install</th><th align="right">vs better</th></tr>

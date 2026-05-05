@@ -1,7 +1,24 @@
 {
   "name": "better",
   "version": "0.1.0",
+  "description": "Rust-powered package manager for faster installs, dependency intelligence, script policy, and safer Node.js workflows.",
+  "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/EfeDurmaz16/better-npm.git"
+  },
+  "homepage": "https://github.com/EfeDurmaz16/better-npm#readme",
+  "keywords": [
+    "nodejs",
+    "npm",
+    "package-manager",
+    "rust",
+    "developer-tools",
+    "performance",
+    "security",
+    "sbom"
+  ],
   "bin": {
     "better": "./bin/better.js",
     "better-merge-driver": "./bin/better-merge-driver.js"
