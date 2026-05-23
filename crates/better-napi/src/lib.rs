@@ -1897,3 +1897,58 @@ pub fn napi_plan_pipeline(pipeline_json: String, project_root: String) -> String
         "rollback_on_failure": pipeline.rollback_on_failure,
     }).to_string()
 }
+
+// v1.3: Sigstore provenance verification
+#[napi(js_name = "verifyProvenance")]
+pub fn napi_verify_provenance(project_root: String, mode: String) -> String {
+    use better_core::fetch::resolve_from_lockfile;
+    use better_core::provenance::verify_provenance;
+    use std::path::Path;
+    let lockfile_path = Path::new(&project_root).join("package-lock.json");
+    let resolve_result = match resolve_from_lockfile(&lockfile_path) {
+        Ok(r) => r,
+        Err(e) => return serde_json::json!({ "ok": false, "error": e }).to_string(),
+    };
+    match verify_provenance(&resolve_result.packages, &mode) {
+        Ok(report) => {
+            let attestations: Vec<serde_json::Value> = report.attestations.iter().map(|a| {
+                serde_json::json!({
+                    "package": a.package,
+                    "version": a.version,
+                    "has_attestation": a.has_attestation,
+                    "signature_valid": a.signature_valid,
+                    "transparency_log": a.transparency_log,
+                    "source_repo": a.source_repo,
+                    "build_trigger": a.build_trigger,
+                    "error": a.error,
+                })
+            }).collect();
+            serde_json::json!({
+                "ok": true,
+                "total_checked": report.total_checked,
+                "with_provenance": report.with_provenance,
+                "without_provenance": report.without_provenance,
+                "verification_errors": report.verification_errors,
+                "attestations": attestations,
+            }).to_string()
+        }
+        Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+    }
+}
+
+// v1.3: Cross-project dependency intelligence
+#[napi(js_name = "scanProjects")]
+pub fn napi_scan_projects(roots_json: String) -> String {
+    use better_core::cross_project::scan_projects;
+    use std::path::PathBuf;
+    let roots: Vec<String> = match serde_json::from_str(&roots_json) {
+        Ok(r) => r,
+        Err(e) => return serde_json::json!({ "ok": false, "error": format!("Invalid roots JSON: {}", e) }).to_string(),
+    };
+    let paths: Vec<PathBuf> = roots.iter().map(PathBuf::from).collect();
+    let report = scan_projects(&paths);
+    match serde_json::to_string(&report) {
+        Ok(json) => format!("{{\"ok\":true,\"data\":{}}}", json),
+        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+    }
+}

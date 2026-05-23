@@ -17,6 +17,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import https from "node:https";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
+import { runVerifyProvenanceNapi } from "../lib/core.js";
 
 function fetchProvenance(name, version) {
   return new Promise((resolve) => {
@@ -78,6 +79,28 @@ Examples:
   const cwd = process.cwd();
   const resolvedRoot = await resolveInstallProjectRoot(cwd);
   const projectRoot = resolvedRoot.root;
+
+  // NAPI fast path: full Sigstore attestation verification
+  const mode = positionals.includes("--require") ? "require" : "verify";
+  const napiResult = runVerifyProvenanceNapi(projectRoot, mode);
+  if (napiResult?.ok) {
+    const r = napiResult;
+    const result = {
+      ok: true, kind: "better.provenance",
+      totalChecked: r.total_checked,
+      withProvenance: r.with_provenance,
+      withoutProvenance: r.without_provenance,
+      verificationErrors: r.verification_errors,
+      attestations: r.attestations ?? [],
+    };
+    if (values.json) { printJson(result); }
+    else {
+      printText(`Provenance check: ${r.with_provenance}/${r.total_checked} packages have valid attestations`);
+      if (r.without_provenance > 0) printText(`  ${r.without_provenance} package(s) without provenance`);
+      if (r.verification_errors > 0) printText(`  ${r.verification_errors} verification error(s)`);
+    }
+    return;
+  }
 
   let pkgJson;
   try {

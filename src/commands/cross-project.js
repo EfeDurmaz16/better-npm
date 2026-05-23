@@ -3,7 +3,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
-import { runAnalyzeOrgNapi } from "../lib/core.js";
+import { runAnalyzeOrgNapi, runScanProjectsNapi } from "../lib/core.js";
 
 /**
  * `better cross-project <dir1> [dir2] [dir3...]` — analyze dependencies across multiple projects
@@ -108,6 +108,37 @@ Options:
   if (projectDirs.length === 0) {
     printText("Error: specify project directories or --workspace-root");
     process.exitCode = 1;
+    return;
+  }
+
+  // Try Rust cross-project scan NAPI (richer version drift + shared package analysis)
+  const scanResult = runScanProjectsNapi(projectDirs);
+  if (scanResult?.ok && scanResult.data) {
+    const r = scanResult.data;
+    const result = {
+      ok: true, kind: "better.cross-project",
+      projectsScanned: r.projects_scanned,
+      totalPackages: r.total_packages,
+      sharedPackages: r.shared_packages ?? [],
+      versionDrift: r.version_drift ?? [],
+      upgradeOpportunities: r.upgrade_opportunities ?? [],
+    };
+    if (useJson) { printJson(result); }
+    else {
+      printText(`Cross-Project Scan: ${r.projects_scanned} projects, ${r.total_packages} packages`);
+      if (r.version_drift?.length > 0) {
+        printText(`\nVersion drift (${r.version_drift.length} packages):`);
+        for (const d of r.version_drift.slice(0, 10)) {
+          printText(`  ${d.package}: ${d.min_version} → ${d.max_version}${d.drift_major ? " (MAJOR)" : ""}`);
+        }
+      }
+      if (r.upgrade_opportunities?.length > 0) {
+        printText(`\nUpgrade opportunities (${r.upgrade_opportunities.length}):`);
+        for (const u of r.upgrade_opportunities.slice(0, 5)) {
+          printText(`  ${u.package}: → ${u.latest_version} [${u.update_type}] (${u.projects_affected} projects)`);
+        }
+      }
+    }
     return;
   }
 
