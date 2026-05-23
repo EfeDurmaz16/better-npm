@@ -21,6 +21,7 @@ import path from "node:path";
 import https from "node:https";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
 import { spawnSync } from "node:child_process";
+import { runFirewallNapi } from "../lib/core.js";
 
 const HIGH_RISK_INSTALL_PACKAGES = new Set([
   "node-gyp-build", "prebuild-install", "node-pre-gyp",
@@ -147,6 +148,17 @@ Examples:
   }
 
   const results = [];
+
+  // NAPI firewall: typosquat + binary blob detection (fast, offline)
+  const firewallResult = runFirewallNapi(projectRoot);
+  if (firewallResult?.ok && firewallResult.alerts?.length > 0) {
+    results.push({
+      check: "firewall",
+      passed: firewallResult.blocked === 0,
+      alerts: firewallResult.alerts,
+      summary: `${firewallResult.alerts.length} firewall alerts (${firewallResult.blocked} blocked)`,
+    });
+  }
 
   // Run audit if not quick
   let auditResult = { passed: true, vulnerabilities: {}, total: 0 };

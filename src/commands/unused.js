@@ -16,6 +16,7 @@ import { getRuntimeConfig } from "../lib/config.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
+import { runDetectUnusedNapi } from "../lib/core.js";
 
 const SOURCE_EXTS = new Set([".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".vue", ".svelte"]);
 
@@ -111,6 +112,40 @@ Examples:
   const cwd = process.cwd();
   const resolvedRoot = await resolveInstallProjectRoot(cwd);
   const projectRoot = resolvedRoot.root;
+
+  // NAPI fast path: Rust unused detection (handles @types/ and plugin exclusions)
+  const napiResult = runDetectUnusedNapi(projectRoot);
+  if (napiResult?.ok) {
+    const filterDev = values["prod-only"];
+    const filterProd = values["dev-only"];
+    const unused = (napiResult.unused ?? []).filter(p =>
+      !(filterDev && p.is_dev) && !(filterProd && !p.is_dev)
+    );
+    const maybe = (napiResult.maybe_unused ?? []).filter(p =>
+      !(filterDev && p.is_dev) && !(filterProd && !p.is_dev)
+    );
+    const result = {
+      ok: true, kind: "better.unused",
+      unused,
+      maybeUnused: maybe,
+      scannedFiles: napiResult.scanned_files,
+      totalDeps: napiResult.total_deps,
+    };
+    if (values.json) { printJson(result); }
+    else if (unused.length === 0 && maybe.length === 0) {
+      printText("No unused packages detected.");
+    } else {
+      if (unused.length > 0) {
+        printText(`Unused packages (${unused.length}):`);
+        for (const p of unused) printText(`  ${p.name}@${p.version} (${p.is_dev ? "dev" : "prod"})`);
+      }
+      if (maybe.length > 0) {
+        printText(`\nMaybe unused (${maybe.length}):`);
+        for (const p of maybe) printText(`  ${p.name}@${p.version} (${p.is_dev ? "dev" : "prod"})`);
+      }
+    }
+    return;
+  }
 
   let pkgJson;
   try {

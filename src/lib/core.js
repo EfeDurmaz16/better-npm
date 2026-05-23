@@ -498,6 +498,27 @@ export function runPlanMigrationNapi(fromPkg, toPkg, projectRoot) {
   try { return JSON.parse(json); } catch { return null; }
 }
 
+export function runSuggestDepsNapi(projectRoot) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.suggestDeps) return null;
+  const json = addon.suggestDeps(projectRoot);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
+export function runDetectUnusedNapi(projectRoot) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.detectUnused) return null;
+  const json = addon.detectUnused(projectRoot);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
+export function runFirewallNapi(projectRoot) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.runFirewall) return null;
+  const json = addon.runFirewall(projectRoot);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
 export function runDetectFrameworkNapi(projectRoot) {
   const addon = tryLoadNapiAddon();
   if (!addon?.detectFramework) return null;

@@ -1,7 +1,7 @@
 import { parseArgs } from "node:util";
 import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
-import { findBetterCore } from "../lib/core.js";
+import { findBetterCore, runSuggestDepsNapi } from "../lib/core.js";
 import { runCommand } from "../lib/spawn.js";
 
 export async function cmdSuggest(argv) {
@@ -31,6 +31,39 @@ Supports: JS/TS (package.json) and Python (pyproject.toml, requirements.txt)
 
   const projectRoot = values["project-root"] || process.cwd();
   const jsonOutput = values.json;
+
+  // NAPI fast path: Rust source scanner (faster than subprocess)
+  const napiResult = runSuggestDepsNapi(projectRoot);
+  if (napiResult?.ok) {
+    const result = {
+      ok: true, kind: "better.suggest",
+      ecosystem: napiResult.ecosystem,
+      filesScanned: napiResult.files_scanned,
+      scanMs: napiResult.scan_ms,
+      missing: napiResult.missing ?? [],
+      unused: napiResult.unused ?? [],
+    };
+    if (jsonOutput) { printJson(result); }
+    else {
+      printText(`Scanned ${napiResult.files_scanned} files (${napiResult.ecosystem})`);
+      if (napiResult.missing?.length > 0) {
+        printText(`\nMissing dependencies (${napiResult.missing.length}):`);
+        for (const m of napiResult.missing) {
+          printText(`  ${m.name} — imported in: ${m.imported_in.slice(0, 3).join(", ")}`);
+        }
+      }
+      if (napiResult.unused?.length > 0) {
+        printText(`\nUnused dependencies (${napiResult.unused.length}):`);
+        for (const u of napiResult.unused) {
+          printText(`  ${u.name}@${u.version} (${u.declared_in})`);
+        }
+      }
+      if (!napiResult.missing?.length && !napiResult.unused?.length) {
+        printText("No issues found.");
+      }
+    }
+    return;
+  }
 
   const corePath = await findBetterCore();
   if (!corePath) {

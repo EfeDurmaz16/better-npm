@@ -2002,3 +2002,106 @@ pub fn napi_pin_versions(
         Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
     }
 }
+
+// v0.4: suggest missing/unused deps by scanning source files
+#[napi(js_name = "suggestDeps")]
+pub fn napi_suggest_deps(project_root: String) -> String {
+    use better_core::suggest::suggest_deps;
+    use std::path::Path;
+    match suggest_deps(Path::new(&project_root)) {
+        Ok(report) => {
+            let missing: Vec<serde_json::Value> = report.missing.iter().map(|m| {
+                serde_json::json!({
+                    "name": m.name,
+                    "imported_in": m.imported_in,
+                    "import_style": m.import_style,
+                    "confidence": m.confidence,
+                })
+            }).collect();
+            let unused: Vec<serde_json::Value> = report.unused.iter().map(|u| {
+                serde_json::json!({
+                    "name": u.name,
+                    "declared_in": u.declared_in,
+                    "version": u.version,
+                    "confidence": u.confidence,
+                })
+            }).collect();
+            serde_json::json!({
+                "ok": true,
+                "ecosystem": report.ecosystem,
+                "files_scanned": report.files_scanned,
+                "scan_ms": report.scan_ms,
+                "missing": missing,
+                "unused": unused,
+            }).to_string()
+        }
+        Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+    }
+}
+
+// v0.4: detect unused dependencies
+#[napi(js_name = "detectUnused")]
+pub fn napi_detect_unused(project_root: String) -> String {
+    use better_core::unused::detect_unused;
+    use std::path::Path;
+    match detect_unused(Path::new(&project_root)) {
+        Ok(result) => {
+            let unused: Vec<serde_json::Value> = result.unused.iter().map(|p| {
+                serde_json::json!({
+                    "name": p.name,
+                    "version": p.version,
+                    "is_dev": p.is_dev,
+                    "possible_script_use": p.possible_script_use,
+                })
+            }).collect();
+            let maybe: Vec<serde_json::Value> = result.maybe_unused.iter().map(|p| {
+                serde_json::json!({
+                    "name": p.name,
+                    "version": p.version,
+                    "is_dev": p.is_dev,
+                    "possible_script_use": p.possible_script_use,
+                })
+            }).collect();
+            serde_json::json!({
+                "ok": true,
+                "unused": unused,
+                "maybe_unused": maybe,
+                "scanned_files": result.scanned_files,
+                "total_deps": result.total_deps,
+            }).to_string()
+        }
+        Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+    }
+}
+
+// v0.5: dependency firewall (typosquat + binary blob detection)
+#[napi(js_name = "runFirewall")]
+pub fn napi_run_firewall(project_root: String) -> String {
+    use better_core::fetch::resolve_from_lockfile;
+    use better_core::firewall::{run_firewall, load_firewall_config};
+    use std::path::Path;
+    let root = Path::new(&project_root);
+    let packages = match resolve_from_lockfile(&root.join("package-lock.json")) {
+        Ok(r) => r.packages,
+        Err(_) => vec![],
+    };
+    let config = load_firewall_config(root);
+    let report = run_firewall(&packages, root, &config);
+    let alerts: Vec<serde_json::Value> = report.alerts.iter().map(|a| {
+        serde_json::json!({
+            "package": a.package,
+            "version": a.version,
+            "alert_type": a.alert_type,
+            "severity": a.severity,
+            "message": a.message,
+            "details": a.details,
+        })
+    }).collect();
+    serde_json::json!({
+        "ok": true,
+        "alerts": alerts,
+        "total": report.total_checked,
+        "blocked": report.blocked,
+        "warnings": report.warnings,
+    }).to_string()
+}
