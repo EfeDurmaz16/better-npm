@@ -33,6 +33,7 @@ Commands:
   audit              Scan dependencies for known vulnerabilities (OSV.dev)
   audit fix          Auto-fix vulnerabilities with semver-safe upgrades
   maintenance        Predictive maintenance — risk-score packages needing attention
+  predict <pkg>      Predict 6-month maintenance status with confidence score
   dashboard          Interactive TUI dashboard for project health
   run <script>       Run package.json scripts via npm/pnpm/yarn
   shell              Spawn interactive shell with project env activated (venv/node_modules)
@@ -435,6 +436,9 @@ export async function runCli(argv) {
         break;
       case "maintenance":
         await (await import("./commands/maintenance.js")).cmdMaintenance(rest);
+        break;
+      case "predict":
+        await (await import("./commands/predict.js")).cmdPredict(rest);
         break;
       case "dashboard":
         await (await import("./commands/dashboard.js")).cmdDashboard(rest);
