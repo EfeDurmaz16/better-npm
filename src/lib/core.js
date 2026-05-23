@@ -288,6 +288,85 @@ export function runPolicyCheckNapi(projectRoot) {
   return result;
 }
 
+// --- NAPI: supply chain analysis ---
+export function runAnalyzeSupplyChainNapi(projectRoot) {
+  const addon = tryLoadNapiAddon();
+  if (!addon || typeof addon.analyzeSupplyChain !== "function") return null;
+  const result = addon.analyzeSupplyChain(projectRoot);
+  if (!result || typeof result !== "object") throw new Error("napi analyzeSupplyChain returned invalid result");
+  return result;
+}
+
+// --- NAPI: typosquat check ---
+export function runCheckTyposquatNapi(name, knownPackages) {
+  const addon = tryLoadNapiAddon();
+  if (!addon || typeof addon.checkTyposquat !== "function") return null;
+  return addon.checkTyposquat(name, knownPackages ?? []);
+}
+
+// --- NAPI: ecosystem detection ---
+export function runDetectEcosystemsNapi(projectRoot) {
+  const addon = tryLoadNapiAddon();
+  if (!addon || typeof addon.detectEcosystems !== "function") return null;
+  return addon.detectEcosystems(projectRoot);
+}
+
+// --- NAPI: OSP discovery ---
+export function runOspDiscoverNapi(query, category) {
+  const addon = tryLoadNapiAddon();
+  if (!addon || typeof addon.ospDiscover !== "function") return null;
+  const json = addon.ospDiscover(query, category ?? null);
+  try { return JSON.parse(json); } catch { return []; }
+}
+
+// --- NAPI: OSP services list ---
+export function runOspServicesListNapi() {
+  const addon = tryLoadNapiAddon();
+  if (!addon || typeof addon.ospServicesList !== "function") return null;
+  const json = addon.ospServicesList();
+  try { return JSON.parse(json); } catch { return []; }
+}
+
+// --- NAPI: OSP deprovision ---
+export function runOspDeprovisionNapi(providerId, offering) {
+  const addon = tryLoadNapiAddon();
+  if (!addon || typeof addon.ospDeprovisionService !== "function") return null;
+  const json = addon.ospDeprovisionService(providerId, offering);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
+// --- NAPI: OSP env generate ---
+export function runOspEnvGenerateNapi(projectRoot) {
+  const addon = tryLoadNapiAddon();
+  if (!addon || typeof addon.ospEnvGenerate !== "function") return null;
+  const json = addon.ospEnvGenerate(projectRoot);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
+// --- NAPI: monetize earnings ---
+export function runFetchEarningsNapi(periodDays, withBreakdown) {
+  const addon = tryLoadNapiAddon();
+  if (!addon || typeof addon.fetchEarnings !== "function") return null;
+  const json = addon.fetchEarnings(periodDays ?? 30, withBreakdown ?? false);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
+// --- NAPI: pay package ---
+export function runPayPackageNapi(packageName, amount, currency) {
+  const addon = tryLoadNapiAddon();
+  if (!addon || typeof addon.payPackage !== "function") return null;
+  const json = addon.payPackage(packageName, amount, currency ?? "USD");
+  try { return JSON.parse(json); } catch { return null; }
+}
+
+// --- NAPI: create sponsorship ---
+export function runCreateSponsorshipNapi(packageName, monthlyAmount, currency) {
+  const addon = tryLoadNapiAddon();
+  if (!addon || typeof addon.createSponsorship !== "function") return null;
+  const json = addon.createSponsorship(packageName, monthlyAmount, currency ?? "USD");
+  try { return JSON.parse(json); } catch { return null; }
+}
+
 export async function runBetterCoreInstall(corePath, projectRoot, opts = {}) {
   const args = ["install", "--project-root", projectRoot];
   if (opts.lockfile) args.push("--lockfile", String(opts.lockfile));

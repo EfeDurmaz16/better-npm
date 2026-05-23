@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
+import { runAnalyzeSupplyChainNapi } from "../lib/core.js";
 
 /**
  * `better supply-chain` — analyze and visualize the dependency supply chain
@@ -55,9 +56,35 @@ Options:
   }
 
   const packages = extractPackageList(lockData);
+
+  // NAPI fast path — Rust-native supply chain analysis
+  const napiResult = runAnalyzeSupplyChainNapi(projectRoot);
+  if (napiResult !== null && napiResult.ok) {
+    const result = {
+      ok: true,
+      kind: "better.supply-chain",
+      schemaVersion: 1,
+      projectRoot,
+      totalPackages: napiResult.totalPackages,
+      anomalyCount: napiResult.anomalyCount,
+      trustScore: napiResult.trustScore
+    };
+    if (values.json) {
+      printJson(result);
+    } else {
+      const trustEmoji = napiResult.trustScore >= 80 ? "✓" : napiResult.trustScore >= 50 ? "!" : "✗";
+      printText([
+        `Supply Chain Analysis: ${napiResult.totalPackages} packages`,
+        `Trust score: ${trustEmoji} ${napiResult.trustScore.toFixed(0)}/100`,
+        ...(napiResult.anomalyCount > 0 ? [`Anomalies: ${napiResult.anomalyCount} detected`] : ["No anomalies detected"])
+      ].join("\n"));
+    }
+    return;
+  }
+
   const maxDepth = parseInt(values.depth) || 3;
 
-  // Build supply chain analysis
+  // JS fallback supply chain analysis
   const analysis = analyzeSupplyChain(packages);
 
   const result = {
