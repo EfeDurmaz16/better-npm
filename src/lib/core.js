@@ -442,6 +442,13 @@ export function runAnalyzeOrgNapi(rootDir) {
   try { return JSON.parse(json); } catch { return null; }
 }
 
+export function runPlanPipelineNapi(pipelineJson, projectRoot) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.planPipeline) return null;
+  const json = addon.planPipeline(pipelineJson, projectRoot);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
 export async function runBetterCoreInstall(corePath, projectRoot, opts = {}) {
   const args = ["install", "--project-root", projectRoot];
   if (opts.lockfile) args.push("--lockfile", String(opts.lockfile));

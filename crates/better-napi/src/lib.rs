@@ -1663,3 +1663,31 @@ pub fn napi_analyze_org(root_dir: String) -> String {
         Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
     }
 }
+
+// v2.0 Task: pipeline dry-run planning
+#[napi(js_name = "planPipeline")]
+pub fn napi_plan_pipeline(pipeline_json: String, project_root: String) -> String {
+    use better_core::ai::pipeline::{Pipeline, execute_pipeline};
+    use std::path::Path;
+    let pipeline: Pipeline = match serde_json::from_str(&pipeline_json) {
+        Ok(p) => p,
+        Err(e) => return serde_json::json!({ "ok": false, "error": format!("Invalid pipeline JSON: {}", e) }).to_string(),
+    };
+    // Plan mode: return stage graph without executing
+    let stages: Vec<serde_json::Value> = pipeline.stages.iter().map(|s| {
+        serde_json::json!({
+            "name": s.name,
+            "action": format!("{:?}", s.action),
+            "depends_on": s.depends_on,
+            "timeout_secs": s.timeout_secs,
+            "retries": s.retries,
+        })
+    }).collect();
+    serde_json::json!({
+        "ok": true,
+        "pipeline": pipeline.name,
+        "stages": stages,
+        "gates": pipeline.gates.len(),
+        "rollback_on_failure": pipeline.rollback_on_failure,
+    }).to_string()
+}

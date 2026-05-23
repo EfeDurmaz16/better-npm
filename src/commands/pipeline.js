@@ -1,6 +1,8 @@
 import { parseArgs } from "node:util";
+import path from "node:path";
 import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
+import { runPlanPipelineNapi } from "../lib/core.js";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import { join } from "node:path";
@@ -92,6 +94,27 @@ Pipeline config format (pipeline.json):
       try {
         const content = await fs.readFile(configPath, "utf8");
         const config = JSON.parse(content);
+
+        // NAPI fast path: Rust validates and plans the pipeline graph
+        const projectRoot = values["project-root"] ? path.resolve(values["project-root"]) : cwd;
+        const napiPlan = runPlanPipelineNapi(content, projectRoot);
+        if (napiPlan?.ok) {
+          if (useJson) {
+            printJson({ ok: true, kind: "better.pipeline.validate", pipeline: napiPlan.pipeline, stages: napiPlan.stages?.length ?? 0, plan: napiPlan });
+          } else {
+            printText(`Pipeline '${napiPlan.pipeline}' is valid (${napiPlan.stages?.length ?? 0} stages, ${napiPlan.gates ?? 0} gates).`);
+            if (napiPlan.stages?.length > 0) {
+              printText("Stages:");
+              for (const s of napiPlan.stages) {
+                const deps = s.depends_on?.length > 0 ? ` (after: ${s.depends_on.join(", ")})` : "";
+                printText(`  ${s.name}${deps}`);
+              }
+            }
+          }
+          break;
+        }
+
+        // JS fallback validation
         const errors = [];
         if (!config.name) errors.push("Missing 'name' field");
         if (!Array.isArray(config.stages)) errors.push("Missing 'stages' array");

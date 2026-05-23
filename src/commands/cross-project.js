@@ -3,6 +3,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
+import { runAnalyzeOrgNapi } from "../lib/core.js";
 
 /**
  * `better cross-project <dir1> [dir2] [dir3...]` — analyze dependencies across multiple projects
@@ -58,6 +59,48 @@ Options:
     } catch (err) {
       printText(`Error scanning workspace root: ${err.message}`);
       process.exitCode = 1;
+      return;
+    }
+  }
+
+  // When workspace-root is given, try NAPI fast path (Rust analyze_org)
+  if (values["workspace-root"] && projectDirs.length > 0) {
+    const wsRoot = path.resolve(values["workspace-root"]);
+    const napiResult = runAnalyzeOrgNapi(wsRoot);
+    if (napiResult?.ok && napiResult.data) {
+      const r = napiResult.data;
+      const result = {
+        ok: true,
+        kind: "better.cross-project",
+        projectsScanned: r.projects_analyzed,
+        uniquePackages: r.total_unique_deps,
+        versionDrift: r.version_inconsistencies?.length ?? 0,
+        consolidationOpportunities: r.consolidation_opportunities?.length ?? 0,
+        standardizationScore: r.standardization_score,
+        topShared: (r.version_inconsistencies ?? []).slice(0, 20).map(v => ({
+          name: v.package,
+          versions: Object.keys(v.versions),
+          recommended: v.recommended,
+        })),
+        consolidations: r.consolidation_opportunities ?? [],
+      };
+      if (useJson) { printJson(result); }
+      else {
+        printText(`Cross-Project Analysis: ${r.projects_analyzed} projects, ${r.total_unique_deps} unique packages`);
+        printText(`Standardization score: ${r.standardization_score}/100`);
+        if (r.version_inconsistencies?.length > 0) {
+          printText(`\nVersion drift (${r.version_inconsistencies.length} packages):`);
+          for (const v of r.version_inconsistencies.slice(0, 10)) {
+            printText(`  ${v.package}: recommend ${v.recommended}`);
+          }
+        }
+        if (r.consolidation_opportunities?.length > 0) {
+          printText(`\nConsolidation opportunities (${r.consolidation_opportunities.length}):`);
+          for (const c of r.consolidation_opportunities.slice(0, 5)) {
+            printText(`  ${c.category}: ${c.packages.join(", ")} — ${c.reason}`);
+          }
+        }
+      }
       return;
     }
   }

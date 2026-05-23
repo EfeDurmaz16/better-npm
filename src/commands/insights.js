@@ -1,6 +1,8 @@
 import { parseArgs } from "node:util";
+import path from "node:path";
 import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
+import { runAnalyzeOrgNapi } from "../lib/core.js";
 import fs from "node:fs/promises";
 import { join } from "node:path";
 
@@ -46,9 +48,49 @@ Examples:
   });
 
   const useJson = values.json;
-  const rootDir = positionals[0] ? join(process.cwd(), positionals[0]) : process.cwd();
+  const rootDir = positionals[0] ? path.resolve(positionals[0]) : process.cwd();
 
-  // Discover projects
+  // NAPI fast path: Rust analyze_org
+  const napiResult = runAnalyzeOrgNapi(rootDir);
+  if (napiResult?.ok && napiResult.data && napiResult.data.projects_analyzed > 0) {
+    const r = napiResult.data;
+    const result = {
+      ok: true,
+      kind: "better.insights",
+      projects_analyzed: r.projects_analyzed,
+      total_unique_deps: r.total_unique_deps,
+      total_dep_instances: r.total_dep_instances,
+      version_inconsistencies: r.version_inconsistencies ?? [],
+      consolidation_opportunities: r.consolidation_opportunities ?? [],
+      standardization_score: r.standardization_score,
+    };
+    if (useJson) { printJson(result); }
+    else {
+      printText(`\nbetter — Org Insights (${r.projects_analyzed} projects)\n`);
+      printText(`Unique dependencies: ${r.total_unique_deps} (${r.total_dep_instances} total instances)`);
+      printText(`Standardization score: ${r.standardization_score}/100\n`);
+      if (r.version_inconsistencies?.length > 0) {
+        printText(`Version inconsistencies (${r.version_inconsistencies.length}):`);
+        for (const inc of r.version_inconsistencies.slice(0, 10)) {
+          const versions = Object.keys(inc.versions).join(", ");
+          printText(`  ${inc.package}: ${versions} → recommend ${inc.recommended}`);
+        }
+      }
+      if (r.consolidation_opportunities?.length > 0) {
+        printText(`\nConsolidation opportunities:`);
+        for (const opp of r.consolidation_opportunities) {
+          printText(`  ${opp.category}: ${opp.packages.join(" + ")} → ${opp.recommended}`);
+          printText(`    ${opp.reason} (affects ${opp.projects.length} projects)`);
+        }
+      }
+      if (!r.version_inconsistencies?.length && !r.consolidation_opportunities?.length) {
+        printText("Dependencies are well-standardized across projects.");
+      }
+    }
+    return;
+  }
+
+  // JS fallback: Discover projects
   const projects = [];
   try {
     const entries = await fs.readdir(rootDir, { withFileTypes: true });
