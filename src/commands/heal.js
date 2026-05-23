@@ -3,6 +3,7 @@ import path from "node:path";
 import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
+import { runSelfHealNapi } from "../lib/core.js";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -51,48 +52,45 @@ Options:
   const projectRoot = resolvedRoot.root;
   const useJson = values.json || runtime.json === true;
 
-  // Forward to Rust binary if available
-  const binDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "bin");
-  let binPath = null;
-  for (const name of ["better-core", "better"]) {
-    try { await fs.access(join(binDir, name)); binPath = join(binDir, name); break; } catch {}
-  }
+  // NAPI fast path: use Rust SelfHealingEngine
+  const napiResult = runSelfHealNapi(projectRoot, values["dry-run"] === true);
+  let actions = [];
 
-  if (binPath) {
-    const args = ["heal", "--project-root", projectRoot];
-    if (values["dry-run"]) args.push("--dry-run");
-    if (useJson) args.push("--json");
-    const result = spawnSync(binPath, args, { encoding: "utf8" });
-    if (result.stdout) process.stdout.write(result.stdout);
-    if (result.stderr) process.stderr.write(result.stderr);
-    if (result.status) process.exitCode = result.status;
-    return;
-  }
-
-  // JS fallback healing
-  const actions = [];
-
-  // Check: missing node_modules
-  try {
-    await fs.access(path.join(projectRoot, "node_modules"));
-  } catch {
-    if (await fileExists(path.join(projectRoot, "package-lock.json"))) {
-      actions.push({ issue: "node_modules missing", action: "better install --frozen", applied: false });
-      if (!values["dry-run"]) {
-        spawnSync("node", [join(dirname(fileURLToPath(import.meta.url)), "..", "cli.js"), "install", "--frozen", "--project-root", projectRoot], { stdio: "inherit" });
-        actions[actions.length - 1].applied = true;
+  if (napiResult?.ok && Array.isArray(napiResult.actions)) {
+    actions = napiResult.actions;
+    // Apply non-dry-run actions that weren't auto-applied by Rust (e.g. install)
+    if (!values["dry-run"]) {
+      for (const action of actions) {
+        if (!action.applied && action.action === "better install --frozen") {
+          const cliPath = join(dirname(fileURLToPath(import.meta.url)), "..", "cli.js");
+          spawnSync(process.execPath, [cliPath, "install", "--frozen", "--project-root", projectRoot], { stdio: "inherit" });
+          action.applied = true;
+        }
       }
     }
-  }
+  } else {
+    // JS fallback
+    try {
+      await fs.access(path.join(projectRoot, "node_modules"));
+    } catch {
+      if (await fileExists(path.join(projectRoot, "package-lock.json"))) {
+        actions.push({ issue: "node_modules missing", action: "better install --frozen", applied: false });
+        if (!values["dry-run"]) {
+          const cliPath = join(dirname(fileURLToPath(import.meta.url)), "..", "cli.js");
+          spawnSync(process.execPath, [cliPath, "install", "--frozen", "--project-root", projectRoot], { stdio: "inherit" });
+          actions[actions.length - 1].applied = true;
+        }
+      }
+    }
 
-  // Check: .env.example but no .env
-  const hasEnvExample = await fileExists(path.join(projectRoot, ".env.example"));
-  const hasEnv = await fileExists(path.join(projectRoot, ".env"));
-  if (hasEnvExample && !hasEnv) {
-    actions.push({ issue: ".env missing", action: "cp .env.example .env", applied: false });
-    if (!values["dry-run"]) {
-      await fs.copyFile(path.join(projectRoot, ".env.example"), path.join(projectRoot, ".env"));
-      actions[actions.length - 1].applied = true;
+    const hasEnvExample = await fileExists(path.join(projectRoot, ".env.example"));
+    const hasEnv = await fileExists(path.join(projectRoot, ".env"));
+    if (hasEnvExample && !hasEnv) {
+      actions.push({ issue: ".env missing", action: "cp .env.example .env", applied: false });
+      if (!values["dry-run"]) {
+        await fs.copyFile(path.join(projectRoot, ".env.example"), path.join(projectRoot, ".env"));
+        actions[actions.length - 1].applied = true;
+      }
     }
   }
 

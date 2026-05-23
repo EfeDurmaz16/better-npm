@@ -297,3 +297,120 @@ test("better predict lodash --json returns single prediction", async () => {
     assert.ok(result.stdout.length > 0 || result.code !== 0, "Should produce output");
   }
 });
+
+// ── ai review ─────────────────────────────────────────────────────────────────
+
+test("better ai review --help shows help", async () => {
+  const result = await runBetter(["ai", "--help"]);
+  assert.ok(
+    result.stdout.includes("review") || result.stdout.includes("ai"),
+    `Expected ai help with review subcommand, got: ${result.stdout}`
+  );
+});
+
+test("better ai review --json returns kind better.ai.review", async () => {
+  const dir = await makeTempDir("better-ai-review-");
+  try {
+    await writeJson(path.join(dir, "package.json"), {
+      name: "ai-review-test",
+      version: "1.0.0",
+      dependencies: {}
+    });
+
+    const result = await runBetter(["ai", "review", "--json", "--project-root", dir]);
+    if (result.stdout?.startsWith("{")) {
+      const json = JSON.parse(result.stdout);
+      assert.ok(json.kind === "better.ai.review", `Expected kind better.ai.review, got: ${JSON.stringify(json)}`);
+      assert.equal(json.ok, true);
+      assert.ok(typeof json.total_deps === "number");
+      assert.ok(Array.isArray(json.suggestions));
+    }
+  } finally {
+    await rmrf(dir);
+  }
+});
+
+test("better ai review --json detects deprecated packages", async () => {
+  const dir = await makeTempDir("better-ai-review-deprecated-");
+  try {
+    await writeJson(path.join(dir, "package.json"), {
+      name: "deprecated-test",
+      version: "1.0.0",
+      dependencies: { request: "^2.88.0" }
+    });
+
+    const result = await runBetter(["ai", "review", "--json", "--project-root", dir]);
+    if (result.stdout?.startsWith("{")) {
+      const json = JSON.parse(result.stdout);
+      if (json.ok && json.suggestions?.length > 0) {
+        const hasDeprecated = json.suggestions.some(s => s.packages?.includes("request"));
+        assert.ok(hasDeprecated, "Should flag request as deprecated");
+      }
+    }
+  } finally {
+    await rmrf(dir);
+  }
+});
+
+// ── heal ──────────────────────────────────────────────────────────────────────
+
+test("better heal --help shows help", async () => {
+  const result = await runBetter(["heal", "--help"]);
+  assert.ok(
+    result.stdout.includes("heal") || result.stdout.includes("fix"),
+    `Expected heal help, got: ${result.stdout}`
+  );
+});
+
+test("better heal --dry-run --json returns kind better.heal", async () => {
+  const dir = await makeTempDir("better-heal-");
+  try {
+    await writeJson(path.join(dir, "package.json"), {
+      name: "heal-test",
+      version: "1.0.0",
+      dependencies: {}
+    });
+
+    const result = await runBetter(["heal", "--dry-run", "--json", "--project-root", dir]);
+    if (result.stdout?.startsWith("{")) {
+      const json = JSON.parse(result.stdout);
+      assert.ok(json.kind === "better.heal", `Expected kind better.heal, got: ${JSON.stringify(json)}`);
+      assert.equal(json.ok, true);
+      assert.ok(Array.isArray(json.actions));
+      assert.ok(typeof json.healed === "number");
+      assert.ok(typeof json.pending === "number");
+    }
+  } finally {
+    await rmrf(dir);
+  }
+});
+
+test("better heal --dry-run detects missing node_modules", async () => {
+  const dir = await makeTempDir("better-heal-nm-");
+  try {
+    await writeJson(path.join(dir, "package.json"), {
+      name: "heal-nm-test",
+      version: "1.0.0",
+      dependencies: {}
+    });
+    await writeJson(path.join(dir, "package-lock.json"), {
+      name: "heal-nm-test",
+      lockfileVersion: 3,
+      packages: {}
+    });
+    // Intentionally no node_modules
+
+    const result = await runBetter(["heal", "--dry-run", "--json", "--project-root", dir]);
+    if (result.stdout?.startsWith("{")) {
+      const json = JSON.parse(result.stdout);
+      if (json.ok) {
+        const hasMissingNm = json.actions?.some(a =>
+          a.issue?.includes("node_modules") || a.issue?.includes("missing")
+        );
+        assert.ok(hasMissingNm, `Expected missing node_modules action, got actions: ${JSON.stringify(json.actions)}`);
+      }
+    }
+  } finally {
+    await rmrf(dir);
+  }
+});

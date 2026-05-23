@@ -1623,3 +1623,43 @@ pub fn napi_create_sponsorship(
         Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
     }
 }
+
+// v2.0 Task: AI dependency review
+#[napi(js_name = "reviewDependencies")]
+pub fn napi_review_dependencies(project_root: String) -> String {
+    use better_core::ai::review::review_dependencies;
+    use std::path::Path;
+    match review_dependencies(Path::new(&project_root)) {
+        Ok(review) => match serde_json::to_string(&review) {
+            Ok(json) => format!("{{\"ok\":true,\"data\":{}}}", json),
+            Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+        },
+        Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+    }
+}
+
+// v2.0 Task: self-healing dependency checks
+#[napi(js_name = "selfHeal")]
+pub fn napi_self_heal(project_root: String, dry_run: bool) -> String {
+    use better_core::ai::SelfHealingEngine;
+    use std::path::Path;
+    let actions = SelfHealingEngine::heal(Path::new(&project_root), dry_run);
+    match serde_json::to_string(&actions) {
+        Ok(json) => format!("{{\"ok\":true,\"actions\":{}}}", json),
+        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+    }
+}
+
+// v2.0 Task: org-level cross-project insights
+#[napi(js_name = "analyzeOrg")]
+pub fn napi_analyze_org(root_dir: String) -> String {
+    use better_core::ai::insights::analyze_org;
+    use std::path::Path;
+    match analyze_org(Path::new(&root_dir)) {
+        Ok(insights) => match serde_json::to_string(&insights) {
+            Ok(json) => format!("{{\"ok\":true,\"data\":{}}}", json),
+            Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+        },
+        Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+    }
+}

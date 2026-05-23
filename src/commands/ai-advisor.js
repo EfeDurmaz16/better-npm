@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
+import { runAnalyzeOrgNapi } from "../lib/core.js";
 
 /**
  * `better ai` — AI-powered dependency management
@@ -58,8 +59,10 @@ Options:
   const sub = positionals[0];
   const useJson = values.json || runtime.json === true;
 
+  // review and org subcommands are rule-based and don't need an API key
+  const LOCAL_SUBCOMMANDS = new Set(["review", "org"]);
   const apiKey = process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY;
-  if (!apiKey) {
+  if (!apiKey && !LOCAL_SUBCOMMANDS.has(sub)) {
     const err = {
       ok: false,
       error: "AI features require ANTHROPIC_API_KEY or OPENAI_API_KEY environment variable",
@@ -79,7 +82,40 @@ Options:
     case "review": {
       // Static (rule-based) dependency review — no AI key required
       const { cmdAiReview } = await import("./ai-review.js");
-      await cmdAiReview([...rest.slice(1), useJson ? "--json" : ""]);
+      const reviewArgs = [...positionals.slice(1), ...(useJson ? ["--json"] : []), "--project-root", projectRoot];
+      await cmdAiReview(reviewArgs);
+      break;
+    }
+    case "org": {
+      // Cross-project org-level dependency analysis — no AI key required
+      const orgRoot = positionals[1] ? path.resolve(positionals[1]) : path.dirname(projectRoot);
+      const orgResult = runAnalyzeOrgNapi(orgRoot);
+      if (orgResult?.ok && orgResult.data) {
+        const r = orgResult.data;
+        const result = { ok: true, kind: "better.ai.org", ...r };
+        if (useJson) { printJson(result); }
+        else {
+          printText(`\nbetter — Org-level analysis for ${orgRoot}\n`);
+          printText(`Projects analyzed: ${r.projects_analyzed}`);
+          printText(`Unique dependencies: ${r.total_unique_deps} (${r.total_dep_instances} total instances)`);
+          printText(`Standardization score: ${r.standardization_score}/100`);
+          if (r.version_inconsistencies?.length > 0) {
+            printText(`\nVersion inconsistencies (${r.version_inconsistencies.length}):`);
+            for (const v of r.version_inconsistencies.slice(0, 5)) {
+              printText(`  ${v.package}: recommended ${v.recommended}`);
+            }
+          }
+          if (r.consolidation_opportunities?.length > 0) {
+            printText(`\nConsolidation opportunities (${r.consolidation_opportunities.length}):`);
+            for (const c of r.consolidation_opportunities.slice(0, 5)) {
+              printText(`  ${c.category}: ${c.packages.join(", ")} — ${c.reason}`);
+            }
+          }
+        }
+      } else {
+        if (useJson) { printJson({ ok: true, kind: "better.ai.org", projects_analyzed: 0, message: "No projects found" }); }
+        else { printText("No multi-project structure found in this directory."); }
+      }
       break;
     }
     case "advise": {

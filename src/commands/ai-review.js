@@ -1,7 +1,9 @@
 import { parseArgs } from "node:util";
 import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
+import { runReviewDependenciesNapi } from "../lib/core.js";
 import fs from "node:fs/promises";
+import path from "node:path";
 import { join } from "node:path";
 
 // Known consolidation suggestions (mirrors Rust logic)
@@ -35,61 +37,93 @@ Options:
   }
 
   const runtime = getRuntimeConfig();
-  const useJson = runtime.json === true;
-  const cwd = process.cwd();
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      json: { type: "boolean", default: runtime.json === true },
+      "project-root": { type: "string" },
+    },
+    strict: false,
+  });
+  const useJson = values.json;
+  const cwd = values["project-root"] ? path.resolve(values["project-root"]) : process.cwd();
 
-  let pkg;
-  try {
-    pkg = JSON.parse(await fs.readFile(join(cwd, "package.json"), "utf8"));
-  } catch {
-    const msg = "No package.json found in current directory";
-    if (useJson) { printJson({ ok: false, error: msg }); } else { printText(`Error: ${msg}`); }
-    process.exitCode = 1;
-    return;
-  }
+  // NAPI fast path: use Rust review_dependencies
+  const napiResult = runReviewDependenciesNapi(cwd);
+  let result;
 
-  const allDeps = [
-    ...Object.keys(pkg.dependencies || {}),
-    ...Object.keys(pkg.devDependencies || {}),
-    ...Object.keys(pkg.peerDependencies || {}),
-  ];
+  if (napiResult?.ok && napiResult.data) {
+    const r = napiResult.data;
+    result = {
+      ok: true,
+      kind: "better.ai.review",
+      project: r.project,
+      total_deps: r.total_deps,
+      suggestions: r.suggestions.map(s => ({
+        category: String(s.category).toLowerCase(),
+        severity: String(s.severity).toLowerCase(),
+        title: s.title,
+        description: s.description,
+        packages: s.packages,
+        action: s.action,
+      })),
+      overall_health: r.overall_health,
+    };
+  } else {
+    // JS fallback
+    let pkg;
+    try {
+      pkg = JSON.parse(await fs.readFile(join(cwd, "package.json"), "utf8"));
+    } catch {
+      const msg = "No package.json found in current directory";
+      if (useJson) { printJson({ ok: false, error: msg }); } else { printText(`Error: ${msg}`); }
+      process.exitCode = 1;
+      return;
+    }
 
-  const suggestions = [];
+    const allDeps = [
+      ...Object.keys(pkg.dependencies || {}),
+      ...Object.keys(pkg.devDependencies || {}),
+      ...Object.keys(pkg.peerDependencies || {}),
+    ];
 
-  for (const { primary, alts, advice } of CONSOLIDATIONS) {
-    if (allDeps.includes(primary)) {
-      const found = alts.filter(a => allDeps.includes(a));
-      if (found.length > 0) {
-        suggestions.push({ category: "consolidate", severity: "medium", title: `Consolidate: ${primary} + ${found.join(", ")}`, description: advice, packages: [primary, ...found], action: `better why ${primary}` });
+    const suggestions = [];
+
+    for (const { primary, alts, advice } of CONSOLIDATIONS) {
+      if (allDeps.includes(primary)) {
+        const found = alts.filter(a => allDeps.includes(a));
+        if (found.length > 0) {
+          suggestions.push({ category: "consolidate", severity: "medium", title: `Consolidate: ${primary} + ${found.join(", ")}`, description: advice, packages: [primary, ...found], action: `better why ${primary}` });
+        }
       }
     }
-  }
 
-  for (const { heavy, lighter, reason } of LIGHTER) {
-    if (allDeps.includes(heavy)) {
-      suggestions.push({ category: "downsize", severity: "low", title: `Consider ${lighter} instead of ${heavy}`, description: reason, packages: [heavy], action: `npm install ${lighter} && npm uninstall ${heavy}` });
+    for (const { heavy, lighter, reason } of LIGHTER) {
+      if (allDeps.includes(heavy)) {
+        suggestions.push({ category: "downsize", severity: "low", title: `Consider ${lighter} instead of ${heavy}`, description: reason, packages: [heavy], action: `npm install ${lighter} && npm uninstall ${heavy}` });
+      }
     }
-  }
 
-  for (const dep of DEPRECATED) {
-    if (allDeps.includes(dep)) {
-      suggestions.push({ category: "remove", severity: "high", title: `${dep} is deprecated`, description: `${dep} has been deprecated. Find a modern replacement.`, packages: [dep], action: `better why ${dep}` });
+    for (const dep of DEPRECATED) {
+      if (allDeps.includes(dep)) {
+        suggestions.push({ category: "remove", severity: "high", title: `${dep} is deprecated`, description: `${dep} has been deprecated. Find a modern replacement.`, packages: [dep], action: `better why ${dep}` });
+      }
     }
-  }
 
-  const score = Math.max(0, 100 - suggestions.length * 10);
-  const result = {
-    ok: true,
-    kind: "better.ai.review",
-    project: cwd.split("/").pop(),
-    total_deps: allDeps.length,
-    suggestions,
-    overall_health: {
-      score,
-      dep_count_rating: allDeps.length < 10 ? "lean" : allDeps.length < 30 ? "moderate" : "heavy",
-      security_rating: suggestions.some(s => s.category === "security") ? "issues found" : "clean",
-    },
-  };
+    const score = Math.max(0, 100 - suggestions.length * 10);
+    result = {
+      ok: true,
+      kind: "better.ai.review",
+      project: cwd.split("/").pop(),
+      total_deps: allDeps.length,
+      suggestions,
+      overall_health: {
+        score,
+        dep_count_rating: allDeps.length < 10 ? "lean" : allDeps.length < 30 ? "moderate" : "heavy",
+        security_rating: suggestions.some(s => s.category === "security") ? "issues found" : "clean",
+      },
+    };
+  }
 
   if (useJson) {
     printJson(result);

@@ -421,6 +421,27 @@ export function runCreateSponsorshipNapi(packageName, monthlyAmount, currency) {
   try { return JSON.parse(json); } catch { return null; }
 }
 
+export function runReviewDependenciesNapi(projectRoot) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.reviewDependencies) return null;
+  const json = addon.reviewDependencies(projectRoot);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
+export function runSelfHealNapi(projectRoot, dryRun) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.selfHeal) return null;
+  const json = addon.selfHeal(projectRoot, dryRun === true);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
+export function runAnalyzeOrgNapi(rootDir) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.analyzeOrg) return null;
+  const json = addon.analyzeOrg(rootDir);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
 export async function runBetterCoreInstall(corePath, projectRoot, opts = {}) {
   const args = ["install", "--project-root", projectRoot];
   if (opts.lockfile) args.push("--lockfile", String(opts.lockfile));
