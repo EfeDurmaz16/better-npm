@@ -5,7 +5,7 @@ import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
 import { childLogger } from "../lib/log.js";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
-import { findBetterCore } from "../lib/core.js";
+import { findBetterCore, runLicenseNapi } from "../lib/core.js";
 import { runCommand } from "../lib/spawn.js";
 
 const HELP = `
@@ -313,6 +313,35 @@ export async function cmdLicense(argv) {
     : null;
 
   logger.info("Scanning node_modules for licenses", { projectRoot });
+
+  // NAPI fast path
+  const napiResult = runLicenseNapi(projectRoot, {
+    allow: allowList ?? [],
+    deny: denyList ?? []
+  });
+  if (napiResult !== null) {
+    if (napiResult.ok !== false || (napiResult.packages != null)) {
+      const packages = napiResult.packages || [];
+      const summary = napiResult.summary || buildSummary(packages, allowList, denyList);
+      if (isJson) {
+        printJson({
+          ok: summary.violations.length === 0,
+          kind: "better.license",
+          schemaVersion: 1,
+          packages,
+          summary
+        });
+      } else {
+        printText(formatTextOutput(packages, summary));
+      }
+      if (summary.violations.length > 0) {
+        process.exitCode = 1;
+      }
+      return;
+    }
+    // !napiResult.ok with no packages: fall through to JS path
+    logger.debug("napi license reported not ok, falling through to JS path");
+  }
 
   const nodeModulesPath = path.join(projectRoot, "node_modules");
   const packages = await scanNodeModules(nodeModulesPath);
