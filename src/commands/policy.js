@@ -200,7 +200,9 @@ export async function cmdPolicy(argv) {
     const analysis = res.analysis;
 
     if (!analysis?.ok) {
-      const out = { ok: false, kind: "better.policy.check", schemaVersion: 1, reason: analysis?.reason ?? "analysis_failed" };
+      const policyEarly = loadPolicyConfig(projectRoot, runtime);
+      if (values.threshold) { const t = Number(values.threshold); if (Number.isFinite(t)) policyEarly.threshold = Math.max(0, Math.min(100, t)); }
+      const out = { ok: false, kind: "better.policy.check", schemaVersion: 1, reason: analysis?.reason ?? "analysis_failed", error: analysis?.reason ?? "analysis_failed", score: 0, threshold: policyEarly.threshold, pass: false };
       if (values.json) printJson(out);
       else printText(`better policy check: ${out.reason}`);
       process.exitCode = 1;

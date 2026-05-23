@@ -624,6 +624,20 @@ export function runOutdatedEngineNapi(projectRoot, ecosystem) {
   try { return JSON.parse(json); } catch { return null; }
 }
 
+export function runGetEnvInfoNapi(projectRoot) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.getEnvInfo) return null;
+  const json = addon.getEnvInfo(projectRoot);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
+export function runDetectLockfilesNapi(projectRoot) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.detectLockfiles) return null;
+  const json = addon.detectLockfiles(projectRoot);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
 export function runBenchmarkNapi(projectRoot, rounds, pms) {
   const addon = tryLoadNapiAddon();
   if (!addon?.runBenchmark) return null;

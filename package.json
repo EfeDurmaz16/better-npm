@@ -37,7 +37,10 @@
     "core:build": "cargo build --manifest-path crates/Cargo.toml -p better-core --release",
     "core:build:debug": "cargo build --manifest-path crates/Cargo.toml -p better-core",
     "napi:build": "cargo build --manifest-path crates/Cargo.toml -p better-napi --release && cp crates/target/release/libbetter_napi.dylib crates/better-napi/better-core.darwin-arm64.node",
-    "napi:build:debug": "cargo build --manifest-path crates/Cargo.toml -p better-napi && cp crates/target/debug/libbetter_napi.dylib crates/better-napi/better-core.darwin-arm64.node"
+    "napi:build:debug": "cargo build --manifest-path crates/Cargo.toml -p better-napi && cp crates/target/debug/libbetter_napi.dylib crates/better-napi/better-core.darwin-arm64.node",
+    "napi:build:linux": "cargo build --manifest-path crates/Cargo.toml -p better-napi --release && cp crates/target/release/libbetter_napi.so crates/better-napi/better-core.linux-x64-gnu.node",
+    "napi:build:linux:debug": "cargo build --manifest-path crates/Cargo.toml -p better-napi && cp crates/target/debug/libbetter_napi.so crates/better-napi/better-core.linux-x64-gnu.node",
+    "napi:build:win": "cargo build --manifest-path crates/Cargo.toml -p better-napi --release && cp crates/target/release/better_napi.dll crates/better-napi/better-core.win32-x64-msvc.node"
   },
   "files": [
     "bin/",

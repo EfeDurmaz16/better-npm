@@ -2408,6 +2408,38 @@ pub fn napi_validate_commit_msg(message: String) -> String {
     }
 }
 
+// env: get environment info (node/npm versions, platform)
+#[napi(js_name = "getEnvInfo")]
+pub fn napi_get_env_info(project_root: String) -> String {
+    use better_core::env::env_info;
+    use std::path::Path;
+    let info = env_info(Path::new(&project_root));
+    serde_json::json!({
+        "ok": true,
+        "nodeVersion": info.node_version,
+        "npmVersion": info.npm_version,
+        "betterVersion": info.better_version,
+        "platform": info.platform,
+        "arch": info.arch,
+        "projectName": info.project_name,
+        "projectVersion": info.project_version,
+        "engines": info.engines,
+    }).to_string()
+}
+
+// migrate: detect all lockfiles and ecosystems in a project
+#[napi(js_name = "detectLockfiles")]
+pub fn napi_detect_lockfiles(project_root: String) -> String {
+    use better_core::migrate::detect_lockfiles;
+    use std::path::Path;
+    let lockfiles = detect_lockfiles(Path::new(&project_root));
+    let items: Vec<serde_json::Value> = lockfiles.iter().map(|l| serde_json::json!({
+        "path": l.path.display().to_string(),
+        "ecosystem": l.ecosystem,
+    })).collect();
+    serde_json::json!({ "ok": true, "lockfiles": items }).to_string()
+}
+
 // benchmark: run install benchmark across package managers
 #[napi(js_name = "runBenchmark")]
 pub fn napi_run_benchmark(project_root: String, rounds: f64, pms_json: String) -> String {

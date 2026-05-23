@@ -12,6 +12,7 @@ import { detectPackageManager } from "../pm/detect.js";
 import { shortHash } from "../lib/hash.js";
 import { getCacheRoot, cacheLayout, ensureCacheDirs } from "../lib/cache.js";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
+import { runBenchmarkNapi } from "../lib/core.js";
 
 const BETTER_BIN_PATH = fileURLToPath(new URL("../../bin/better.js", import.meta.url));
 
@@ -415,6 +416,7 @@ export async function cmdBenchmark(argv) {
                    [--cold-rounds N] [--warm-rounds N] [--timeout-ms N] [--scenario cold_miss|warm_hit|reuse_noop|all]
                    [--frozen] [--production] [--include-full] [--cache-root PATH]
                    [--core-mode auto|js|rust] [--fs-concurrency N] [--no-incremental]
+                   [--napi]  Run lightweight Rust benchmark (faster, no full install cycles)
 `);
     return;
   }
@@ -425,6 +427,7 @@ export async function cmdBenchmark(argv) {
     args: argv,
     options: {
       json: { type: "boolean", default: runtime.json === true },
+      napi: { type: "boolean", default: false },
       "project-root": { type: "string" },
       pm: { type: "string", default: "auto" },
       engine: { type: "string", default: "pm" },
@@ -443,6 +446,33 @@ export async function cmdBenchmark(argv) {
     allowPositionals: true,
     strict: false
   });
+
+  if (values.napi) {
+    const invocationCwdNapi = process.cwd();
+    const resolvedRootNapi = values["project-root"]
+      ? { root: path.resolve(values["project-root"]) }
+      : await resolveInstallProjectRoot(invocationCwdNapi);
+    const rounds = Number.parseInt(values["warm-rounds"], 10) || 3;
+    const pms = values.pm && values.pm !== "auto" ? [values.pm] : [];
+    const napiResult = runBenchmarkNapi(resolvedRootNapi.root, rounds, pms);
+    if (napiResult?.ok) {
+      if (values.json) { printJson({ ok: true, kind: "better.benchmark.napi", ...napiResult }); return; }
+      const d = napiResult;
+      const lines = [
+        "better benchmark (napi)",
+        `- platform: ${d.platform ?? process.platform}/${d.arch ?? process.arch}`,
+        `- cpus: ${d.cpus ?? "?"}`,
+        `- rounds: ${rounds}`,
+      ];
+      for (const r of d.results ?? []) {
+        lines.push(`  ${r.pm ?? r.name}: mean=${r.meanMs?.toFixed(1) ?? "?"}ms median=${r.medianMs?.toFixed(1) ?? "?"}ms`);
+      }
+      printText(lines.join("\n"));
+      return;
+    }
+    printText("NAPI benchmark unavailable — run without --napi for full benchmark.");
+    return;
+  }
 
   const invocationCwd = process.cwd();
   const resolvedRoot = values["project-root"]

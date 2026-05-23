@@ -5,6 +5,35 @@ use std::path::Path;
 use crate::types::{LicenseInfo, LicenseReport};
 use crate::{extract_json_field, list_packages_in_node_modules};
 
+fn detect_license_from_text(text: &str) -> Option<String> {
+    let t = text.to_ascii_uppercase();
+    // Ordered by specificity
+    if t.contains("MIT LICENSE") || t.contains("MIT ") { return Some("MIT".to_string()); }
+    if t.contains("ISC LICENSE") || t.contains("ISC ") { return Some("ISC".to_string()); }
+    if t.contains("APACHE LICENSE") { return Some("Apache-2.0".to_string()); }
+    if t.contains("BSD 3-CLAUSE") || t.contains("BSD-3-CLAUSE") { return Some("BSD-3-Clause".to_string()); }
+    if t.contains("BSD 2-CLAUSE") || t.contains("BSD-2-CLAUSE") { return Some("BSD-2-Clause".to_string()); }
+    if t.contains("GNU GENERAL PUBLIC LICENSE") && t.contains("VERSION 3") { return Some("GPL-3.0".to_string()); }
+    if t.contains("GNU GENERAL PUBLIC LICENSE") && t.contains("VERSION 2") { return Some("GPL-2.0".to_string()); }
+    if t.contains("GNU LESSER GENERAL PUBLIC LICENSE") { return Some("LGPL-3.0".to_string()); }
+    if t.contains("GNU AFFERO GENERAL PUBLIC LICENSE") { return Some("AGPL-3.0".to_string()); }
+    if t.contains("MOZILLA PUBLIC LICENSE") { return Some("MPL-2.0".to_string()); }
+    if t.contains("UNLICENSE") { return Some("Unlicense".to_string()); }
+    if t.contains("CC0") { return Some("CC0-1.0".to_string()); }
+    None
+}
+
+fn detect_license_from_files(pkg_dir: &Path) -> Option<String> {
+    for name in &["LICENSE", "LICENSE.md", "LICENSE.txt", "LICENCE", "LICENCE.md", "LICENCE.txt"] {
+        if let Ok(text) = fs::read_to_string(pkg_dir.join(name)) {
+            if let Some(lic) = detect_license_from_text(&text) {
+                return Some(lic);
+            }
+        }
+    }
+    None
+}
+
 pub fn scan_licenses(node_modules: &Path, allow: &[String], deny: &[String]) -> Result<LicenseReport, String> {
     let pkg_dirs = list_packages_in_node_modules(node_modules)?;
     let mut packages = Vec::new();
@@ -19,7 +48,9 @@ pub fn scan_licenses(node_modules: &Path, allow: &[String], deny: &[String]) -> 
         };
         let name = extract_json_field(&content, "name").unwrap_or_else(|| "unknown".to_string());
         let version = extract_json_field(&content, "version").unwrap_or_else(|| "0.0.0".to_string());
-        let license = extract_json_field(&content, "license").unwrap_or_else(|| "UNLICENSED".to_string());
+        let license = extract_json_field(&content, "license")
+            .or_else(|| detect_license_from_files(pkg_dir))
+            .unwrap_or_else(|| "UNKNOWN".to_string());
 
         *by_license.entry(license.clone()).or_insert(0) += 1;
 

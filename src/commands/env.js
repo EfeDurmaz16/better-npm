@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
+import { runGetEnvInfoNapi } from "../lib/core.js";
 
 /**
  * `better env` — manage environment variables for the project
@@ -69,6 +70,24 @@ Options:
     case "diff": return await envDiff(projectRoot, values);
     case "validate": return await envValidate(projectRoot, values);
     case "export": return await envExport(projectRoot, values);
+    case "info": {
+      const napiInfo = runGetEnvInfoNapi(projectRoot);
+      if (napiInfo?.ok) {
+        if (values.json) { printJson({ ok: true, kind: "better.env.info", ...napiInfo }); return; }
+        printText([
+          `better env info`,
+          `- node: ${napiInfo.nodeVersion}`,
+          `- npm: ${napiInfo.npmVersion}`,
+          `- better: ${napiInfo.betterVersion}`,
+          `- platform: ${napiInfo.platform}/${napiInfo.arch}`,
+          ...(napiInfo.projectName ? [`- project: ${napiInfo.projectName}@${napiInfo.projectVersion ?? "0.0.0"}`] : []),
+          ...(napiInfo.engines ? [`- engines: ${napiInfo.engines}`] : []),
+        ].join("\n"));
+        return;
+      }
+      printText("env info unavailable (NAPI not loaded)");
+      return;
+    }
     default:
       printText(`Unknown subcommand: ${sub}. Run 'better env --help' for usage.`);
       process.exitCode = 1;

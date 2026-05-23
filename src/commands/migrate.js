@@ -17,6 +17,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import https from "node:https";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
+import { runDetectLockfilesNapi } from "../lib/core.js";
 
 // Known migration resources for popular packages
 const MIGRATION_GUIDES = {
@@ -106,9 +107,12 @@ export async function cmdMigrate(argv) {
   });
 
   if (values.help) {
-    printText(`Usage: better migrate [packages...] [options]
+    printText(`Usage: better migrate [subcommand] [packages...] [options]
 
 Get migration guidance for packages with major version updates.
+
+Subcommands:
+  detect        Detect lockfiles and package managers in the project
 
 Options:
   --json       Machine-readable output
@@ -117,11 +121,42 @@ Options:
 Examples:
   better migrate
   better migrate react next
+  better migrate detect
 `);
     return;
   }
 
   const cwd = process.cwd();
+
+  if (positionals[0] === "detect") {
+    const resolvedRootDetect = await resolveInstallProjectRoot(cwd);
+    const napiResult = runDetectLockfilesNapi(resolvedRootDetect.root);
+    if (napiResult?.ok) {
+      if (values.json) { printJson({ ok: true, kind: "better.migrate.detect", ...napiResult }); return; }
+      const lf = napiResult.lockfiles ?? [];
+      if (lf.length === 0) {
+        printText("No lockfiles detected.");
+      } else {
+        printText(`\x1b[1mbetter migrate detect\x1b[0m\n`);
+        for (const l of lf) {
+          printText(`  \x1b[32m✔\x1b[0m  ${l.name ?? l.kind ?? l.file ?? JSON.stringify(l)}`);
+        }
+      }
+      return;
+    }
+    // Fallback: show what lockfiles exist on disk
+    const root2 = (await resolveInstallProjectRoot(cwd)).root;
+    const known = ["package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb", "shrinkwrap.yaml"];
+    const found = [];
+    for (const f of known) {
+      try { await (await import("node:fs/promises")).access(path.join(root2, f)); found.push(f); } catch {}
+    }
+    if (values.json) { printJson({ ok: true, kind: "better.migrate.detect", lockfiles: found }); return; }
+    printText(`\x1b[1mbetter migrate detect\x1b[0m\n`);
+    if (found.length === 0) { printText("No lockfiles detected."); }
+    else { for (const f of found) printText(`  \x1b[32m✔\x1b[0m  ${f}`); }
+    return;
+  }
   const resolvedRoot = await resolveInstallProjectRoot(cwd);
   const projectRoot = resolvedRoot.root;
 

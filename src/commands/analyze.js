@@ -181,6 +181,8 @@ async function buildReport(baseAnalysis, projectRoot, workspaceData = null) {
 
   const report = {
     ...baseAnalysis,
+    ok: true,
+    kind: "better.analyze.report",
     schemaVersion: 2,
     generatedAt: nowIso(),
     packages,
