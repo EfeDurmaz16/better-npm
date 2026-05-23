@@ -359,6 +359,25 @@ export function runPayPackageNapi(packageName, amount, currency) {
   try { return JSON.parse(json); } catch { return null; }
 }
 
+// --- NAPI: smart upgrade planner ---
+export function runPlanSmartUpgradeNapi(projectRoot, packageName, fromVersion, toVersion, changelogText, dryRun, minReputationScore) {
+  const addon = tryLoadNapiAddon();
+  if (!addon || typeof addon.planSmartUpgrade !== "function") return null;
+  const json = addon.planSmartUpgrade(
+    projectRoot, packageName, fromVersion ?? "", toVersion ?? "",
+    changelogText ?? null, dryRun ?? false, minReputationScore ?? 40
+  );
+  try { return JSON.parse(json); } catch { return null; }
+}
+
+// --- NAPI: changelog analysis ---
+export function runAnalyzeChangelogNapi(packageName, fromVersion, toVersion, changelogText) {
+  const addon = tryLoadNapiAddon();
+  if (!addon || typeof addon.analyzeChangelog !== "function") return null;
+  const json = addon.analyzeChangelog(packageName, fromVersion ?? "", toVersion ?? "", changelogText ?? "");
+  try { return JSON.parse(json); } catch { return null; }
+}
+
 // --- NAPI: predictive maintenance ---
 export function runPredictMaintenanceNapi(packageName, ecosystem, version) {
   const addon = tryLoadNapiAddon();

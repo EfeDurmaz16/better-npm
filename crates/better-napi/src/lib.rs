@@ -1376,6 +1376,73 @@ pub fn napi_reputation_score(package_name: String, ecosystem: String, version: S
     }).to_string()
 }
 
+/// Plan (and optionally execute) a smart upgrade with changelog analysis + reputation gating.
+/// Returns JSON: { ok, package, from_version, to_version, steps_applied, risk_level,
+///                  tests_passed, rollback_applied, dry_run, summary }
+#[napi(js_name = "planSmartUpgrade")]
+pub fn napi_plan_smart_upgrade(
+    project_root: String,
+    package_name: String,
+    from_version: String,
+    to_version: String,
+    changelog_text: Option<String>,
+    dry_run: bool,
+    min_reputation_score: u32,
+) -> String {
+    use better_core::intelligence::changelog::analyze_changelog;
+    use better_core::intelligence::signals::collect_signals;
+    use better_core::intelligence::compute_score;
+    use better_core::intelligence::smart_upgrade::{smart_upgrade, UpgradeInput};
+    use std::path::Path;
+
+    let changelog = changelog_text.as_deref().and_then(|text| {
+        if text.is_empty() { return None; }
+        analyze_changelog(&package_name, &from_version, &to_version, text).ok()
+    });
+
+    let signals = collect_signals(&package_name, "npm", &to_version);
+    let rep = compute_score(&signals);
+
+    let input = UpgradeInput {
+        project_root: Path::new(&project_root),
+        package: &package_name,
+        from_version: &from_version,
+        to_version: &to_version,
+        changelog: changelog.as_ref(),
+        target_reputation: Some(&rep),
+        dry_run,
+        min_reputation_score: min_reputation_score as u8,
+    };
+
+    match smart_upgrade(&input) {
+        Ok(result) => match serde_json::to_string(&result) {
+            Ok(json) => format!("{{\"ok\":true,\"data\":{}}}", json),
+            Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+        },
+        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+    }
+}
+
+/// Analyze a changelog text for breaking changes between two versions.
+/// Returns JSON: { ok, package, from_version, to_version, breaking_changes, risk_level, migration_steps }
+#[napi(js_name = "analyzeChangelog")]
+pub fn napi_analyze_changelog(
+    package_name: String,
+    from_version: String,
+    to_version: String,
+    changelog_text: String,
+) -> String {
+    use better_core::intelligence::changelog::analyze_changelog;
+
+    match analyze_changelog(&package_name, &from_version, &to_version, &changelog_text) {
+        Ok(analysis) => match serde_json::to_string(&analysis) {
+            Ok(json) => format!("{{\"ok\":true,\"data\":{}}}", json),
+            Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+        },
+        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+    }
+}
+
 /// Predict maintenance status for a package using live signals.
 /// Returns JSON: { ok, package, version, current_status, predicted_status_6mo,
 ///                 confidence, risk_score, signals, recommended_action, alternatives }
