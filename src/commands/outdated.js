@@ -6,6 +6,7 @@ import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
 import { childLogger } from "../lib/log.js";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
+import { runOutdatedNapi } from "../lib/core.js";
 
 async function readJsonFile(filePath) {
   try {
@@ -251,6 +252,64 @@ Output:
       printText("No dependencies to check.");
     }
     return;
+  }
+
+  // NAPI fast path — skips HTTP registry calls
+  const napiResult = runOutdatedNapi(projectRoot);
+  if (napiResult !== null) {
+    if (!napiResult.ok) {
+      commandLogger.warn("outdated.napi_failed", { reason: napiResult.reason });
+      // fall through to JS path below
+    } else {
+      const napiPackages = napiResult.packages
+        .map(p => ({
+          name: p.name,
+          current: p.current,
+          wanted: p.latest,    // NAPI only has latest
+          latest: p.latest,
+          range: allDeps[p.name] ?? p.current,
+          updateType: p.update_type,
+          isDev: !dependencies[p.name] && !!devDependencies[p.name]
+        }))
+        .filter(p => !minLevel || (() => {
+          const priority = { patch: 1, minor: 2, major: 3 };
+          return (priority[p.updateType] ?? 0) >= (priority[minLevel] ?? 0);
+        })());
+      const result = {
+        ok: true,
+        kind: "better.outdated",
+        schemaVersion: 1,
+        packages: napiPackages,
+        summary: {
+          totalChecked: napiResult.total_checked,
+          upToDate: napiResult.total_checked - napiResult.outdated,
+          outdated: napiResult.outdated,
+          major: napiResult.major,
+          minor: napiResult.minor,
+          patch: napiResult.patch
+        }
+      };
+      if (values.json) {
+        printJson(result);
+      } else {
+        if (napiPackages.length === 0) {
+          printText("All packages are up to date.");
+        } else {
+          const lines = ["Package updates available:", ""];
+          const nameWidth = Math.max(20, ...napiPackages.map(p => p.name.length));
+          const header = `${"Package".padEnd(nameWidth)} ${"Current".padEnd(12)} ${"Latest".padEnd(12)} Type`;
+          lines.push(header);
+          lines.push("-".repeat(header.length));
+          for (const pkg of napiPackages) {
+            lines.push(`${pkg.name.padEnd(nameWidth)} ${pkg.current.padEnd(12)} ${pkg.latest.padEnd(12)} ${pkg.updateType}`);
+          }
+          lines.push("");
+          lines.push(`Summary: ${result.summary.outdated} outdated (${result.summary.major} major, ${result.summary.minor} minor, ${result.summary.patch} patch)`);
+          printText(lines.join("\n"));
+        }
+      }
+      return;
+    }
   }
 
   const checkedCount = Object.keys(allDeps).length;
