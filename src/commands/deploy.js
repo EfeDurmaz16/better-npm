@@ -6,6 +6,7 @@ import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
 import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { runDetectFrameworkNapi } from "../lib/core.js";
 
 /**
  * `better deploy [target]` — deploy with dependency auto-provisioning
@@ -72,9 +73,14 @@ Options:
   steps.push({ step: "deploy", status: "pending", platform: values.platform || "auto" });
 
   if (values["dry-run"]) {
-    // Detect framework from package.json for the dry-run report
+    // Detect framework using NAPI for accurate detection
     let framework = null;
     let platform = values.platform || null;
+    const napiDetect = runDetectFrameworkNapi(projectRoot);
+    if (napiDetect?.ok) {
+      framework = napiDetect.framework?.toLowerCase().replace("js", "") || null;
+      platform = platform || napiDetect.recommended_platform?.toLowerCase() || null;
+    } else {
     try {
       const fs = await import("node:fs/promises");
       const pkgJson = JSON.parse(await fs.readFile(path.join(projectRoot, "package.json"), "utf8"));
@@ -87,6 +93,7 @@ Options:
       else if (allDeps.svelte || allDeps["@sveltejs/kit"]) { framework = "svelte"; platform = platform || "vercel"; }
       else if (allDeps.express || allDeps.fastify || allDeps.koa) { framework = "node"; platform = platform || "railway"; }
     } catch { /* non-fatal */ }
+    }
     const result = {
       ok: true,
       kind: "better.deploy",

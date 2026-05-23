@@ -1952,3 +1952,53 @@ pub fn napi_scan_projects(roots_json: String) -> String {
         Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
     }
 }
+
+// v1.4: deploy framework detection
+#[napi(js_name = "detectFramework")]
+pub fn napi_detect_framework(project_root: String) -> String {
+    use better_core::deploy::detect::detect_framework;
+    use std::path::Path;
+    let detection = detect_framework(Path::new(&project_root));
+    serde_json::json!({
+        "ok": true,
+        "framework": format!("{:?}", detection.framework),
+        "build_command": detection.build_command,
+        "output_dir": detection.output_dir,
+        "dev_command": detection.dev_command,
+        "recommended_platform": format!("{:?}", detection.recommended_platform),
+    }).to_string()
+}
+
+// v1.3: pin/unpin package versions
+#[napi(js_name = "pinVersions")]
+pub fn napi_pin_versions(
+    project_root: String,
+    packages_json: String,
+    unpin: bool,
+    dry_run: bool,
+) -> String {
+    use better_core::pin::pin_versions;
+    use std::path::Path;
+    let packages: Vec<String> = match serde_json::from_str(&packages_json) {
+        Ok(p) => p,
+        Err(e) => return serde_json::json!({ "ok": false, "error": format!("Invalid packages JSON: {}", e) }).to_string(),
+    };
+    match pin_versions(Path::new(&project_root), &packages, unpin, false, false, dry_run) {
+        Ok(result) => {
+            let changes: Vec<serde_json::Value> = result.changes.iter().map(|c| {
+                serde_json::json!({
+                    "name": c.name,
+                    "section": c.section,
+                    "from": c.from,
+                    "to": c.to,
+                })
+            }).collect();
+            serde_json::json!({
+                "ok": true,
+                "total": result.total,
+                "changes": changes,
+            }).to_string()
+        }
+        Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+    }
+}

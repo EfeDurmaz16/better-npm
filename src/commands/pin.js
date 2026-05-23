@@ -17,6 +17,7 @@ import { getRuntimeConfig } from "../lib/config.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
+import { runPinVersionsNapi } from "../lib/core.js";
 
 function stripRange(v) {
   return String(v ?? "").replace(/^[\^~>=<\s]+/, "").split(" ")[0];
@@ -70,6 +71,31 @@ Examples:
   const resolvedRoot = await resolveInstallProjectRoot(cwd);
   const projectRoot = resolvedRoot.root;
   const pkgPath = path.join(projectRoot, "package.json");
+
+  // NAPI fast path: Rust pin with lockfile-based exact version resolution
+  const napiResult = runPinVersionsNapi(
+    projectRoot,
+    positionals,
+    values.unpin === true,
+    values["dry-run"] === true
+  );
+  if (napiResult?.ok) {
+    const result = {
+      ok: true, kind: "better.pin",
+      total: napiResult.total,
+      changes: napiResult.changes ?? [],
+    };
+    if (values.json) { printJson(result); }
+    else if (napiResult.total === 0) {
+      printText(values.unpin ? "Nothing to unpin." : "All versions already pinned.");
+    } else {
+      printText(`${values.unpin ? "Unpinned" : "Pinned"} ${napiResult.total} package(s):`);
+      for (const c of napiResult.changes.slice(0, 20)) {
+        printText(`  ${c.name} (${c.section}): ${c.from} → ${c.to}`);
+      }
+    }
+    return;
+  }
 
   let pkg;
   try {
