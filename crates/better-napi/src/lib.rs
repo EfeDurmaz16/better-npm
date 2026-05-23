@@ -2339,6 +2339,114 @@ pub fn napi_load_best_mirror() -> String {
     }
 }
 
+// receipt: list install receipts
+#[napi(js_name = "listReceipts")]
+pub fn napi_list_receipts(project_root: String) -> String {
+    use better_core::receipt::list_receipts;
+    use std::path::Path;
+    match list_receipts(Path::new(&project_root)) {
+        Ok(receipts) => {
+            let items: Vec<serde_json::Value> = receipts.iter().map(|r| serde_json::json!({
+                "timestamp": r.timestamp,
+                "betterVersion": r.better_version,
+                "packagesInstalled": r.packages_installed,
+                "policyScore": r.policy_score,
+                "lockfileHash": r.lockfile_hash,
+            })).collect();
+            serde_json::json!({ "ok": true, "receipts": items }).to_string()
+        },
+        Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+    }
+}
+
+// receipt: verify install receipt
+#[napi(js_name = "verifyReceipt")]
+pub fn napi_verify_receipt(project_root: String) -> String {
+    use better_core::receipt::verify_receipt;
+    use std::path::Path;
+    match verify_receipt(Path::new(&project_root)) {
+        Ok(r) => serde_json::json!({
+            "ok": r.ok,
+            "receiptExists": r.receipt_exists,
+            "timestamp": r.timestamp,
+            "packagesInstalled": r.packages_installed,
+            "lockfileMatches": r.lockfile_matches,
+            "nodeModulesPresent": r.node_modules_present,
+        }).to_string(),
+        Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+    }
+}
+
+// hooks: install git hooks from package.json "better.hooks" config
+#[napi(js_name = "hooksInstall")]
+pub fn napi_hooks_install(project_root: String) -> String {
+    use better_core::hooks::hooks_install;
+    use std::path::Path;
+    match hooks_install(Path::new(&project_root)) {
+        Ok(r) => {
+            let hooks: Vec<serde_json::Value> = r.hooks.iter()
+                .map(|(t, a)| serde_json::json!({ "type": t, "action": a }))
+                .collect();
+            serde_json::json!({
+                "ok": true,
+                "hooksInstalled": r.hooks_installed,
+                "fromConfig": r.from_config,
+                "hooks": hooks,
+            }).to_string()
+        },
+        Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+    }
+}
+
+// hooks: validate conventional commit message format
+#[napi(js_name = "validateCommitMsg")]
+pub fn napi_validate_commit_msg(message: String) -> String {
+    use better_core::hooks::validate_conventional_commit;
+    match validate_conventional_commit(&message) {
+        Ok(()) => serde_json::json!({ "ok": true, "valid": true }).to_string(),
+        Err(e) => serde_json::json!({ "ok": true, "valid": false, "error": e }).to_string(),
+    }
+}
+
+// benchmark: run install benchmark across package managers
+#[napi(js_name = "runBenchmark")]
+pub fn napi_run_benchmark(project_root: String, rounds: f64, pms_json: String) -> String {
+    use better_core::benchmark::run_benchmark;
+    use std::path::Path;
+    let pms: Vec<String> = serde_json::from_str(&pms_json).unwrap_or_default();
+    let rounds = (rounds as usize).max(1).min(10);
+    match run_benchmark(Path::new(&project_root), rounds, &pms) {
+        Ok(report) => {
+            let results: Vec<serde_json::Value> = report.results.iter().map(|r| serde_json::json!({
+                "name": r.name,
+                "cold": { "medianMs": r.cold.median_ms, "minMs": r.cold.min_ms, "maxMs": r.cold.max_ms, "meanMs": r.cold.mean_ms },
+                "warm": { "medianMs": r.warm.median_ms, "minMs": r.warm.min_ms, "maxMs": r.warm.max_ms, "meanMs": r.warm.mean_ms },
+            })).collect();
+            serde_json::json!({
+                "ok": true,
+                "platform": report.platform,
+                "arch": report.arch,
+                "cpus": report.cpus,
+                "results": results,
+            }).to_string()
+        },
+        Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+    }
+}
+
+// stats: calculate CAS storage statistics
+#[napi(js_name = "calculateCasStats")]
+pub fn napi_calculate_cas_stats() -> String {
+    use better_core::stats::calculate_cas_stats;
+    match calculate_cas_stats() {
+        Ok(stats) => match serde_json::to_string(&stats) {
+            Ok(json) => format!("{{\"ok\":true,\"data\":{}}}", json),
+            Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+        },
+        Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+    }
+}
+
 // v2: cross-ecosystem doctor
 #[napi(js_name = "doctorV2")]
 pub fn napi_doctor_v2(project_root: String) -> String {

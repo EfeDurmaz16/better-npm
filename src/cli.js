@@ -536,6 +536,9 @@ export async function runCli(argv) {
       case "reproducible":
         await (await import("./commands/reproducible.js")).cmdReproducible(rest);
         break;
+      case "receipt":
+        await (await import("./commands/receipt.js")).cmdReceipt(rest);
+        break;
       case "config":
         await (await import("./commands/config.js")).cmdConfig(rest);
         break;

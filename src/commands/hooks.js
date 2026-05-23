@@ -17,6 +17,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
+import { runHooksInstallNapi, runValidateCommitMsgNapi } from "../lib/core.js";
 
 const STANDARD_HOOKS = [
   "pre-commit",
@@ -133,6 +134,40 @@ Options:
   } catch { pkgJson = {}; }
 
   const sub = positionals[0] || "status";
+
+  // NAPI fast path for native hook install
+  if (sub === "native") {
+    const napiResult = runHooksInstallNapi(projectRoot);
+    if (napiResult !== null) {
+      if (values.json) {
+        printJson({ ok: napiResult.ok, kind: "better.hooks.install", projectRoot, ...napiResult });
+      } else if (napiResult.ok) {
+        printText(`Installed ${napiResult.hooksInstalled} git hook(s):`);
+        for (const h of napiResult.hooks ?? []) {
+          printText(`  - ${h.type}: ${h.action}`);
+        }
+      } else {
+        printText(`Hook install failed: ${napiResult.error}`);
+        process.exitCode = 1;
+      }
+      return;
+    }
+  }
+
+  // NAPI fast path for commit message validation
+  if (sub === "validate-commit" && positionals[1]) {
+    const msg = positionals.slice(1).join(" ");
+    const napiResult = runValidateCommitMsgNapi(msg);
+    if (napiResult !== null) {
+      if (values.json) {
+        printJson({ ok: true, kind: "better.hooks.validate-commit", ...napiResult });
+      } else {
+        printText(napiResult.valid ? "Commit message is valid." : `Invalid: ${napiResult.error}`);
+      }
+      process.exitCode = napiResult.valid ? 0 : 1;
+      return;
+    }
+  }
 
   const hookManager = await detectHookManager(projectRoot, pkgJson);
   const hooks = await getHooksStatus(projectRoot);

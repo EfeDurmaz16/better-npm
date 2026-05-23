@@ -14,6 +14,7 @@ import { getRuntimeConfig } from "../lib/config.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
+import { runCalculateCasStatsNapi } from "../lib/core.js";
 
 function fmtBytes(bytes) {
   if (bytes < 1024) return `${bytes} B`;
@@ -59,6 +60,7 @@ export async function cmdStats(argv) {
     args: argv,
     options: {
       json: { type: "boolean", default: runtime.json === true },
+      cas: { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
     },
     allowPositionals: false,
@@ -78,6 +80,25 @@ Options:
   }
 
   const cwd = process.cwd();
+
+  // CAS stats via NAPI
+  if (values.cas) {
+    const casResult = runCalculateCasStatsNapi();
+    if (casResult?.ok) {
+      if (values.json) { printJson({ ok: true, kind: "better.stats.cas", ...casResult.data }); return; }
+      const d = casResult.data;
+      printText([
+        "better stats (CAS)",
+        `- total packages: ${d?.total_packages ?? 0}`,
+        `- total files: ${d?.total_files ?? 0}`,
+        `- logical size: ${d?.total_logical_bytes ?? 0} bytes`,
+        `- physical size: ${d?.total_physical_bytes ?? 0} bytes`,
+        `- dedup savings: ${d?.dedup_savings_percent?.toFixed(1) ?? 0}%`,
+      ].join("\n"));
+      return;
+    }
+  }
+
   const resolvedRoot = await resolveInstallProjectRoot(cwd);
   const projectRoot = resolvedRoot.root;
 

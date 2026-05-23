@@ -624,6 +624,48 @@ export function runOutdatedEngineNapi(projectRoot, ecosystem) {
   try { return JSON.parse(json); } catch { return null; }
 }
 
+export function runBenchmarkNapi(projectRoot, rounds, pms) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.runBenchmark) return null;
+  const json = addon.runBenchmark(projectRoot, rounds ?? 3, JSON.stringify(pms ?? []));
+  try { return JSON.parse(json); } catch { return null; }
+}
+
+export function runCalculateCasStatsNapi() {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.calculateCasStats) return null;
+  const json = addon.calculateCasStats();
+  try { return JSON.parse(json); } catch { return null; }
+}
+
+export function runListReceiptsNapi(projectRoot) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.listReceipts) return null;
+  const json = addon.listReceipts(projectRoot);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
+export function runVerifyReceiptNapi(projectRoot) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.verifyReceipt) return null;
+  const json = addon.verifyReceipt(projectRoot);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
+export function runHooksInstallNapi(projectRoot) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.hooksInstall) return null;
+  const json = addon.hooksInstall(projectRoot);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
+export function runValidateCommitMsgNapi(message) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.validateCommitMsg) return null;
+  const json = addon.validateCommitMsg(message);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
 export function runGetTelemetryStatusNapi() {
   const addon = tryLoadNapiAddon();
   if (!addon?.getTelemetryStatus) return null;
