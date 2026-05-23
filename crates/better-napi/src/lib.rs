@@ -2199,3 +2199,63 @@ pub fn napi_collect_signals(package: String, ecosystem: String, version: String)
         Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
     }
 }
+
+// v0.5: sandbox scan — determine permissions needed by install scripts
+#[napi(js_name = "sandboxScan")]
+pub fn napi_sandbox_scan(project_root: String) -> String {
+    use better_core::sandbox::sandbox_scan;
+    use std::path::Path;
+    match sandbox_scan(Path::new(&project_root)) {
+        Ok(result) => {
+            let packages: Vec<serde_json::Value> = result.packages.iter().map(|p| {
+                serde_json::json!({
+                    "name": p.name,
+                    "version": p.version,
+                    "scripts": p.scripts.iter().map(|(k, v)| serde_json::json!({"type": k, "cmd": v})).collect::<Vec<_>>(),
+                    "needs_fs": p.needs_fs,
+                    "needs_net": p.needs_net,
+                    "needs_exec": p.needs_exec,
+                    "policy_status": p.policy_status,
+                })
+            }).collect();
+            serde_json::json!({
+                "ok": true,
+                "packages": packages,
+                "total_with_scripts": result.total_with_scripts,
+                "sandboxed": result.sandboxed,
+                "allowed": result.allowed,
+                "blocked": result.blocked,
+            }).to_string()
+        }
+        Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+    }
+}
+
+// v0.3: build diff of lockfile snapshots
+// Each snapshot is a JSON object: {"pkg": ["version", "ecosystem"], ...}
+#[napi(js_name = "diffLockSnapshots")]
+pub fn napi_diff_lock_snapshots(base_snapshot_json: String, head_snapshot_json: String) -> String {
+    use better_core::diff::compute_dep_diff;
+    use std::collections::HashMap;
+    fn parse_snapshot(json: &str) -> HashMap<String, (String, String)> {
+        let v: serde_json::Value = serde_json::from_str(json).unwrap_or(serde_json::Value::Object(Default::default()));
+        let mut map = HashMap::new();
+        if let Some(obj) = v.as_object() {
+            for (k, val) in obj {
+                if let Some(arr) = val.as_array() {
+                    let ver = arr.first().and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let eco = arr.get(1).and_then(|v| v.as_str()).unwrap_or("npm").to_string();
+                    map.insert(k.clone(), (ver, eco));
+                }
+            }
+        }
+        map
+    }
+    let base = parse_snapshot(&base_snapshot_json);
+    let head = parse_snapshot(&head_snapshot_json);
+    let diff = compute_dep_diff(&base, &head);
+    match serde_json::to_string(&diff) {
+        Ok(json) => format!("{{\"ok\":true,\"data\":{}}}", json),
+        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+    }
+}

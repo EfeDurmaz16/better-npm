@@ -4,6 +4,7 @@ import path from "node:path";
 import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
+import { runDiffLockSnapshotsNapi } from "../lib/core.js";
 
 /**
  * `better diff [ref1] [ref2]` — compare lockfile dependency sets
@@ -93,6 +94,30 @@ Options:
         return;
       }
     }
+  }
+
+  // Try NAPI fast path: Rust diff with security impact analysis
+  const baseSnapshot = Object.fromEntries(Object.entries(basePkgs).map(([k, v]) => [k, [v, "npm"]]));
+  const headSnapshot = Object.fromEntries(Object.entries(headPkgs).map(([k, v]) => [k, [v, "npm"]]));
+  const napiDiff = runDiffLockSnapshotsNapi(baseSnapshot, headSnapshot);
+  if (napiDiff?.ok && napiDiff.data) {
+    const r = napiDiff.data;
+    const result = {
+      ok: true, kind: "better.diff",
+      added: r.added ?? [],
+      removed: r.removed ?? [],
+      updated: r.updated ?? [],
+      unchanged: r.unchanged ?? 0,
+      securityImpact: r.security_impact,
+      summary: {
+        added: (r.added ?? []).length,
+        removed: (r.removed ?? []).length,
+        updated: (r.updated ?? []).length,
+        unchanged: r.unchanged ?? 0,
+      },
+    };
+    if (values.json) { printJson(result); return; }
+    // Fall through to text rendering with basePkgs/headPkgs
   }
 
   const diff = computeDiff(basePkgs, headPkgs);
