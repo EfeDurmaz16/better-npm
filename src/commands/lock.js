@@ -6,7 +6,7 @@ import { detectPackageManager } from "../pm/detect.js";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
 import { getRuntimeConfig } from "../lib/config.js";
 import { hashLockfile, buildRuntimeFingerprint, deriveGlobalCacheContext, resolvePrimaryLockfile } from "../lib/globalCache.js";
-import { findBetterCore } from "../lib/core.js";
+import { findBetterCore, runGenerateLockMetadataNapi, runVerifyLockMetadataNapi } from "../lib/core.js";
 import { runCommand } from "../lib/spawn.js";
 
 async function exists(p) {
@@ -121,9 +121,43 @@ export async function cmdLock(argv) {
     strict: false
   });
 
-  const action = positionals[0] === "verify" ? "verify" : "generate";
+  const action = positionals[0] === "verify" ? "verify" : positionals[0] === "metadata" ? "metadata" : "generate";
   const resolvedRoot = await resolveLockProjectRoot(process.cwd(), values["project-root"]);
   const projectRoot = resolvedRoot.root;
+
+  if (action === "metadata") {
+    const subaction = positionals[1] ?? "generate";
+    if (subaction === "verify") {
+      const napiResult = runVerifyLockMetadataNapi(projectRoot);
+      if (napiResult?.ok) {
+        const d = napiResult.data;
+        if (values.json) { printJson({ ok: true, kind: "better.lock.metadata.verify", ...d }); return; }
+        printText([
+          `better lock metadata verify: ${d?.matches ? "PASS" : "FAIL"}`,
+          `- key matches: ${d?.keyMatches}`,
+          `- lockfile hash matches: ${d?.lockfileMatches}`,
+          `- current key: ${d?.current?.key ?? "n/a"}`,
+        ].join("\n"));
+        process.exitCode = d?.matches ? 0 : 1;
+        return;
+      }
+    } else {
+      const napiResult = runGenerateLockMetadataNapi(projectRoot);
+      if (napiResult?.ok) {
+        const d = napiResult.data;
+        if (values.json) { printJson({ ok: true, kind: "better.lock.metadata.generate", ...d }); return; }
+        printText([
+          `better lock metadata generate`,
+          `- key: ${d?.key ?? "n/a"}`,
+          `- lockfile: ${d?.lockfile ?? "n/a"}`,
+          `- lockfile hash: ${d?.lockfileHash ?? "n/a"}`,
+          `- platform: ${d?.fingerprint?.platform}/${d?.fingerprint?.arch} node${d?.fingerprint?.nodeMajor}`,
+        ].join("\n"));
+        return;
+      }
+    }
+  }
+
   const detected = await detectLockPackageManager(projectRoot);
   const pm = values.pm === "auto" ? detected.pm : values.pm;
   const engine = String(values.engine ?? "pm");

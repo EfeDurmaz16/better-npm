@@ -363,7 +363,7 @@ pub struct WhyReport {
     pub version: Option<String>,
     pub is_direct: bool,
     pub dependency_paths: Vec<Vec<String>>,
-    pub depended_on_by: Vec<(String, String)>,
+    pub depended_on_by: Vec<(String, String, String)>, // (name, version, range)
     pub total_paths: u64,
 }
 

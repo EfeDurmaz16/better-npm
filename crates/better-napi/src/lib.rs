@@ -913,6 +913,7 @@ pub fn napi_doctor(project_root: String, threshold: Option<f64>) -> NapiDoctorRe
 pub struct NapiWhyDependedBy {
     pub name: String,
     pub version: String,
+    pub range: String,
 }
 
 #[napi(object)]
@@ -933,21 +934,47 @@ pub struct NapiWhyResult {
 
 #[napi(js_name = "why")]
 pub fn napi_why(project_root: String, target: String) -> NapiWhyResult {
+    if target.is_empty() {
+        return NapiWhyResult {
+            ok: false,
+            reason: Some("Package name is required".to_string()),
+            package: target,
+            version: None,
+            is_direct: false,
+            dependency_paths: vec![],
+            depended_on_by: vec![],
+            total_paths: 0.0,
+        };
+    }
     let root = Path::new(&project_root);
     let lockfile = root.join("package-lock.json");
 
     match trace_dependency(root, &lockfile, &target) {
-        Ok(report) => NapiWhyResult {
-            ok: true,
-            reason: None,
-            package: report.package,
-            version: report.version,
-            is_direct: report.is_direct,
-            dependency_paths: report.dependency_paths,
-            depended_on_by: report.depended_on_by.iter().map(|(n, v)| NapiWhyDependedBy {
-                name: n.clone(), version: v.clone(),
-            }).collect(),
-            total_paths: report.total_paths as f64,
+        Ok(report) => {
+            if report.version.is_none() {
+                return NapiWhyResult {
+                    ok: false,
+                    reason: Some(format!("Package \"{}\" not found in dependency tree", target)),
+                    package: report.package,
+                    version: None,
+                    is_direct: false,
+                    dependency_paths: vec![],
+                    depended_on_by: vec![],
+                    total_paths: 0.0,
+                };
+            }
+            NapiWhyResult {
+                ok: true,
+                reason: None,
+                package: report.package,
+                version: report.version,
+                is_direct: report.is_direct,
+                dependency_paths: report.dependency_paths,
+                depended_on_by: report.depended_on_by.iter().map(|(n, v, r)| NapiWhyDependedBy {
+                    name: n.clone(), version: v.clone(), range: r.clone(),
+                }).collect(),
+                total_paths: report.total_paths as f64,
+            }
         },
         Err(reason) => NapiWhyResult {
             ok: false,
@@ -2309,5 +2336,139 @@ pub fn napi_load_best_mirror() -> String {
     match load_best_mirror() {
         Some(url) => serde_json::json!({ "ok": true, "registry_url": url }).to_string(),
         None => serde_json::json!({ "ok": true, "registry_url": null }).to_string(),
+    }
+}
+
+// v2: cross-ecosystem doctor
+#[napi(js_name = "doctorV2")]
+pub fn napi_doctor_v2(project_root: String) -> String {
+    use better_core::doctor_v2::run_doctor_v2;
+    use std::path::Path;
+    match run_doctor_v2(Path::new(&project_root)) {
+        Ok(report) => match serde_json::to_string(&report) {
+            Ok(json) => format!("{{\"ok\":true,\"data\":{}}}", json),
+            Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+        },
+        Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+    }
+}
+
+// graph: dependency graph statistics
+#[napi(js_name = "graphStats")]
+pub fn napi_graph_stats(project_root: String) -> String {
+    use better_core::graph::graph_stats;
+    use std::path::Path;
+    match graph_stats(Path::new(&project_root)) {
+        Ok(json) => json,
+        Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+    }
+}
+
+// telemetry: get status
+#[napi(js_name = "getTelemetryStatus")]
+pub fn napi_get_telemetry_status() -> String {
+    use better_core::telemetry::TelemetryConfig;
+    let cfg = TelemetryConfig::load();
+    serde_json::json!({
+        "ok": true,
+        "enabled": cfg.enabled,
+        "status": cfg.status(),
+        "sessionId": cfg.session_id,
+    }).to_string()
+}
+
+// telemetry: set enabled
+#[napi(js_name = "setTelemetryEnabled")]
+pub fn napi_set_telemetry_enabled(enabled: bool) -> String {
+    use better_core::telemetry::TelemetryConfig;
+    let cfg = TelemetryConfig::load();
+    match cfg.set_enabled(enabled) {
+        Ok(()) => serde_json::json!({ "ok": true, "enabled": enabled }).to_string(),
+        Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+    }
+}
+
+// delta: load saved lock snapshot for project
+#[napi(js_name = "loadLockSnapshot")]
+pub fn napi_load_lock_snapshot(project_root: String) -> String {
+    use better_core::delta::load_snapshot;
+    use std::path::Path;
+    let snapshot = load_snapshot(Path::new(&project_root));
+    match serde_json::to_string(&snapshot) {
+        Ok(json) => format!("{{\"ok\":true,\"data\":{}}}", json),
+        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+    }
+}
+
+// lock: generate lock metadata fingerprint
+#[napi(js_name = "generateLockMetadata")]
+pub fn napi_generate_lock_metadata(project_root: String) -> String {
+    use better_core::lock::generate_lock_metadata;
+    use std::path::Path;
+    match generate_lock_metadata(Path::new(&project_root)) {
+        Ok(meta) => serde_json::json!({
+            "ok": true,
+            "data": {
+                "key": meta.key,
+                "lockfile": meta.lockfile_file,
+                "lockfileHash": meta.lockfile_hash,
+                "fingerprint": {
+                    "platform": meta.fingerprint.platform,
+                    "arch": meta.fingerprint.arch,
+                    "nodeMajor": meta.fingerprint.node_major,
+                    "pm": meta.fingerprint.pm,
+                }
+            }
+        }).to_string(),
+        Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+    }
+}
+
+// ci: run CI pipeline (install --frozen → verify → audit → policy → sbom)
+#[napi(js_name = "runCi")]
+pub fn napi_run_ci(project_root: String, options_json: String) -> String {
+    use better_core::ci::{run_ci, CiConfig};
+    use std::path::Path;
+    let opts: serde_json::Value = serde_json::from_str(&options_json).unwrap_or_default();
+    let config = CiConfig {
+        skip_audit: opts.get("skipAudit").and_then(|v| v.as_bool()).unwrap_or(false),
+        skip_policy: opts.get("skipPolicy").and_then(|v| v.as_bool()).unwrap_or(false),
+        skip_sbom: opts.get("skipSbom").and_then(|v| v.as_bool()).unwrap_or(false),
+        audit_severity: opts.get("auditSeverity").and_then(|v| v.as_str()).unwrap_or("high").to_string(),
+        sbom_format: opts.get("sbomFormat").and_then(|v| v.as_str()).unwrap_or("spdx").to_string(),
+        dry_run: opts.get("dryRun").and_then(|v| v.as_bool()).unwrap_or(false),
+    };
+    let result = run_ci(Path::new(&project_root), &config);
+    match serde_json::to_string(&result) {
+        Ok(json) => format!("{{\"ok\":true,\"data\":{}}}", json),
+        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+    }
+}
+
+// lock: verify lock metadata matches current lockfile
+#[napi(js_name = "verifyLockMetadata")]
+pub fn napi_verify_lock_metadata(project_root: String) -> String {
+    use better_core::lock::verify_lock_metadata;
+    use std::path::Path;
+    match verify_lock_metadata(Path::new(&project_root)) {
+        Ok(r) => serde_json::json!({
+            "ok": true,
+            "data": {
+                "matches": r.ok,
+                "keyMatches": r.key_matches,
+                "lockfileMatches": r.lockfile_matches,
+                "current": {
+                    "key": r.current.key,
+                    "lockfile": r.current.lockfile_file,
+                    "lockfileHash": r.current.lockfile_hash,
+                },
+                "expected": r.expected.map(|e| serde_json::json!({
+                    "key": e.key,
+                    "lockfile": e.lockfile_file,
+                    "lockfileHash": e.lockfile_hash,
+                })),
+            }
+        }).to_string(),
+        Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
     }
 }

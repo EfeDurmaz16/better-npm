@@ -624,6 +624,62 @@ export function runOutdatedEngineNapi(projectRoot, ecosystem) {
   try { return JSON.parse(json); } catch { return null; }
 }
 
+export function runGetTelemetryStatusNapi() {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.getTelemetryStatus) return null;
+  const json = addon.getTelemetryStatus();
+  try { return JSON.parse(json); } catch { return null; }
+}
+
+export function runSetTelemetryEnabledNapi(enabled) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.setTelemetryEnabled) return null;
+  const json = addon.setTelemetryEnabled(enabled === true);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
+export function runLoadLockSnapshotNapi(projectRoot) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.loadLockSnapshot) return null;
+  const json = addon.loadLockSnapshot(projectRoot);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
+export function runCiNapi(projectRoot, options) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.runCi) return null;
+  const json = addon.runCi(projectRoot, JSON.stringify(options ?? {}));
+  try { return JSON.parse(json); } catch { return null; }
+}
+
+export function runDoctorV2Napi(projectRoot) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.doctorV2) return null;
+  const json = addon.doctorV2(projectRoot);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
+export function runGraphStatsNapi(projectRoot) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.graphStats) return null;
+  const json = addon.graphStats(projectRoot);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
+export function runGenerateLockMetadataNapi(projectRoot) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.generateLockMetadata) return null;
+  const json = addon.generateLockMetadata(projectRoot);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
+export function runVerifyLockMetadataNapi(projectRoot) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.verifyLockMetadata) return null;
+  const json = addon.verifyLockMetadata(projectRoot);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
 export async function runBetterCoreInstall(corePath, projectRoot, opts = {}) {
   const args = ["install", "--project-root", projectRoot];
   if (opts.lockfile) args.push("--lockfile", String(opts.lockfile));

@@ -14,6 +14,7 @@
 import { parseArgs } from "node:util";
 import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
+import { runGraphStatsNapi } from "../lib/core.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -27,6 +28,7 @@ export async function cmdGraph(argv) {
       pkg: { type: "string" },
       format: { type: "string", default: "tree" },
       cycles: { type: "boolean", default: false },
+      stats: { type: "boolean", default: false },
       output: { type: "string" },
       help: { type: "boolean", short: "h", default: false },
     },
@@ -60,6 +62,23 @@ Examples:
   }
 
   const cwd = process.cwd();
+
+  if (values.stats) {
+    const napiStats = runGraphStatsNapi(cwd);
+    if (napiStats?.ok) {
+      if (values.json) { printJson(napiStats); return; }
+      printText([
+        "better graph stats",
+        `- total packages: ${napiStats.total}`,
+        `- direct: ${napiStats.direct}`,
+        `- transitive: ${napiStats.transitive}`,
+        `- max depth: ${napiStats.max_depth}`,
+        `- cycles: ${napiStats.has_cycles ? `yes (${napiStats.cycle_count})` : "none"}`,
+      ].join("\n"));
+      return;
+    }
+  }
+
   const maxDepth = parseInt(values.depth) || 3;
 
   // Read package-lock.json for the full dep graph

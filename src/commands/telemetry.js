@@ -1,6 +1,7 @@
 import { parseArgs } from "node:util";
 import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
+import { runGetTelemetryStatusNapi, runSetTelemetryEnabledNapi } from "../lib/core.js";
 import { join } from "node:path";
 import fs from "node:fs/promises";
 
@@ -50,6 +51,12 @@ Options:
   } catch { /* not configured yet */ }
 
   if (sub === "on") {
+    const napiResult = runSetTelemetryEnabledNapi(true);
+    if (napiResult?.ok) {
+      if (useJson) { printJson({ ok: true, kind: "better.telemetry.set", enabled: true }); }
+      else { printText("Telemetry enabled. Thank you for helping improve better!"); }
+      return;
+    }
     config.enabled = true;
     if (!config.session_id) {
       config.session_id = `tel-${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}`;
@@ -62,6 +69,12 @@ Options:
       printText("Telemetry enabled. Thank you for helping improve better!");
     }
   } else if (sub === "off") {
+    const napiResult = runSetTelemetryEnabledNapi(false);
+    if (napiResult?.ok) {
+      if (useJson) { printJson({ ok: true, kind: "better.telemetry.set", enabled: false }); }
+      else { printText("Telemetry disabled."); }
+      return;
+    }
     config.enabled = false;
     await fs.mkdir(join(process.env.HOME || "/tmp", ".better"), { recursive: true });
     await fs.writeFile(configPath, JSON.stringify(config, null, 2));
@@ -71,6 +84,15 @@ Options:
       printText("Telemetry disabled.");
     }
   } else {
+    const napiStatus = runGetTelemetryStatusNapi();
+    if (napiStatus?.ok) {
+      if (useJson) { printJson({ ok: true, kind: "better.telemetry.status", enabled: napiStatus.enabled, status: napiStatus.status }); }
+      else {
+        printText(`Telemetry is currently: ${napiStatus.status}`);
+        if (!napiStatus.enabled) printText("Run 'better telemetry on' to enable opt-in anonymous usage reporting.");
+      }
+      return;
+    }
     const status = config.enabled ? "enabled" : "disabled";
     if (useJson) {
       printJson({ ok: true, kind: "better.telemetry.status", enabled: config.enabled, status });

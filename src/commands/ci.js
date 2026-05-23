@@ -3,7 +3,7 @@ import path from "node:path";
 import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
-import { findBetterCore } from "../lib/core.js";
+import { findBetterCore, runCiNapi } from "../lib/core.js";
 import { spawnSync } from "node:child_process";
 
 /**
@@ -73,6 +73,32 @@ Exit code:
     : await resolveInstallProjectRoot(process.cwd());
   const projectRoot = resolvedRoot.root;
   const corePath = await findBetterCore();
+
+  // NAPI fast path: use in-process Rust CI runner when --json is requested
+  if (values.json) {
+    const napiResult = runCiNapi(projectRoot, {
+      skipAudit: values["no-audit"] === true,
+      skipPolicy: values["no-policy"] === true,
+      skipSbom: values["no-sbom"] === true,
+      auditSeverity: values["audit-severity"] ?? "high",
+      sbomFormat: values["sbom-format"] ?? "cyclonedx",
+      dryRun: false,
+    });
+    if (napiResult?.ok && napiResult.data) {
+      const d = napiResult.data;
+      const result = {
+        ok: d.all_passed,
+        kind: "better.ci",
+        schemaVersion: 1,
+        all_passed: d.all_passed,
+        total_duration_ms: d.total_duration_ms,
+        steps: d.steps ?? [],
+      };
+      printJson(result);
+      process.exitCode = d.all_passed ? 0 : 1;
+      return;
+    }
+  }
   const startMs = Date.now();
 
   const steps = [];

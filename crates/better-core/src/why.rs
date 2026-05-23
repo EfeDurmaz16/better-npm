@@ -31,7 +31,7 @@ pub fn trace_dependency(project_root: &Path, lockfile: &Path, target: &str) -> R
         in_deps || in_dev
     };
 
-    // Parse lockfile to build dependency graph
+    // Parse lockfile to build dependency graph: key -> (name, version, Vec<(dep_name, dep_range)>)
     let graph = parse_lockfile_graph(&content)?;
 
     // Find target version
@@ -39,11 +39,14 @@ pub fn trace_dependency(project_root: &Path, lockfile: &Path, target: &str) -> R
         .find(|(_, (name, _, _))| name == target)
         .map(|(_, (_, ver, _))| ver.clone());
 
-    // Find all packages that depend on target
+    // Find all packages that depend on target (with range)
     let mut depended_on_by = Vec::new();
     for (_, (name, version, deps)) in &graph {
-        if deps.iter().any(|d| d == target) {
-            depended_on_by.push((name.clone(), version.clone()));
+        for (dep_name, dep_range) in deps {
+            if dep_name == target {
+                depended_on_by.push((name.clone(), version.clone(), dep_range.clone()));
+                break;
+            }
         }
     }
 
@@ -51,16 +54,17 @@ pub fn trace_dependency(project_root: &Path, lockfile: &Path, target: &str) -> R
     let mut adj: HashMap<String, Vec<String>> = HashMap::new();
     let mut root_deps: Vec<String> = Vec::new();
     for (path, (name, _, deps)) in &graph {
-        // Direct deps: paths like "node_modules/foo" (no nested node_modules)
         let segments: Vec<&str> = path.split("node_modules/").filter(|s| !s.is_empty()).collect();
         if segments.len() == 1 {
             root_deps.push(name.clone());
         }
-        adj.entry(name.clone()).or_default().extend(deps.clone());
+        for (dep_name, _) in deps {
+            adj.entry(name.clone()).or_default().push(dep_name.clone());
+        }
     }
     adj.insert("(root)".to_string(), root_deps);
 
-    // BFS to find paths from root to target (limit to 10)
+    // BFS to find paths from root to target (limit to 10), strip "(root)" prefix
     let mut paths: Vec<Vec<String>> = Vec::new();
     let mut queue: VecDeque<Vec<String>> = VecDeque::new();
     queue.push_back(vec!["(root)".to_string()]);
@@ -75,7 +79,9 @@ pub fn trace_dependency(project_root: &Path, lockfile: &Path, target: &str) -> R
                 let mut new_path = path.clone();
                 new_path.push(dep.clone());
                 if dep == target {
-                    paths.push(new_path);
+                    // Strip leading "(root)" for display
+                    let display_path: Vec<String> = new_path.into_iter().skip(1).collect();
+                    paths.push(display_path);
                 } else if !path.contains(dep) {
                     queue.push_back(new_path);
                 }
@@ -94,7 +100,8 @@ pub fn trace_dependency(project_root: &Path, lockfile: &Path, target: &str) -> R
     })
 }
 
-fn parse_lockfile_graph(json: &str) -> Result<HashMap<String, (String, String, Vec<String>)>, String> {
+// Graph value: (name, version, Vec<(dep_name, dep_range)>)
+fn parse_lockfile_graph(json: &str) -> Result<HashMap<String, (String, String, Vec<(String, String)>)>, String> {
     let mut graph = HashMap::new();
 
     let packages_start = json.find("\"packages\"")
@@ -150,7 +157,7 @@ fn parse_lockfile_graph(json: &str) -> Result<HashMap<String, (String, String, V
                 let name = extract_json_field(&entry_data, "name")
                     .unwrap_or_else(|| package_name_from_path(&current_key));
                 let version = extract_json_field(&entry_data, "version").unwrap_or_default();
-                let deps = extract_dep_names(&entry_data);
+                let deps = extract_dep_entries(&entry_data);
 
                 if !current_key.is_empty() {
                     graph.insert(current_key.clone(), (name, version, deps));
@@ -172,7 +179,7 @@ fn parse_lockfile_graph(json: &str) -> Result<HashMap<String, (String, String, V
     Ok(graph)
 }
 
-fn extract_dep_names(entry_json: &str) -> Vec<String> {
+fn extract_dep_entries(entry_json: &str) -> Vec<(String, String)> {
     let needle = "\"dependencies\"";
     let start = match entry_json.find(needle) {
         Some(pos) => pos,
@@ -185,39 +192,58 @@ fn extract_dep_names(entry_json: &str) -> Vec<String> {
     };
     let section = &after[obj_start..];
 
-    let mut names = Vec::new();
+    let mut entries = Vec::new();
     let mut depth = 0i32;
     let mut in_str = false;
     let mut esc = false;
     let mut current = String::new();
     let mut reading_key = false;
-    let mut key_done = false;
+    let mut reading_val = false;
+    let mut current_key = String::new();
 
     for ch in section.chars() {
-        if esc { if reading_key { current.push(ch); } esc = false; continue; }
+        if esc {
+            if reading_key { current.push(ch); }
+            else if reading_val { current.push(ch); }
+            esc = false;
+            continue;
+        }
         if ch == '\\' && in_str { esc = true; continue; }
         if ch == '"' {
             in_str = !in_str;
             if depth == 1 {
-                if !key_done && in_str { reading_key = true; current.clear(); }
-                else if reading_key && !in_str {
-                    reading_key = false; key_done = true;
-                    if !current.is_empty() { names.push(current.clone()); }
+                if !reading_val && in_str && current_key.is_empty() {
+                    reading_key = true; current.clear();
+                } else if reading_key && !in_str {
+                    reading_key = false;
+                    current_key = current.clone();
+                    current.clear();
+                } else if !reading_val && in_str && !current_key.is_empty() {
+                    reading_val = true; current.clear();
+                } else if reading_val && !in_str {
+                    reading_val = false;
+                    if !current_key.is_empty() {
+                        entries.push((current_key.clone(), current.clone()));
+                    }
+                    current_key.clear();
                     current.clear();
                 }
-                else if key_done && !in_str { key_done = false; }
             }
             continue;
         }
-        if in_str { if reading_key { current.push(ch); } continue; }
+        if in_str {
+            if reading_key { current.push(ch); }
+            else if reading_val { current.push(ch); }
+            continue;
+        }
         match ch {
             '{' => depth += 1,
             '}' => { depth -= 1; if depth == 0 { break; } }
-            ',' if depth == 1 => { key_done = false; }
+            ',' if depth == 1 => { current_key.clear(); current.clear(); }
             _ => {}
         }
     }
-    names
+    entries
 }
 
 

@@ -9,7 +9,7 @@ import { childLogger } from "../lib/log.js";
 import { detectPackageManager } from "../pm/detect.js";
 import { runCommand } from "../lib/spawn.js";
 import { resolveWorkspacePackages, isWorkspace } from "../lib/workspaces.js";
-import { findBetterCore, runDoctorNapi } from "../lib/core.js";
+import { findBetterCore, runDoctorNapi, runDoctorV2Napi } from "../lib/core.js";
 
 async function exists(p) {
   try {
@@ -504,8 +504,25 @@ export async function cmdDoctor(argv) {
   }
   const coreMode = values["no-core"] ? "off" : values.core ? "force" : "auto";
 
-  // v2 cross-ecosystem doctor — delegates to Rust binary
+  // v2 cross-ecosystem doctor — NAPI fast path, then binary, then JS fallback
   if (values.v2 || values.cas || values["cross-ecosystem"]) {
+    const napiV2 = runDoctorV2Napi(projectRoot);
+    if (napiV2?.ok && napiV2.data) {
+      const report = napiV2.data;
+      const out = { ok: true, kind: "better.doctor.v2", ...report };
+      if (values.json) { printJson(out); } else {
+        const lines = [
+          `better doctor v2`,
+          `- overall score: ${report.overall_score ?? "n/a"}`,
+          `- ecosystems: ${(report.ecosystem_reports ?? []).map(e => e.ecosystem).join(", ") || "none"}`,
+          ...(report.issues ?? []).slice(0, 5).map(i => `  - [${i.severity ?? "info"}] ${i.message ?? i.id}`),
+        ];
+        printText(lines.join("\n"));
+      }
+      process.exitCode = (report.overall_score ?? 100) < threshold ? 1 : 0;
+      return;
+    }
+
     const { spawnSync } = await import("node:child_process");
     const { findBetterCore } = await import("../lib/core.js");
     const binPath = findBetterCore();
