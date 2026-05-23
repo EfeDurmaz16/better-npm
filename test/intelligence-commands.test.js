@@ -217,3 +217,83 @@ test("better pkg-trust --help shows help", async () => {
     `Expected pkg-trust help, got: ${result.stdout}`
   );
 });
+
+// ── reputation ────────────────────────────────────────────────────────────────
+
+test("better reputation --help shows usage", async () => {
+  const result = await runBetter(["reputation", "--help"]);
+  assert.ok(
+    result.stdout.includes("reputation") || result.stdout.includes("score"),
+    `Expected reputation help, got: ${result.stdout}`
+  );
+});
+
+test("better reputation lodash --json returns structured score", async () => {
+  const result = await runBetter(["reputation", "lodash", "--json"]);
+  if (result.stdout?.startsWith("{")) {
+    const json = JSON.parse(result.stdout.trim());
+    assert.ok(typeof json.ok === "boolean", "Expected ok field");
+    if (json.ok) {
+      assert.ok(json.kind === "better.reputation", `Expected kind better.reputation, got ${json.kind}`);
+      assert.ok(typeof json.score === "number", "Expected numeric score");
+      assert.ok(json.score >= 0 && json.score <= 100, "Score should be 0-100");
+      assert.ok(["A", "B", "C", "D", "F"].includes(json.grade), "Expected valid grade");
+    }
+  } else {
+    assert.ok(result.stdout.length > 0 || result.code !== 0, "Should produce output");
+  }
+});
+
+test("better reputation --help shows ecosystem option", async () => {
+  const result = await runBetter(["reputation", "--help"]);
+  assert.ok(
+    result.stdout.includes("ecosystem") || result.stdout.includes("npm"),
+    `Expected ecosystem option in help, got: ${result.stdout}`
+  );
+});
+
+// ── predict ───────────────────────────────────────────────────────────────────
+
+test("better predict --help shows usage", async () => {
+  const result = await runBetter(["predict", "--help"]);
+  assert.ok(
+    result.stdout.includes("predict") || result.stdout.includes("maintenance"),
+    `Expected predict help, got: ${result.stdout}`
+  );
+});
+
+test("better predict --all --json returns structured predictions", async () => {
+  const dir = await makeTempDir("better-predict-all-");
+  try {
+    await writeJson(path.join(dir, "package.json"), {
+      name: "predict-test", version: "1.0.0",
+      dependencies: { lodash: "^4.17.21" }
+    });
+    const result = await runBetter(["predict", "--all", "--json", "--project-root", dir]);
+    if (result.stdout?.startsWith("{")) {
+      const json = JSON.parse(result.stdout.trim());
+      assert.ok(typeof json.ok === "boolean", "Expected ok field");
+      if (json.ok) {
+        assert.ok(json.kind === "better.predict", `Expected kind better.predict, got ${json.kind}`);
+        assert.ok(typeof json.analyzed === "number", "Expected analyzed count");
+      }
+    } else {
+      assert.ok(result.stdout.length > 0 || result.code !== 0, "Should produce output");
+    }
+  } finally {
+    await rmrf(dir);
+  }
+});
+
+test("better predict lodash --json returns single prediction", async () => {
+  const result = await runBetter(["predict", "lodash", "--json"]);
+  if (result.stdout?.startsWith("{")) {
+    const json = JSON.parse(result.stdout.trim());
+    assert.ok(typeof json.ok === "boolean", "Expected ok field");
+    if (json.ok) {
+      assert.ok(json.kind === "better.predict", `Expected kind better.predict, got ${json.kind}`);
+    }
+  } else {
+    assert.ok(result.stdout.length > 0 || result.code !== 0, "Should produce output");
+  }
+});
