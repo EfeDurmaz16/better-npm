@@ -498,6 +498,20 @@ export function runPlanMigrationNapi(fromPkg, toPkg, projectRoot) {
   try { return JSON.parse(json); } catch { return null; }
 }
 
+export function runCheckCompatNapi(projectRoot, targetVersion) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.checkCompat) return null;
+  const json = addon.checkCompat(projectRoot, targetVersion ?? process.version.slice(1));
+  try { return JSON.parse(json); } catch { return null; }
+}
+
+export function runCollectSignalsNapi(packageName, ecosystem, version) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.collectSignals) return null;
+  const json = addon.collectSignals(packageName, ecosystem ?? "npm", version ?? "latest");
+  try { return JSON.parse(json); } catch { return null; }
+}
+
 export function runScanScriptsNapi(projectRoot) {
   const addon = tryLoadNapiAddon();
   if (!addon?.scanScripts) return null;

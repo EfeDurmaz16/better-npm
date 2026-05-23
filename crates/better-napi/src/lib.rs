@@ -2159,3 +2159,43 @@ pub fn napi_generate_cost_report(services_json: String, previous_month_total: f6
         Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
     }
 }
+
+// v0.4: Node.js version compatibility check
+#[napi(js_name = "checkCompat")]
+pub fn napi_check_compat(project_root: String, target_version: String) -> String {
+    use better_core::compat::check_compat;
+    use std::path::Path;
+    match check_compat(Path::new(&project_root), &target_version) {
+        Ok(results) => {
+            let packages: Vec<serde_json::Value> = results.iter().map(|r| {
+                serde_json::json!({
+                    "name": r.name,
+                    "version": r.version,
+                    "node_range": r.node_range,
+                    "compatible": r.compatible,
+                    "no_engines": r.no_engines,
+                })
+            }).collect();
+            let incompatible = results.iter().filter(|r| !r.compatible && !r.no_engines).count();
+            serde_json::json!({
+                "ok": true,
+                "target_version": target_version,
+                "total": packages.len(),
+                "incompatible": incompatible,
+                "packages": packages,
+            }).to_string()
+        }
+        Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+    }
+}
+
+// v0.8: collect intelligence signals for a package
+#[napi(js_name = "collectSignals")]
+pub fn napi_collect_signals(package: String, ecosystem: String, version: String) -> String {
+    use better_core::intelligence::signals::collect_signals;
+    let signals = collect_signals(&package, &ecosystem, &version);
+    match serde_json::to_string(&signals) {
+        Ok(json) => format!("{{\"ok\":true,\"data\":{}}}", json),
+        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+    }
+}

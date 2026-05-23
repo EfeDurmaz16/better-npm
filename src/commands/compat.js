@@ -15,6 +15,7 @@ import { getRuntimeConfig } from "../lib/config.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
+import { runCheckCompatNapi } from "../lib/core.js";
 
 // Simple semver range check: supports >=X, >X, <=X, <X, ^X, ~X, X, *
 function satisfiesRange(version, range) {
@@ -104,6 +105,29 @@ Examples:
   const nmPath = path.join(projectRoot, "node_modules");
 
   const targetVersion = values.target || process.version.replace(/^v/, "");
+
+  // NAPI fast path: Rust compat checker (reads node_modules directly)
+  const napiResult = runCheckCompatNapi(projectRoot, targetVersion);
+  if (napiResult?.ok) {
+    const incompatible = (napiResult.packages ?? []).filter(p => !p.compatible && !p.no_engines);
+    const result = {
+      ok: true, kind: "better.compat",
+      targetVersion: napiResult.target_version,
+      total: napiResult.total,
+      incompatible: napiResult.incompatible,
+      packages: napiResult.packages ?? [],
+    };
+    if (values.json) { printJson(result); }
+    else if (incompatible.length === 0) {
+      printText(`All ${napiResult.total} packages are compatible with Node.js ${targetVersion}.`);
+    } else {
+      printText(`Found ${napiResult.incompatible} incompatible package(s) for Node.js ${targetVersion}:`);
+      for (const p of incompatible.slice(0, 20)) {
+        printText(`  ${p.name}@${p.version} — requires: ${p.node_range}`);
+      }
+    }
+    return;
+  }
 
   try {
     await fs.access(nmPath);
