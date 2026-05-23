@@ -7,6 +7,7 @@ import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { runGenerateCostReportNapi } from "../lib/core.js";
 
 /**
  * `better cost` — show cost breakdown for provisioned OSP services
@@ -76,6 +77,46 @@ Options:
     const result = { ok: true, kind: "better.cost", services: [], totalMonthly: 0, message: "No provisioned services found. Run 'better provision' to add services." };
     if (values.json) { printJson(result); }
     else { printText("No provisioned services. Run 'better provision' to add services."); }
+    return;
+  }
+
+  // Parse service costs from vault entries and generate cost report via NAPI
+  const serviceCosts = [];
+  for (const svcFile of services) {
+    try {
+      const raw = JSON.parse(await fs.readFile(join(vaultDir, svcFile), "utf8"));
+      if (raw.monthly_usd != null) {
+        serviceCosts.push({
+          provider: raw.provider ?? "unknown",
+          service: raw.service ?? svcFile.replace(".json", ""),
+          tier: raw.tier ?? "free",
+          environment: raw.environment ?? "production",
+          monthly_usd: raw.monthly_usd ?? 0,
+          usage_pct: raw.usage_pct ?? 0,
+        });
+      }
+    } catch {}
+  }
+  const costReport = runGenerateCostReportNapi(serviceCosts, 0, new Date().getDate());
+  if (costReport?.ok && costReport.data) {
+    const r = costReport.data;
+    const result = {
+      ok: true, kind: "better.cost",
+      totalMonthly: r.total_monthly_usd,
+      services: serviceCosts,
+      optimizations: r.optimizations ?? [],
+      trend: r.trend,
+    };
+    if (values.json) { printJson(result); }
+    else {
+      printText(`Monthly cost: $${r.total_monthly_usd.toFixed(2)}`);
+      if (r.optimizations?.length > 0) {
+        printText(`\nOptimization opportunities (${r.optimizations.length}):`);
+        for (const opt of r.optimizations.slice(0, 5)) {
+          printText(`  ${opt.suggestion} — save $${opt.potential_savings_usd.toFixed(2)}/mo`);
+        }
+      }
+    }
     return;
   }
 

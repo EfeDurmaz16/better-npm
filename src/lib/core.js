@@ -498,6 +498,20 @@ export function runPlanMigrationNapi(fromPkg, toPkg, projectRoot) {
   try { return JSON.parse(json); } catch { return null; }
 }
 
+export function runScanScriptsNapi(projectRoot) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.scanScripts) return null;
+  const json = addon.scanScripts(projectRoot);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
+export function runGenerateCostReportNapi(services, previousMonthTotal, currentDay) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.generateCostReport) return null;
+  const json = addon.generateCostReport(JSON.stringify(services ?? []), previousMonthTotal ?? 0, currentDay ?? new Date().getDate());
+  try { return JSON.parse(json); } catch { return null; }
+}
+
 export function runSuggestDepsNapi(projectRoot) {
   const addon = tryLoadNapiAddon();
   if (!addon?.suggestDeps) return null;

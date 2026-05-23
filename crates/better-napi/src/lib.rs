@@ -2105,3 +2105,57 @@ pub fn napi_run_firewall(project_root: String) -> String {
         "warnings": report.warnings,
     }).to_string()
 }
+
+// v0.6: scan lifecycle scripts in node_modules for policy enforcement
+#[napi(js_name = "scanScripts")]
+pub fn napi_scan_scripts(project_root: String) -> String {
+    use better_core::scripts::scan_scripts;
+    use std::path::Path;
+    match scan_scripts(Path::new(&project_root)) {
+        Ok(result) => {
+            let packages: Vec<serde_json::Value> = result.packages.iter().map(|p| {
+                serde_json::json!({
+                    "name": p.name,
+                    "version": p.version,
+                    "scripts": p.scripts.iter().map(|(k, v)| serde_json::json!({"type": k, "cmd": v})).collect::<Vec<_>>(),
+                    "policy": p.policy,
+                    "reason": p.reason,
+                })
+            }).collect();
+            serde_json::json!({
+                "ok": true,
+                "packages": packages,
+                "total_with_scripts": result.total_with_scripts,
+                "allowed": result.allowed,
+                "blocked": result.blocked,
+            }).to_string()
+        }
+        Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+    }
+}
+
+// v1.4: generate infrastructure cost report
+#[napi(js_name = "generateCostReport")]
+pub fn napi_generate_cost_report(services_json: String, previous_month_total: f64, current_day: f64) -> String {
+    use better_core::costs::{generate_cost_report, ServiceCost};
+    // Parse services from JSON manually since ServiceCost doesn't derive Deserialize
+    let raw: Vec<serde_json::Value> = match serde_json::from_str(&services_json) {
+        Ok(s) => s,
+        Err(e) => return serde_json::json!({ "ok": false, "error": format!("Invalid services JSON: {}", e) }).to_string(),
+    };
+    let services: Vec<ServiceCost> = raw.iter().filter_map(|v| {
+        Some(ServiceCost {
+            provider: v["provider"].as_str()?.to_string(),
+            service: v["service"].as_str()?.to_string(),
+            tier: v["tier"].as_str()?.to_string(),
+            environment: v["environment"].as_str()?.to_string(),
+            monthly_usd: v["monthly_usd"].as_f64()?,
+            usage_pct: v["usage_pct"].as_f64().unwrap_or(0.0),
+        })
+    }).collect();
+    let report = generate_cost_report(&services, previous_month_total, current_day as u32);
+    match serde_json::to_string(&report) {
+        Ok(json) => format!("{{\"ok\":true,\"data\":{}}}", json),
+        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+    }
+}

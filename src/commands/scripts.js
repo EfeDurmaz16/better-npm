@@ -9,6 +9,7 @@ import {
   isScriptAllowed,
   scanNodeModulesForScripts
 } from "../lib/scriptPolicy.js";
+import { runScanScriptsNapi } from "../lib/core.js";
 
 export async function cmdScripts(argv) {
   const runtime = getRuntimeConfig();
@@ -150,6 +151,8 @@ Options:
   }
 
   if (sub === "scan") {
+    // Note: NAPI scanScripts is available via runScanScriptsNapi but uses different
+    // default policy (allow vs block). JS path used here for policy compatibility.
     const nodeModulesPath = path.join(projectRoot, "node_modules");
     const packagesWithScripts = await scanNodeModulesForScripts(nodeModulesPath);
     const policy = await loadScriptPolicy(projectRoot);
