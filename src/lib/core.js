@@ -449,6 +449,13 @@ export function runAnalyzeOrgNapi(rootDir) {
   try { return JSON.parse(json); } catch { return null; }
 }
 
+export function runGenerateSbomNapi(projectRoot, lockfilePath, format, includeVex) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.generateSbom) return null;
+  const json = addon.generateSbom(projectRoot, lockfilePath, format ?? "cyclonedx", includeVex === true);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
 export function runPlanPipelineNapi(pipelineJson, projectRoot) {
   const addon = tryLoadNapiAddon();
   if (!addon?.planPipeline) return null;

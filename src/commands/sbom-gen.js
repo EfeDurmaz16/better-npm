@@ -13,6 +13,7 @@
 import { parseArgs } from "node:util";
 import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
+import { runGenerateSbomNapi } from "../lib/core.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -92,11 +93,13 @@ export async function cmdSbomGen(argv) {
   const { values } = parseArgs({
     args: argv,
     options: {
-      json:        { type: "boolean", default: runtime.json === true },
-      help:        { type: "boolean", short: "h", default: false },
-      format:      { type: "string", default: "cyclonedx" },
-      output:      { type: "string", short: "o" },
-      "prod-only": { type: "boolean", default: false },
+      json:           { type: "boolean", default: runtime.json === true },
+      help:           { type: "boolean", short: "h", default: false },
+      format:         { type: "string", default: "cyclonedx" },
+      output:         { type: "string", short: "o" },
+      "prod-only":    { type: "boolean", default: false },
+      "project-root": { type: "string" },
+      vex:            { type: "boolean", default: false },
     },
     allowPositionals: false,
     strict: false,
@@ -128,13 +131,44 @@ licenses, and integrity hashes for supply chain compliance.
   }
 
   const cwd = process.cwd();
-  const resolvedRoot = await resolveInstallProjectRoot(cwd);
+  const resolvedRoot = values["project-root"]
+    ? { root: path.resolve(values["project-root"]) }
+    : await resolveInstallProjectRoot(cwd);
   const projectRoot = resolvedRoot.root;
   const nmPath = path.join(projectRoot, "node_modules");
 
   if (!values.json) {
     process.stderr.write(`\x1b[90mGenerating ${format.toUpperCase()} SBOM...\x1b[0m\n`);
   }
+
+  // NAPI fast path: use Rust SBOM generator (includes integrity hashes from lockfile)
+  const lockfilePath = path.join(projectRoot, "package-lock.json");
+  const napiSbom = runGenerateSbomNapi(projectRoot, lockfilePath, format, values.vex === true);
+  if (napiSbom?.ok && napiSbom.sbom) {
+    const sbomData = typeof napiSbom.sbom === "string" ? napiSbom.sbom : JSON.stringify(napiSbom.sbom, null, 2);
+    // Count packages from sbom
+    let pkgCount = 0;
+    try {
+      const parsed = JSON.parse(sbomData);
+      pkgCount = parsed.components?.length ?? parsed.packages?.length ?? parsed.packages ?? 0;
+    } catch {}
+    if (values.output) {
+      const outputPath = path.resolve(cwd, values.output);
+      await fs.writeFile(outputPath, sbomData, "utf8");
+      if (values.json) {
+        printJson({ ok: true, kind: "better.sbom-gen", format, packages: pkgCount, outputPath });
+      } else {
+        printText(`\x1b[32m✔ SBOM written to: ${values.output}\x1b[0m`);
+        printText(`  Format: ${format.toUpperCase()}  |  Packages: ${pkgCount}`);
+      }
+    } else if (values.json) {
+      printJson({ ok: true, kind: "better.sbom-gen", format, packages: pkgCount });
+    } else {
+      process.stdout.write(sbomData + "\n");
+    }
+    return;
+  }
+  // JS fallback below
 
   let pkgJson = {};
   try { pkgJson = JSON.parse(await fs.readFile(path.join(projectRoot, "package.json"), "utf8")); } catch {}

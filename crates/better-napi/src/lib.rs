@@ -1766,6 +1766,27 @@ pub fn napi_analyze_org(root_dir: String) -> String {
     }
 }
 
+// v1.3 Task: SBOM generation (CycloneDX/SPDX)
+#[napi(js_name = "generateSbom")]
+pub fn napi_generate_sbom(
+    project_root: String,
+    lockfile_path: String,
+    format: String,
+    include_vex: bool,
+) -> String {
+    use better_core::sbom::generate_sbom_v2;
+    use std::path::Path;
+    match generate_sbom_v2(
+        Path::new(&project_root),
+        Path::new(&lockfile_path),
+        &format,
+        include_vex,
+    ) {
+        Ok(sbom) => serde_json::json!({ "ok": true, "sbom": sbom }).to_string(),
+        Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+    }
+}
+
 // v2.0 Task: AI-assisted migration planner
 #[napi(js_name = "planMigration")]
 pub fn napi_plan_migration(from_pkg: String, to_pkg: String, project_root: String) -> String {
