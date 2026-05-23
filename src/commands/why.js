@@ -5,6 +5,7 @@ import { printJson, printText, toErrorJson } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
 import { childLogger } from "../lib/log.js";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
+import { runWhyNapi } from "../lib/core.js";
 
 const HELP = `
 Usage: better why <package> [options]
@@ -507,6 +508,48 @@ export async function cmdWhy(argv) {
       const resolved = await resolveInstallProjectRoot(process.cwd());
       projectRoot = resolved.root;
       log.debug("Resolved project root", { root: projectRoot, reason: resolved.reason });
+    }
+
+    // NAPI fast path: attempt native Rust implementation first
+    const napiResult = runWhyNapi(projectRoot, targetPkg);
+    if (napiResult === null) {
+      // NAPI not available; fall through to JS path
+      log.debug("NAPI why not available, falling back to JS");
+    } else if (!napiResult.ok) {
+      log.warn("NAPI why returned not-ok, falling back to JS", { reason: napiResult.reason });
+    } else {
+      // NAPI succeeded — format and return
+      if (useJson) {
+        printJson({
+          ok: true,
+          kind: "better.why",
+          schemaVersion: 1,
+          package: napiResult.package,
+          version: napiResult.version,
+          isDirect: napiResult.isDirect,
+          dependencyPaths: napiResult.dependencyPaths,
+          dependedOnBy: napiResult.dependedOnBy,
+          totalPaths: napiResult.totalPaths
+        });
+      } else {
+        const version = napiResult.version || "unknown";
+        const tree = formatPathsAsTree(napiResult.dependencyPaths, napiResult.package, version);
+        printText(tree);
+
+        if (napiResult.isDirect) {
+          printText("\nThis is a DIRECT dependency.");
+        } else {
+          printText("\nThis is a TRANSITIVE dependency.");
+        }
+
+        if (napiResult.dependedOnBy.length > 0) {
+          printText(`\nDepended on by ${napiResult.dependedOnBy.length} package(s):`);
+          for (const dep of napiResult.dependedOnBy) {
+            printText(`  - ${dep.name}@${dep.version}`);
+          }
+        }
+      }
+      return;
     }
 
     // Try to find and parse lockfile
