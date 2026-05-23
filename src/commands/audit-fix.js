@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
+import { runPlanAuditFixesNapi } from "../lib/core.js";
 
 /**
  * `better audit fix` — automatically fix vulnerabilities
@@ -89,31 +90,59 @@ Options:
     return;
   }
 
-  const fixes = [];
+  // NAPI fast path: use Rust audit-fix planner for major-version detection
+  const napiVulns = vulns
+    .filter(v => v.fixedIn && (v.package || v.name))
+    .map(v => ({
+      package: v.package || v.name,
+      version: v.version || v.range || "0.0.0",
+      severity: v.severity || "unknown",
+      ids: [v.id].filter(Boolean),
+      patched_version: v.fixedIn || null
+    }));
+
+  const napiPlan = napiVulns.length > 0
+    ? runPlanAuditFixesNapi(projectRoot, JSON.stringify(napiVulns), values.force === true)
+    : null;
+
+  let fixes = [];
   const needsForce = [];
 
-  for (const vuln of vulns) {
-    if (!vuln.fixedIn) continue;
-    const pkgName = vuln.package || vuln.name;
-    if (!pkgName) continue;
+  if (napiPlan !== null && napiPlan.ok) {
+    const data = napiPlan.data ?? napiPlan;
+    for (const detail of (data.details ?? [])) {
+      const pkgName = detail.package;
+      if (values["prod-only"] && !pkg.dependencies?.[pkgName]) continue;
+      const isSkipped = typeof detail.status === "object" && "Skipped" in detail.status;
+      if (isSkipped && detail.status.Skipped?.reason?.includes("Major version")) {
+        needsForce.push({ name: pkgName, from: detail.from_version, to: detail.to_version });
+      } else if (!isSkipped) {
+        fixes.push({ name: pkgName, from: detail.from_version, to: `^${detail.to_version}`, breaking: false });
+      }
+    }
+  } else {
+    // JS fallback: basic major-version detection
+    for (const vuln of vulns) {
+      if (!vuln.fixedIn) continue;
+      const pkgName = vuln.package || vuln.name;
+      if (!pkgName) continue;
 
-    const currentSpec = pkg.dependencies?.[pkgName] || pkg.devDependencies?.[pkgName];
-    if (!currentSpec) continue;
+      const currentSpec = pkg.dependencies?.[pkgName] || pkg.devDependencies?.[pkgName];
+      if (!currentSpec) continue;
 
-    if (values["prod-only"] && !pkg.dependencies?.[pkgName]) continue;
+      if (values["prod-only"] && !pkg.dependencies?.[pkgName]) continue;
 
-    const fixVersion = vuln.fixedIn;
+      const fixVersion = vuln.fixedIn;
+      const currentMajor = parseInt(currentSpec.replace(/[^0-9].*/, "")) || 0;
+      const fixMajor = parseInt(fixVersion.split(".")[0]) || 0;
 
-    // Check if fix is semver-compatible (same major version)
-    const currentMajor = parseInt(currentSpec.replace(/[^0-9].*/, "")) || 0;
-    const fixMajor = parseInt(fixVersion.split(".")[0]) || 0;
-
-    if (fixMajor === currentMajor || fixMajor < currentMajor) {
-      fixes.push({ name: pkgName, from: currentSpec, to: `^${fixVersion}`, breaking: false });
-    } else if (values.force) {
-      fixes.push({ name: pkgName, from: currentSpec, to: `^${fixVersion}`, breaking: true });
-    } else {
-      needsForce.push({ name: pkgName, from: currentSpec, to: `^${fixVersion}`, vuln: vuln.id });
+      if (fixMajor === currentMajor || fixMajor < currentMajor) {
+        fixes.push({ name: pkgName, from: currentSpec, to: `^${fixVersion}`, breaking: false });
+      } else if (values.force) {
+        fixes.push({ name: pkgName, from: currentSpec, to: `^${fixVersion}`, breaking: true });
+      } else {
+        needsForce.push({ name: pkgName, from: currentSpec, to: `^${fixVersion}`, vuln: vuln.id });
+      }
     }
   }
 

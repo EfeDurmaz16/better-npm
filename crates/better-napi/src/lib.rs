@@ -1376,6 +1376,39 @@ pub fn napi_reputation_score(package_name: String, ecosystem: String, version: S
     }).to_string()
 }
 
+/// Plan audit vulnerability fixes (dry-run — no npm install is called).
+/// Input: JSON array of { package, version, severity, ids, patched_version }
+/// Returns JSON: { ok, fixes_attempted, fixes_applied, fixes_rolled_back, remaining_vulns, details }
+#[napi(js_name = "planAuditFixes")]
+pub fn napi_plan_audit_fixes(
+    project_root: String,
+    vulnerabilities_json: String,
+    force_major: bool,
+) -> String {
+    use better_core::intelligence::audit_fix::{apply_audit_fixes, AuditFixConfig, AuditVuln};
+    use std::path::Path;
+
+    let vulns: Vec<AuditVuln> = match serde_json::from_str(&vulnerabilities_json) {
+        Ok(v) => v,
+        Err(e) => return serde_json::json!({ "ok": false, "error": format!("invalid vulns JSON: {}", e) }).to_string(),
+    };
+
+    let config = AuditFixConfig {
+        dry_run: true,
+        run_tests: false,
+        force_major,
+        test_command: None,
+    };
+
+    match apply_audit_fixes(Path::new(&project_root), &vulns, &config) {
+        Ok(result) => match serde_json::to_string(&result) {
+            Ok(json) => format!("{{\"ok\":true,\"data\":{}}}", json),
+            Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+        },
+        Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+    }
+}
+
 /// Plan (and optionally execute) a smart upgrade with changelog analysis + reputation gating.
 /// Returns JSON: { ok, package, from_version, to_version, steps_applied, risk_level,
 ///                  tests_passed, rollback_applied, dry_run, summary }

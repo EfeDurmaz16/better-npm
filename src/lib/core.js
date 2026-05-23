@@ -359,6 +359,14 @@ export function runPayPackageNapi(packageName, amount, currency) {
   try { return JSON.parse(json); } catch { return null; }
 }
 
+// --- NAPI: audit fix planner ---
+export function runPlanAuditFixesNapi(projectRoot, vulnerabilitiesJson, forceMajor) {
+  const addon = tryLoadNapiAddon();
+  if (!addon || typeof addon.planAuditFixes !== "function") return null;
+  const json = addon.planAuditFixes(projectRoot, vulnerabilitiesJson ?? "[]", forceMajor ?? false);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
 // --- NAPI: smart upgrade planner ---
 export function runPlanSmartUpgradeNapi(projectRoot, packageName, fromVersion, toVersion, changelogText, dryRun, minReputationScore) {
   const addon = tryLoadNapiAddon();

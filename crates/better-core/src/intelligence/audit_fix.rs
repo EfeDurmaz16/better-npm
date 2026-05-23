@@ -197,7 +197,7 @@ pub fn apply_audit_fixes(
     })
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct AuditVuln {
     pub package: String,
     pub version: String,
