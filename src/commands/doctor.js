@@ -9,7 +9,7 @@ import { childLogger } from "../lib/log.js";
 import { detectPackageManager } from "../pm/detect.js";
 import { runCommand } from "../lib/spawn.js";
 import { resolveWorkspacePackages, isWorkspace } from "../lib/workspaces.js";
-import { findBetterCore } from "../lib/core.js";
+import { findBetterCore, runDoctorNapi } from "../lib/core.js";
 
 async function exists(p) {
   try {
@@ -619,6 +619,57 @@ export async function cmdDoctor(argv) {
 
     process.exitCode = aggregateScore < threshold ? 1 : 0;
     return;
+  }
+
+  // NAPI fast path — skip heavy JS analysis for the common single-package case
+  if (!values.from && !values.fix && !values.workspace && !values.unused &&
+      !values.v2 && !values.cas && !values["cross-ecosystem"]) {
+    const napiResult = runDoctorNapi(projectRoot, { threshold });
+    if (napiResult !== null) {
+      if (napiResult.ok) {
+        const napiFindings = napiResult.findings.map(f => ({
+          id: f.id,
+          title: f.title,
+          severity: f.severity,
+          impact: f.impact,
+          suggestion: f.recommendation
+        }));
+        const grouped = {
+          error: napiFindings.filter(f => f.severity === "error"),
+          warning: napiFindings.filter(f => f.severity === "warning"),
+          info: napiFindings.filter(f => f.severity === "info")
+        };
+        const out = {
+          ok: true,
+          kind: "better.doctor",
+          schemaVersion: 2,
+          projectRoot,
+          healthScore: {
+            score: napiResult.score,
+            threshold: napiResult.threshold,
+            maxScore: 100,
+            deduction: 100 - napiResult.score,
+            belowThreshold: napiResult.score < napiResult.threshold
+          },
+          findings: napiFindings,
+          findingsBySeverity: grouped
+        };
+        if (values.json) {
+          printJson(out);
+        } else {
+          printText([
+            "better doctor",
+            `- health score: ${napiResult.score}/100 (threshold: ${napiResult.threshold})`,
+            `- findings: ${napiFindings.length}`,
+            `- errors/warnings/info: ${grouped.error.length}/${grouped.warning.length}/${grouped.info.length}`,
+            ...napiFindings.slice(0, 10).map(f => `  - [${f.severity}] ${f.title} (impact ${f.impact})`)
+          ].join("\n"));
+        }
+        process.exitCode = napiResult.score < napiResult.threshold ? 1 : 0;
+        return;
+      }
+      commandLogger.warn("doctor.napi_failed", { reason: napiResult.reason });
+    }
   }
 
   let analysis;
