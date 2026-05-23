@@ -498,6 +498,27 @@ export function runPlanMigrationNapi(fromPkg, toPkg, projectRoot) {
   try { return JSON.parse(json); } catch { return null; }
 }
 
+export function runCheckApprovalsNapi(projectRoot) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.checkApprovals) return null;
+  const json = addon.checkApprovals(projectRoot);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
+export function runSelectMirrorNapi(timeoutMs) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.selectMirror) return null;
+  const json = addon.selectMirror(timeoutMs ?? 5000);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
+export function runLoadBestMirrorNapi() {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.loadBestMirror) return null;
+  const json = addon.loadBestMirror();
+  try { return JSON.parse(json); } catch { return null; }
+}
+
 export function runSandboxScanNapi(projectRoot) {
   const addon = tryLoadNapiAddon();
   if (!addon?.sandboxScan) return null;

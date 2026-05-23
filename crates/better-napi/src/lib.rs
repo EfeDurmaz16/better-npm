@@ -2259,3 +2259,55 @@ pub fn napi_diff_lock_snapshots(base_snapshot_json: String, head_snapshot_json: 
         Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
     }
 }
+
+// v0.5: package approval workflow
+#[napi(js_name = "checkApprovals")]
+pub fn napi_check_approvals(project_root: String) -> String {
+    use better_core::approval::{check_all_approved, pending_packages};
+    use std::path::Path;
+    let root = Path::new(&project_root);
+    let pending = match pending_packages(root) {
+        Ok(p) => p,
+        Err(e) => return serde_json::json!({ "ok": false, "error": e }).to_string(),
+    };
+    let check = match check_all_approved(root) {
+        Ok(c) => c,
+        Err(e) => return serde_json::json!({ "ok": false, "error": e }).to_string(),
+    };
+    let unapproved: Vec<serde_json::Value> = pending.unapproved.iter().map(|(name, ver)| {
+        serde_json::json!({ "name": name, "version": ver })
+    }).collect();
+    serde_json::json!({
+        "ok": true,
+        "all_approved": check.all_approved,
+        "violations": check.violations,
+        "unapproved": unapproved,
+        "approved_count": pending.approved_count,
+    }).to_string()
+}
+
+// v0.3: mirror selection — find fastest registry
+#[napi(js_name = "selectMirror")]
+pub fn napi_select_mirror(timeout_ms: f64) -> String {
+    use better_core::mirror::select_and_save;
+    let result = select_and_save(timeout_ms as u64);
+    let best_latency = result.all.iter().filter_map(|r| if r.ok { r.latency_ms } else { None }).min();
+    serde_json::json!({
+        "ok": result.ok,
+        "selected": result.selected,
+        "selected_name": result.selected_name,
+        "latency_ms": best_latency,
+        "saved": result.saved,
+        "reason": result.reason,
+    }).to_string()
+}
+
+// v0.3: load saved best mirror
+#[napi(js_name = "loadBestMirror")]
+pub fn napi_load_best_mirror() -> String {
+    use better_core::mirror::load_best_mirror;
+    match load_best_mirror() {
+        Some(url) => serde_json::json!({ "ok": true, "registry_url": url }).to_string(),
+        None => serde_json::json!({ "ok": true, "registry_url": null }).to_string(),
+    }
+}

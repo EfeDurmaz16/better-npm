@@ -6,6 +6,7 @@ import { getRuntimeConfig } from "../lib/config.js";
 import { childLogger } from "../lib/log.js";
 import { analyzeWithBestEngine } from "../lib/analyzeFacade.js";
 import { enrichPackagesWithManifest } from "../lib/packageMeta.js";
+import { runCheckApprovalsNapi } from "../lib/core.js";
 
 const DEFAULT_POLICY = {
   threshold: 70,
@@ -224,7 +225,11 @@ export async function cmdPolicy(argv) {
       return sum + 2;
     }, 0);
     const score = Math.max(0, 100 - deduction);
-    const pass = errors.length === 0 && score >= policy.threshold;
+
+    // NAPI: check package approvals
+    const approvals = runCheckApprovalsNapi(projectRoot);
+    const approvalFail = approvals?.ok && !approvals.all_approved && approvals.unapproved?.length > 0;
+    const pass = errors.length === 0 && score >= policy.threshold && !approvalFail;
 
     const out = {
       ok: pass,

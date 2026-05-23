@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
+import { runSelectMirrorNapi, runLoadBestMirrorNapi } from "../lib/core.js";
 
 /**
  * `better registry` — manage package registries
@@ -148,6 +149,28 @@ Options:
     case "mirror-probe":
     case "mirror":
     case "mirror-select": {
+      // NAPI fast path: Rust native mirror selection (no JS promises)
+      if (sub === "mirror-select" || argv.includes("--select")) {
+        const napiResult = runSelectMirrorNapi(5000);
+        if (napiResult?.ok !== false) {
+          if (useJson) { printJson({ ok: true, kind: "better.registry.mirror", ...napiResult }); }
+          else {
+            if (napiResult?.selected) {
+              printText(`Selected mirror: ${napiResult.selected_name ?? napiResult.selected} (${napiResult.latency_ms}ms)`);
+            } else {
+              printText("No mirror faster than default registry found.");
+            }
+          }
+          break;
+        }
+      } else {
+        const napiBest = runLoadBestMirrorNapi();
+        if (napiBest?.ok && napiBest?.registry_url) {
+          if (useJson) { printJson({ ok: true, kind: "better.registry.mirror", registry_url: napiBest.registry_url }); }
+          else { printText(`Best mirror: ${napiBest.registry_url}`); }
+          break;
+        }
+      }
       const { probeMirrors } = await import("../lib/mirrorSelect.js");
       const select = sub === "mirror-select" || argv.includes("--select");
       const result = await probeMirrors({ select, timeout: 5000 });
