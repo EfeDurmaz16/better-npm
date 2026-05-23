@@ -5,6 +5,7 @@ import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
 import { childLogger } from "../lib/log.js";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
+import { runDedupeNapi } from "../lib/core.js";
 
 // ---------- Inline Semver Implementation (Zero Dependencies) ----------
 
@@ -379,6 +380,65 @@ Notes:
   const projectRoot = resolvedRoot.root;
 
   commandLogger.info("analyzing package-lock.json for duplicates", { projectRoot });
+
+  // NAPI fast path
+  const napiResult = runDedupeNapi(projectRoot);
+  if (napiResult !== null) {
+    if (napiResult.ok) {
+      const duplicates = (napiResult.duplicates || []).map(d => ({
+        name: d.name,
+        versions: d.versions,
+        instances: d.instances,
+        canDedupe: d.canDedupe,
+        targetVersion: d.targetVersion ?? null,
+        savedInstances: d.savedInstances
+      }));
+      const deduplicatable = duplicates.filter(d => d.canDedupe);
+      const result = {
+        ok: true,
+        kind: "better.dedupe",
+        schemaVersion: 1,
+        projectRoot,
+        duplicates,
+        summary: {
+          totalDuplicates: napiResult.totalDuplicates ?? duplicates.length,
+          deduplicatable: napiResult.deduplicatable ?? deduplicatable.length,
+          estimatedSavedPackages: napiResult.estimatedSaved ?? deduplicatable.reduce((s, d) => s + d.savedInstances, 0)
+        }
+      };
+      if (values.json) {
+        printJson(result);
+      } else {
+        if (duplicates.length === 0) {
+          printText("No duplicate packages found.");
+        } else {
+          const lines = [
+            `Found ${duplicates.length} package(s) with multiple versions:`,
+            ""
+          ];
+          for (const dup of duplicates) {
+            lines.push(`${dup.name}:`);
+            lines.push(`  Versions: ${dup.versions.join(", ")}`);
+            lines.push(`  Instances: ${dup.instances}`);
+            if (dup.canDedupe) {
+              lines.push(`  Can dedupe to: ${dup.targetVersion} (saves ${dup.savedInstances} instance(s))`);
+            } else {
+              lines.push(`  Cannot dedupe (incompatible version ranges)`);
+            }
+            lines.push("");
+          }
+          lines.push("Summary:");
+          lines.push(`  Total duplicates: ${result.summary.totalDuplicates}`);
+          lines.push(`  Deduplicatable: ${result.summary.deduplicatable}`);
+          lines.push(`  Estimated saved packages: ${result.summary.estimatedSavedPackages}`);
+          printText(lines.join("\n"));
+        }
+      }
+      return;
+    }
+    // !napiResult.ok: fall through to JS path
+    commandLogger.debug("napi dedupe reported not ok, falling through to JS path", { reason: napiResult.reason });
+  }
 
   // Look for package-lock.json
   const lockPath = path.join(projectRoot, "package-lock.json");
