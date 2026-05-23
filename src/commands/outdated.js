@@ -212,7 +212,7 @@ Output:
   if (!packageJson) {
     // Try multi-ecosystem engine for non-npm projects (Cargo, Go, Python, etc.)
     const engineResult = runOutdatedEngineNapi(projectRoot, null);
-    if (engineResult?.ok && Array.isArray(engineResult.outdated)) {
+    if (engineResult?.ok && Array.isArray(engineResult.outdated) && engineResult.outdated.length > 0) {
       const outdated = engineResult.outdated.filter(p => !p.error);
       const result = {
         ok: true, kind: "better.outdated", schemaVersion: 1,

@@ -377,7 +377,7 @@ Options:
   if (!lockResult.ok) {
     // Try multi-ecosystem engine (Cargo, Go, Python, etc.)
     const engineResult = runAuditEngineNapi(projectRoot, null);
-    if (engineResult?.ok && engineResult.vulnerabilities?.length >= 0) {
+    if (engineResult?.ok && engineResult.vulnerabilities?.length > 0) {
       const vulns = engineResult.vulnerabilities.filter(v => !v.error);
       const result = {
         ok: true, kind: "better.audit",

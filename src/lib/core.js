@@ -477,6 +477,20 @@ export function runSignVerifyNapi(signaturePath, tarballHash) {
   try { return JSON.parse(json); } catch { return null; }
 }
 
+export function runGenerateBuildManifestNapi(projectRoot) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.generateBuildManifest) return null;
+  const json = addon.generateBuildManifest(projectRoot);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
+export function runVerifyReproducibilityNapi(projectRoot) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.verifyReproducibility) return null;
+  const json = addon.verifyReproducibility(projectRoot);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
 export function runPlanMigrationNapi(fromPkg, toPkg, projectRoot) {
   const addon = tryLoadNapiAddon();
   if (!addon?.planMigration) return null;

@@ -1766,6 +1766,42 @@ pub fn napi_analyze_org(root_dir: String) -> String {
     }
 }
 
+// v1.3 Task: Reproducible build manifest generation and verification
+#[napi(js_name = "generateBuildManifest")]
+pub fn napi_generate_build_manifest(project_root: String) -> String {
+    use better_core::reproducible::{generate_manifest, save_manifest};
+    use std::path::Path;
+    let root = Path::new(&project_root);
+    match generate_manifest(root, env!("CARGO_PKG_VERSION")) {
+        Ok(manifest) => {
+            let _ = save_manifest(&manifest, root);
+            match serde_json::to_string(&manifest) {
+                Ok(json) => format!("{{\"ok\":true,\"data\":{}}}", json),
+                Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+            }
+        },
+        Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+    }
+}
+
+#[napi(js_name = "verifyReproducibility")]
+pub fn napi_verify_reproducibility(project_root: String) -> String {
+    use better_core::reproducible::{load_manifest, generate_manifest, verify_reproducibility};
+    use std::path::Path;
+    let root = Path::new(&project_root);
+    let baseline = match load_manifest(root) {
+        Ok(m) => m,
+        Err(e) => return serde_json::json!({ "ok": false, "error": e }).to_string(),
+    };
+    match verify_reproducibility(&baseline, root, env!("CARGO_PKG_VERSION")) {
+        Ok(report) => match serde_json::to_string(&report) {
+            Ok(json) => format!("{{\"ok\":true,\"data\":{}}}", json),
+            Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+        },
+        Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+    }
+}
+
 // v1.3 Task: Package signing (Ed25519 keygen, sign, verify)
 #[napi(js_name = "signKeygen")]
 pub fn napi_sign_keygen(key_name: String) -> String {
