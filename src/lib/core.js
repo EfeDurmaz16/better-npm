@@ -449,6 +449,13 @@ export function runPlanPipelineNapi(pipelineJson, projectRoot) {
   try { return JSON.parse(json); } catch { return null; }
 }
 
+export function runPlanMigrationNapi(fromPkg, toPkg, projectRoot) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.planMigration) return null;
+  const json = addon.planMigration(fromPkg, toPkg, projectRoot ?? process.cwd());
+  try { return JSON.parse(json); } catch { return null; }
+}
+
 export async function runBetterCoreInstall(corePath, projectRoot, opts = {}) {
   const args = ["install", "--project-root", projectRoot];
   if (opts.lockfile) args.push("--lockfile", String(opts.lockfile));

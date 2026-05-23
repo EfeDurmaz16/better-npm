@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
-import { runAnalyzeOrgNapi } from "../lib/core.js";
+import { runAnalyzeOrgNapi, runPlanMigrationNapi } from "../lib/core.js";
 
 /**
  * `better ai` — AI-powered dependency management
@@ -60,7 +60,7 @@ Options:
   const useJson = values.json || runtime.json === true;
 
   // review and org subcommands are rule-based and don't need an API key
-  const LOCAL_SUBCOMMANDS = new Set(["review", "org"]);
+  const LOCAL_SUBCOMMANDS = new Set(["review", "org", "migrate"]);
   const apiKey = process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY;
   if (!apiKey && !LOCAL_SUBCOMMANDS.has(sub)) {
     const err = {
@@ -196,6 +196,46 @@ Respond in JSON: {"issues": [{"package": "...", "type": "deprecated|heavy|securi
       const [, fromPkg, toPkg] = positionals;
       if (!fromPkg) { printText("Error: source package required"); process.exitCode = 1; return; }
 
+      // NAPI fast path: use Rust migration planner (no API key needed for known pairs)
+      const napiMigration = runPlanMigrationNapi(fromPkg, toPkg || "", projectRoot);
+      if (napiMigration?.ok && napiMigration.data) {
+        const plan = napiMigration.data;
+        const result = {
+          ok: true,
+          kind: "better.ai.migrate",
+          from: plan.from,
+          to: plan.to,
+          steps: plan.steps.map(s => s.title + (s.commands?.length ? `: ${s.commands.join(" && ")}` : "")),
+          breakingChanges: plan.breaking_changes,
+          estimatedEffort: plan.estimated_effort,
+        };
+        if (useJson) { printJson(result); }
+        else {
+          printText(`Migration: ${plan.from} → ${plan.to} (effort: ${plan.estimated_effort})`);
+          if (plan.breaking_changes?.length > 0) {
+            printText(`\nBreaking changes:`);
+            for (const bc of plan.breaking_changes) printText(`  ! ${bc}`);
+          }
+          printText(`\nSteps:`);
+          for (const step of plan.steps) {
+            printText(`  ${step.order}. ${step.title}`);
+            for (const cmd of step.commands ?? []) printText(`     $ ${cmd}`);
+          }
+        }
+        break;
+      }
+
+      // Fallback: AI-powered migration guide (requires API key)
+      if (!apiKey) {
+        const fallback = {
+          ok: true, kind: "better.ai.migrate", from: fromPkg, to: toPkg || "alternative",
+          steps: [`npm install ${toPkg || "alternative"}`, `npm uninstall ${fromPkg}`],
+          breakingChanges: [`Check ${toPkg || "alternative"} changelog for breaking changes`],
+          note: "Set ANTHROPIC_API_KEY for detailed AI migration guidance",
+        };
+        if (useJson) { printJson(fallback); } else { printText(`Migration: ${fromPkg} → ${toPkg || "alternative"}\n  Set ANTHROPIC_API_KEY for detailed guidance.`); }
+        break;
+      }
       const prompt = `Provide a migration guide from "${fromPkg}" to "${toPkg || "its modern alternative"}". Include: breaking changes, API differences, code examples. Respond as JSON: {"from": "...", "to": "...", "steps": ["..."], "codeChanges": [{"before": "...", "after": "..."}], "breakingChanges": ["..."]}`;
 
       const guide = await callAI(apiKey, values.model, prompt);

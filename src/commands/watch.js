@@ -1,6 +1,7 @@
 import { parseArgs } from "node:util";
 import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
+import { runSelfHealNapi } from "../lib/core.js";
 import { join } from "node:path";
 import fs from "node:fs/promises";
 import { spawnSync, execFile } from "node:child_process";
@@ -99,8 +100,16 @@ Examples:
           events.push({ type: "vulnerabilities_found", count: vulnCount });
           if (!useJson) printText(`[${new Date().toISOString()}] ${vulnCount} vulnerabilities found`);
           if (values.heal) {
-            spawnSync("node", [join(process.cwd(), "bin", "better.js"), "heal", "--json"], { cwd, stdio: useJson ? "pipe" : "inherit" });
-            events.push({ type: "heal_attempted" });
+            // NAPI fast path for heal
+            const healResult = runSelfHealNapi(cwd, false);
+            if (healResult?.ok) {
+              const healed = healResult.actions?.filter(a => a.applied)?.length ?? 0;
+              events.push({ type: "heal_attempted", healed, actions: healResult.actions });
+              if (!useJson && healed > 0) printText(`[${new Date().toISOString()}] Healed ${healed} issue(s)`);
+            } else {
+              spawnSync("node", [join(process.cwd(), "bin", "better.js"), "heal", "--json"], { cwd, stdio: useJson ? "pipe" : "inherit" });
+              events.push({ type: "heal_attempted" });
+            }
           }
         }
       } catch {}

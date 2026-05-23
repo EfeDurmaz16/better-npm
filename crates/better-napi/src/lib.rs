@@ -1664,6 +1664,20 @@ pub fn napi_analyze_org(root_dir: String) -> String {
     }
 }
 
+// v2.0 Task: AI-assisted migration planner
+#[napi(js_name = "planMigration")]
+pub fn napi_plan_migration(from_pkg: String, to_pkg: String, project_root: String) -> String {
+    use better_core::ai::migrate::plan_migration;
+    use std::path::Path;
+    match plan_migration(&from_pkg, &to_pkg, Path::new(&project_root)) {
+        Ok(plan) => match serde_json::to_string(&plan) {
+            Ok(json) => format!("{{\"ok\":true,\"data\":{}}}", json),
+            Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+        },
+        Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+    }
+}
+
 // v2.0 Task: pipeline dry-run planning
 #[napi(js_name = "planPipeline")]
 pub fn napi_plan_pipeline(pipeline_json: String, project_root: String) -> String {
