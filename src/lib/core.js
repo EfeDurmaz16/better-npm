@@ -359,6 +359,14 @@ export function runPayPackageNapi(packageName, amount, currency) {
   try { return JSON.parse(json); } catch { return null; }
 }
 
+// --- NAPI: reputation score ---
+export function runReputationScoreNapi(packageName, ecosystem, version) {
+  const addon = tryLoadNapiAddon();
+  if (!addon || typeof addon.reputationScore !== "function") return null;
+  const json = addon.reputationScore(packageName, ecosystem ?? "npm", version ?? "latest");
+  try { return JSON.parse(json); } catch { return null; }
+}
+
 // --- NAPI: create sponsorship ---
 export function runCreateSponsorshipNapi(packageName, monthlyAmount, currency) {
   const addon = tryLoadNapiAddon();

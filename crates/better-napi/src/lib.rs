@@ -1339,6 +1339,43 @@ pub fn napi_osp_env_generate(project_root: String) -> String {
     }
 }
 
+// ── v1.5 Reputation Scoring ─────────────────────────────────────────────────
+
+/// Score a package's reputation (0-100) using live signals.
+/// Returns JSON: { ok, package, version, score, grade, breakdown, flags, computed_at }
+#[napi(js_name = "reputationScore")]
+pub fn napi_reputation_score(package_name: String, ecosystem: String, version: String) -> String {
+    use better_core::intelligence::signals::collect_signals;
+    use better_core::intelligence::compute_score;
+
+    let signals = collect_signals(&package_name, &ecosystem, &version);
+    let scored = compute_score(&signals);
+
+    let flags_json: Vec<serde_json::Value> = scored.flags.iter().map(|f| {
+        serde_json::json!({
+            "flag_type": format!("{:?}", f.flag_type).to_lowercase().replace("_", "_"),
+            "severity": format!("{:?}", f.severity).to_lowercase(),
+            "message": f.message
+        })
+    }).collect();
+
+    serde_json::json!({
+        "ok": true,
+        "package": scored.package,
+        "version": scored.version,
+        "score": scored.score,
+        "grade": scored.grade.label(),
+        "breakdown": {
+            "maintainer_health": scored.breakdown.maintainer_health,
+            "security_posture": scored.breakdown.security_posture,
+            "activity_vitality": scored.breakdown.activity_vitality,
+            "community_trust": scored.breakdown.community_trust
+        },
+        "flags": flags_json,
+        "computed_at": scored.computed_at
+    }).to_string()
+}
+
 // ── v0.8 Monetization ───────────────────────────────────────────────────────
 
 /// Fetch earnings summary from Sardis API. Requires SARDIS_TOKEN env var.

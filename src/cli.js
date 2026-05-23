@@ -170,6 +170,7 @@ Commands:
   bundle-analyzer      Analyze JavaScript/CSS bundle sizes in build output
   npm-token            Audit npm authentication tokens in .npmrc files
   workspace-deps       Analyze cross-workspace dependency graph in monorepo
+  reputation <pkg>     Score a package's reputation (0-100, grade A-F, live signals)
   dep-score <pkg>      Score packages for quality, maintenance, and safety (0–100)
   find-unused-exports  Find exported symbols not imported anywhere in the project
   pkg-versions <p>     List all published versions of an npm package with dates
@@ -1178,12 +1179,9 @@ export async function runCli(argv) {
         process.exitCode = result.status;
         break;
       }
-      case "reputation": {
-        const { spawnSync } = await import("node:child_process");
-        const result = spawnSync("better-core", ["reputation", ...rest], { stdio: "inherit" });
-        process.exitCode = result.status;
+      case "reputation":
+        await (await import("./commands/reputation.js")).cmdReputation(rest);
         break;
-      }
       case "supply-chain":
         await (await import("./commands/supply-chain.js")).cmdSupplyChain(rest);
         break;
