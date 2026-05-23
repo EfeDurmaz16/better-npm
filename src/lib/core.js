@@ -463,6 +463,20 @@ export function runPlanPipelineNapi(pipelineJson, projectRoot) {
   try { return JSON.parse(json); } catch { return null; }
 }
 
+export function runSignKeygenNapi(keyName) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.signKeygen) return null;
+  const json = addon.signKeygen(keyName);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
+export function runSignVerifyNapi(signaturePath, tarballHash) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.signVerify) return null;
+  const json = addon.signVerify(signaturePath, tarballHash);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
 export function runPlanMigrationNapi(fromPkg, toPkg, projectRoot) {
   const addon = tryLoadNapiAddon();
   if (!addon?.planMigration) return null;

@@ -1766,6 +1766,39 @@ pub fn napi_analyze_org(root_dir: String) -> String {
     }
 }
 
+// v1.3 Task: Package signing (Ed25519 keygen, sign, verify)
+#[napi(js_name = "signKeygen")]
+pub fn napi_sign_keygen(key_name: String) -> String {
+    use better_core::signing::{generate_key_pair, save_key_pair};
+    let kp = generate_key_pair();
+    let public_key = kp.public_key.clone();
+    match save_key_pair(&kp, &key_name) {
+        Ok(()) => serde_json::json!({
+            "ok": true,
+            "key_name": key_name,
+            "public_key": public_key,
+        }).to_string(),
+        Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+    }
+}
+
+#[napi(js_name = "signVerify")]
+pub fn napi_sign_verify(signature_path: String, tarball_hash: String) -> String {
+    use better_core::signing::{verify_signature, PackageSignature};
+    let sig_json = match std::fs::read_to_string(&signature_path) {
+        Ok(s) => s,
+        Err(e) => return serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+    };
+    let sig: PackageSignature = match serde_json::from_str(&sig_json) {
+        Ok(s) => s,
+        Err(e) => return serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+    };
+    match verify_signature(&sig, &tarball_hash) {
+        Ok(valid) => serde_json::json!({ "ok": true, "valid": valid }).to_string(),
+        Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+    }
+}
+
 // v1.3 Task: SBOM generation (CycloneDX/SPDX)
 #[napi(js_name = "generateSbom")]
 pub fn napi_generate_sbom(

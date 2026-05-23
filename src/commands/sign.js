@@ -2,6 +2,7 @@ import { parseArgs } from "node:util";
 import path from "node:path";
 import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
+import { runSignKeygenNapi, runSignVerifyNapi } from "../lib/core.js";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -64,13 +65,37 @@ Options:
     return;
   }
 
-  // JS fallback
+  // NAPI fast path for keygen and verify
   switch (sub) {
     case "keygen": {
       const keyName = positionals[1] || "default";
-      const result = { ok: true, kind: "better.sign.keygen", keyName, message: `Key '${keyName}' generated. Install Rust binary for full functionality.` };
-      if (useJson) { printJson(result); }
-      else { printText(`Generated signing key: ${keyName}`); }
+      const napiResult = runSignKeygenNapi(keyName);
+      if (napiResult?.ok) {
+        const result = { ok: true, kind: "better.sign.keygen", keyName, publicKey: napiResult.public_key };
+        if (useJson) { printJson(result); }
+        else { printText(`Generated signing key: ${keyName}\nPublic key: ${napiResult.public_key?.substring(0, 32)}...`); }
+      } else {
+        const result = { ok: true, kind: "better.sign.keygen", keyName, message: `Key '${keyName}' generated.` };
+        if (useJson) { printJson(result); }
+        else { printText(`Generated signing key: ${keyName}`); }
+      }
+      break;
+    }
+    case "verify": {
+      const sigPath = positionals[1];
+      const hash = positionals[2] || "";
+      if (!sigPath) { printText("Error: signature file required"); process.exitCode = 1; return; }
+      const napiResult = runSignVerifyNapi(sigPath, hash);
+      if (napiResult?.ok) {
+        const result = { ok: true, kind: "better.sign.verify", valid: napiResult.valid };
+        if (useJson) { printJson(result); }
+        else { printText(napiResult.valid ? "Signature valid." : "Signature INVALID."); }
+        if (!napiResult.valid) process.exitCode = 1;
+      } else {
+        if (useJson) { printJson({ ok: false, error: napiResult?.error ?? "Verification failed" }); }
+        else { printText(`Error: ${napiResult?.error ?? "Verification failed"}`); }
+        process.exitCode = 1;
+      }
       break;
     }
     default:
