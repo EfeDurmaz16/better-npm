@@ -6,6 +6,8 @@ import { detectPackageManager } from "../pm/detect.js";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
 import { getRuntimeConfig } from "../lib/config.js";
 import { hashLockfile, buildRuntimeFingerprint, deriveGlobalCacheContext, resolvePrimaryLockfile } from "../lib/globalCache.js";
+import { findBetterCore } from "../lib/core.js";
+import { runCommand } from "../lib/spawn.js";
 
 async function exists(p) {
   try {
@@ -84,8 +86,19 @@ export async function cmdLock(argv) {
               [--cache-mode strict|relaxed] [--cache-scripts rebuild|off]
               [--frozen] [--production] [--cache-key-salt VALUE]
   better lock verify [--json] [--project-root PATH] [--file FILE]
+  better lock setup-merge-driver [--json] [--project-root PATH]
+  better lock merge <base> <ours> <theirs> [--project-root PATH] [--json]
 `);
     return;
+  }
+
+  // Subcommands that delegate to the Rust binary
+  const subcommand = argv[0] ?? "generate";
+  if (subcommand === "setup-merge-driver") {
+    return await cmdLockSetupMergeDriver(argv.slice(1));
+  }
+  if (subcommand === "merge") {
+    return await cmdLockMerge(argv.slice(1));
   }
 
   const runtime = getRuntimeConfig();
@@ -267,4 +280,106 @@ export async function cmdLock(argv) {
     );
   }
   if (!ok) process.exitCode = 1;
+}
+
+async function cmdLockSetupMergeDriver(argv) {
+  const runtime = getRuntimeConfig();
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      json: { type: "boolean", default: runtime.json === true },
+      "project-root": { type: "string" }
+    },
+    strict: false
+  });
+  const projectRoot = values["project-root"]
+    ? path.resolve(values["project-root"])
+    : process.cwd();
+
+  const corePath = findBetterCore();
+  if (corePath) {
+    const res = await runCommand(corePath, ["lock", "--project-root", projectRoot, "install-driver"], {
+      cwd: projectRoot, passthroughStdio: false, captureLimitBytes: 64 * 1024
+    });
+    if (res.exitCode === 0) {
+      let parsed = null;
+      try { parsed = JSON.parse(res.stdout); } catch { /* ignore */ }
+      if (values.json) {
+        printJson(parsed ?? { ok: true, kind: "better.lock.install-driver" });
+      } else {
+        printText(parsed?.filesModified?.length
+          ? `better lock setup-merge-driver: configured (${parsed.filesModified.join(", ")})`
+          : "better lock setup-merge-driver: merge driver installed");
+      }
+      return;
+    }
+  }
+
+  // Fallback: write .gitattributes and .git/config entries manually
+  const gitattributes = path.join(projectRoot, ".gitattributes");
+  let existing = "";
+  try { existing = await fs.readFile(gitattributes, "utf8"); } catch { /* new file */ }
+  const entry = "better.lock.json merge=betterlockjson";
+  if (!existing.includes(entry)) {
+    await fs.writeFile(gitattributes, `${existing.trimEnd()}\n${entry}\n`);
+  }
+
+  const gitConfig = path.join(projectRoot, ".git", "config");
+  const driverBlock = `[merge "betterlockjson"]\n\tname = better.lock.json merge driver\n\tdriver = better-core lock --project-root %P merge %O %A %B\n`;
+  let gitCfg = "";
+  try { gitCfg = await fs.readFile(gitConfig, "utf8"); } catch { /* no git dir */ }
+  if (!gitCfg.includes('[merge "betterlockjson"]')) {
+    try { await fs.appendFile(gitConfig, `\n${driverBlock}`); } catch { /* readonly or no .git */ }
+  }
+
+  const out = { ok: true, kind: "better.lock.install-driver", installed: true, filesModified: [".gitattributes"] };
+  if (values.json) printJson(out);
+  else printText(`better lock setup-merge-driver: .gitattributes updated`);
+}
+
+async function cmdLockMerge(argv) {
+  const runtime = getRuntimeConfig();
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: {
+      json: { type: "boolean", default: runtime.json === true },
+      "project-root": { type: "string" }
+    },
+    allowPositionals: true,
+    strict: false
+  });
+  if (positionals.length < 3) {
+    printText("Usage: better lock merge <base> <ours> <theirs>");
+    process.exitCode = 1;
+    return;
+  }
+  const [base, ours, theirs] = positionals;
+  const projectRoot = values["project-root"]
+    ? path.resolve(values["project-root"])
+    : process.cwd();
+
+  const corePath = findBetterCore();
+  if (!corePath) {
+    const err = { ok: false, kind: "better.lock.merge", reason: "better-core binary not found" };
+    if (values.json) printJson(err); else printText("Error: better-core binary not found");
+    process.exitCode = 1;
+    return;
+  }
+
+  const res = await runCommand(corePath, ["lock", "--project-root", projectRoot, "merge", base, ours, theirs], {
+    cwd: projectRoot, passthroughStdio: false, captureLimitBytes: 64 * 1024
+  });
+  let parsed = null;
+  try { parsed = JSON.parse(res.stdout); } catch { /* ignore */ }
+  if (values.json) {
+    printJson(parsed ?? { ok: res.exitCode === 0, kind: "better.lock.merge" });
+  } else if (parsed) {
+    const conflicts = parsed.conflicts ?? [];
+    if (conflicts.length === 0) {
+      printText(`better lock merge: clean merge (${parsed.totalPackages ?? "?"} packages)`);
+    } else {
+      printText(`better lock merge: ${conflicts.length} conflict(s)\n${conflicts.map(c => `  - ${c}`).join("\n")}`);
+    }
+  }
+  process.exitCode = res.exitCode;
 }
