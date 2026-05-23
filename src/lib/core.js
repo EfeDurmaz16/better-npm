@@ -359,6 +359,25 @@ export function runPayPackageNapi(packageName, amount, currency) {
   try { return JSON.parse(json); } catch { return null; }
 }
 
+// --- NAPI: predictive maintenance ---
+export function runPredictMaintenanceNapi(packageName, ecosystem, version) {
+  const addon = tryLoadNapiAddon();
+  if (!addon || typeof addon.predictMaintenance !== "function") return null;
+  const json = addon.predictMaintenance(packageName, ecosystem ?? "npm", version ?? "latest");
+  try { return JSON.parse(json); } catch { return null; }
+}
+
+// --- NAPI: impact analysis ---
+export function runAnalyzeImpactNapi(projectRoot, packageName, version, dependents, transitiveRemoveCount, pkgSizeBytes) {
+  const addon = tryLoadNapiAddon();
+  if (!addon || typeof addon.analyzeImpact !== "function") return null;
+  const json = addon.analyzeImpact(
+    projectRoot, packageName, version ?? "",
+    dependents ?? [], transitiveRemoveCount ?? 0, pkgSizeBytes ?? 0
+  );
+  try { return JSON.parse(json); } catch { return null; }
+}
+
 // --- NAPI: reputation score ---
 export function runReputationScoreNapi(packageName, ecosystem, version) {
   const addon = tryLoadNapiAddon();

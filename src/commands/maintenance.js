@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
+import { runPredictMaintenanceNapi } from "../lib/core.js";
 
 /**
  * `better maintenance` — predictive maintenance analysis
@@ -68,6 +69,64 @@ Options:
   }
 
   if (!values.json) printText(`Analyzing ${depNames.length} packages for maintenance risk...`);
+
+  // NAPI fast path: use Rust predict_maintenance with live signals
+  const napiTestResult = depNames.length > 0
+    ? runPredictMaintenanceNapi(depNames[0], "npm", "latest")
+    : null;
+
+  if (napiTestResult !== null && napiTestResult.ok) {
+    const predictions = depNames.map(name => {
+      const pred = runPredictMaintenanceNapi(name, "npm", "latest");
+      if (!pred || !pred.ok) return { name, risk: "unknown" };
+      const data = pred.data ?? pred;
+      const risk = data.risk_score > 0.7 ? "critical"
+        : data.risk_score > 0.5 ? "high"
+        : data.risk_score > 0.3 ? "medium"
+        : "low";
+      return {
+        name,
+        version: data.version,
+        risk,
+        currentStatus: data.current_status,
+        predictedStatus: data.predicted_status_6mo,
+        riskScore: data.risk_score,
+        confidence: data.confidence,
+        signals: (data.signals ?? []).map(s => s.signal),
+        action: data.recommended_action,
+        alternatives: (data.alternatives ?? []).map(a => a.name)
+      };
+    });
+
+    const alerts = predictions
+      .filter(p => p.risk !== "low" && p.risk !== "unknown")
+      .sort((a, b) => (b.riskScore ?? 0) - (a.riskScore ?? 0));
+
+    const out = {
+      ok: true,
+      kind: "better.maintenance",
+      schemaVersion: 1,
+      analyzed: depNames.length,
+      alerts: alerts.length,
+      packages: alerts
+    };
+    if (values.json) { printJson(out); return; }
+
+    if (alerts.length === 0) {
+      printText("All dependencies look healthy. No maintenance alerts.");
+      return;
+    }
+
+    const lines = [`Maintenance Analysis: ${alerts.length} packages need attention\n`];
+    for (const p of alerts) {
+      const icon = p.risk === "critical" ? "!!" : p.risk === "high" ? "!" : "~";
+      lines.push(`[${icon}] ${p.name} (${p.risk}) — ${p.predictedStatus ?? p.currentStatus}`);
+      for (const s of (p.signals ?? []).slice(0, 3)) lines.push(`    - ${s}`);
+      if (p.alternatives?.length) lines.push(`    Alternatives: ${p.alternatives.slice(0, 2).join(", ")}`);
+    }
+    printText(lines.join("\n"));
+    return;
+  }
 
   const analyses = await Promise.all(depNames.map(name => analyzePackage(name, allDeps[name])));
   const alerts = analyses.filter(a => a.risk !== "low").sort((a, b) => riskRank(b.risk) - riskRank(a.risk));

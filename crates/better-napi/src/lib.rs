@@ -1376,6 +1376,52 @@ pub fn napi_reputation_score(package_name: String, ecosystem: String, version: S
     }).to_string()
 }
 
+/// Predict maintenance status for a package using live signals.
+/// Returns JSON: { ok, package, version, current_status, predicted_status_6mo,
+///                 confidence, risk_score, signals, recommended_action, alternatives }
+#[napi(js_name = "predictMaintenance")]
+pub fn napi_predict_maintenance(package_name: String, ecosystem: String, version: String) -> String {
+    use better_core::intelligence::signals::collect_signals;
+    use better_core::intelligence::predict::predict_maintenance;
+
+    let signals = collect_signals(&package_name, &ecosystem, &version);
+    let prediction = predict_maintenance(&signals);
+
+    match serde_json::to_string(&prediction) {
+        Ok(json) => format!("{{\"ok\":true,\"data\":{}}}", json),
+        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+    }
+}
+
+/// Analyze the impact of removing a dependency from the project.
+/// Returns JSON: { ok, package, version, usage, removal_impact, alternatives }
+#[napi(js_name = "analyzeImpact")]
+pub fn napi_analyze_impact(
+    project_root: String,
+    package_name: String,
+    version: String,
+    dependents: Vec<String>,
+    transitive_remove_count: u32,
+    pkg_size_bytes: u32,
+) -> String {
+    use better_core::intelligence::impact::analyze_impact;
+    use std::path::Path;
+
+    let result = analyze_impact(
+        Path::new(&project_root),
+        &package_name,
+        &version,
+        &dependents,
+        transitive_remove_count as usize,
+        pkg_size_bytes as u64,
+    );
+
+    match serde_json::to_string(&result) {
+        Ok(json) => format!("{{\"ok\":true,\"data\":{}}}", json),
+        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+    }
+}
+
 // ── v0.8 Monetization ───────────────────────────────────────────────────────
 
 /// Fetch earnings summary from Sardis API. Requires SARDIS_TOKEN env var.

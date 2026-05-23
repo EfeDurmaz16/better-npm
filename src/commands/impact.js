@@ -11,8 +11,12 @@
  *   better impact express --json
  */
 import { parseArgs } from "node:util";
+import path from "node:path";
+import fs from "node:fs/promises";
 import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
+import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
+import { runAnalyzeImpactNapi } from "../lib/core.js";
 import https from "node:https";
 
 function httpsGet(url) {
@@ -147,6 +151,58 @@ Examples:
   if (positionals.length === 0) {
     printText("Usage: better impact <package[@version]>\nRun: better impact --help for more info.");
     process.exitCode = 1;
+    return;
+  }
+
+  // NAPI fast path: local source-scan impact analysis for installed packages
+  const resolvedRoot = await resolveInstallProjectRoot(process.cwd());
+  const projectRoot = resolvedRoot.root;
+
+  const napiResults = [];
+  for (const pkgSpec of positionals) {
+    let pkgName = pkgSpec.includes("@") && !pkgSpec.startsWith("@")
+      ? pkgSpec.slice(0, pkgSpec.lastIndexOf("@"))
+      : pkgSpec.startsWith("@") && pkgSpec.lastIndexOf("@") > 0
+      ? pkgSpec.slice(0, pkgSpec.lastIndexOf("@"))
+      : pkgSpec;
+    const napiResult = runAnalyzeImpactNapi(projectRoot, pkgName, "", [], 0, 0);
+    if (napiResult !== null && napiResult.ok) {
+      const d = napiResult.data ?? napiResult;
+      napiResults.push({
+        name: pkgName,
+        source: "napi",
+        directImports: d.usage?.direct_imports ?? 0,
+        importFiles: d.usage?.import_files ?? [],
+        importedExports: d.usage?.imported_exports ?? [],
+        transitiveDependents: d.usage?.transitive_dependents ?? 0,
+        removalRisk: d.removal_impact?.risk ?? "unknown",
+        sizeReductionBytes: d.removal_impact?.size_reduction_bytes ?? 0,
+        alternatives: (d.alternatives ?? []).map(a => ({ name: a.name, effort: a.migration_effort }))
+      });
+    }
+  }
+
+  if (napiResults.length === positionals.length) {
+    if (values.json) {
+      printJson({ ok: true, kind: "better.impact", results: napiResults });
+      return;
+    }
+    if (!values.json) printText(`\n\x1b[1mbetter impact\x1b[0m\n`);
+    for (const r of napiResults) {
+      const riskIcon = r.removalRisk === "critical" ? "\x1b[31m!!\x1b[0m"
+        : r.removalRisk === "high" ? "\x1b[31m!\x1b[0m"
+        : r.removalRisk === "moderate" ? "\x1b[33m~\x1b[0m"
+        : "\x1b[32m✓\x1b[0m";
+      printText(`  \x1b[1m${r.name}\x1b[0m  ${riskIcon} Removal risk: ${r.removalRisk}`);
+      printText(`\x1b[90m${"-".repeat(50)}\x1b[0m`);
+      printText(`  Source imports: ${r.directImports} files`);
+      if (r.importedExports.length) printText(`  Exports used:   ${r.importedExports.slice(0, 5).join(", ")}`);
+      if (r.transitiveDependents > 0) printText(`  Transitive dependents: ${r.transitiveDependents}`);
+      if (r.alternatives.length) {
+        printText(`  Alternatives:   ${r.alternatives.slice(0, 3).map(a => `${a.name} (${a.effort})`).join(", ")}`);
+      }
+      printText("");
+    }
     return;
   }
 
