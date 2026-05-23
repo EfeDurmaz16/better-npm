@@ -1738,6 +1738,20 @@ pub fn napi_self_heal(project_root: String, dry_run: bool) -> String {
     }
 }
 
+// v2.0 Task: richer heal with deprecated package detection and PR simulation
+#[napi(js_name = "healProject")]
+pub fn napi_heal_project(project_root: String, dry_run: bool) -> String {
+    use better_core::ai::heal::heal_project;
+    use std::path::Path;
+    match heal_project(Path::new(&project_root), dry_run) {
+        Ok(report) => match serde_json::to_string(&report) {
+            Ok(json) => format!("{{\"ok\":true,\"data\":{}}}", json),
+            Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }).to_string(),
+        },
+        Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+    }
+}
+
 // v2.0 Task: org-level cross-project insights
 #[napi(js_name = "analyzeOrg")]
 pub fn napi_analyze_org(root_dir: String) -> String {

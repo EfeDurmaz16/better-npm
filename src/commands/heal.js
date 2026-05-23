@@ -3,7 +3,7 @@ import path from "node:path";
 import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
-import { runSelfHealNapi } from "../lib/core.js";
+import { runSelfHealNapi, runHealProjectNapi } from "../lib/core.js";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -52,8 +52,16 @@ Options:
   const projectRoot = resolvedRoot.root;
   const useJson = values.json || runtime.json === true;
 
-  // NAPI fast path: use Rust SelfHealingEngine
-  const napiResult = runSelfHealNapi(projectRoot, values["dry-run"] === true);
+  // NAPI fast path: try richer healProject first, then SelfHealingEngine
+  const healResult = runHealProjectNapi(projectRoot, values["dry-run"] === true);
+  const napiResult = healResult?.ok
+    ? { ok: true, actions: (healResult.data?.actions ?? []).map(a => ({
+        issue: a.vulnerability,
+        action: `${typeof a.action_type === "object" ? Object.values(a.action_type)[0]?.from ? `upgrade ${a.package} → ${Object.values(a.action_type)[0].to}` : a.action_type : a.action_type}`,
+        applied: typeof a.status === "string" ? a.status === "Fixed" || a.status === "PrCreated" : false,
+        details: typeof a.status === "object" ? Object.values(a.status)[0] : undefined,
+      })) }
+    : runSelfHealNapi(projectRoot, values["dry-run"] === true);
   let actions = [];
 
   if (napiResult?.ok && Array.isArray(napiResult.actions)) {

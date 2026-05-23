@@ -435,6 +435,13 @@ export function runSelfHealNapi(projectRoot, dryRun) {
   try { return JSON.parse(json); } catch { return null; }
 }
 
+export function runHealProjectNapi(projectRoot, dryRun) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.healProject) return null;
+  const json = addon.healProject(projectRoot, dryRun === true);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
 export function runAnalyzeOrgNapi(rootDir) {
   const addon = tryLoadNapiAddon();
   if (!addon?.analyzeOrg) return null;
