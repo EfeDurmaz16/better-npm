@@ -6,7 +6,7 @@ import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
 import { childLogger } from "../lib/log.js";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
-import { runOutdatedNapi } from "../lib/core.js";
+import { runOutdatedNapi, runOutdatedEngineNapi } from "../lib/core.js";
 
 async function readJsonFile(filePath) {
   try {
@@ -210,14 +210,31 @@ Output:
 
   const packageJson = await readJsonFile(packageJsonPath);
   if (!packageJson) {
+    // Try multi-ecosystem engine for non-npm projects (Cargo, Go, Python, etc.)
+    const engineResult = runOutdatedEngineNapi(projectRoot, null);
+    if (engineResult?.ok && Array.isArray(engineResult.outdated)) {
+      const outdated = engineResult.outdated.filter(p => !p.error);
+      const result = {
+        ok: true, kind: "better.outdated", schemaVersion: 1,
+        packages: outdated.map(p => ({
+          name: p.package, current: p.current, wanted: p.latest, latest: p.latest,
+          updateType: p.update_type, engine: p.engine,
+        })),
+        summary: { totalChecked: outdated.length, outdated: outdated.length },
+      };
+      if (values.json) { printJson(result); }
+      else if (outdated.length === 0) { printText("All packages are up to date."); }
+      else {
+        printText(`Outdated packages (${outdated.length}):`);
+        for (const p of outdated) {
+          printText(`  ${p.package}: ${p.current} → ${p.latest} [${p.update_type}]`);
+        }
+      }
+      return;
+    }
     const err = new Error("package.json not found");
     if (values.json) {
-      printJson({
-        ok: false,
-        kind: "better.outdated",
-        schemaVersion: 1,
-        error: err.message
-      });
+      printJson({ ok: false, kind: "better.outdated", schemaVersion: 1, error: err.message });
     } else {
       printText(`Error: ${err.message}`);
     }

@@ -8,7 +8,7 @@ import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
 import { queryBatch, summarizeVuln, parseSeverity } from "../lib/osv.js";
 import { buildVulnGraph, suggestUpgrades, graphToJson, formatExposurePath } from "../lib/vulnGraph.js";
 import { resolveWorkspacePackages } from "../lib/workspaces.js";
-import { runSmartAuditNapi } from "../lib/core.js";
+import { runSmartAuditNapi, runAuditEngineNapi } from "../lib/core.js";
 
 async function readJsonFile(filePath) {
   try {
@@ -375,6 +375,26 @@ Options:
   if (!jsonOutput) printText("Resolving packages from lockfile...");
   const lockResult = await resolvePackagesFromLockfile(projectRoot);
   if (!lockResult.ok) {
+    // Try multi-ecosystem engine (Cargo, Go, Python, etc.)
+    const engineResult = runAuditEngineNapi(projectRoot, null);
+    if (engineResult?.ok && engineResult.vulnerabilities?.length >= 0) {
+      const vulns = engineResult.vulnerabilities.filter(v => !v.error);
+      const result = {
+        ok: true, kind: "better.audit",
+        vulnerabilities: vulns,
+        total: vulns.length,
+        source: "engine",
+      };
+      if (jsonOutput) { printJson(result); }
+      else if (vulns.length === 0) { printText("No vulnerabilities found."); }
+      else {
+        printText(`Found ${vulns.length} vulnerabilities:`);
+        for (const v of vulns) {
+          printText(`  [${v.severity}] ${v.package}@${v.version}: ${v.summary}`);
+        }
+      }
+      return;
+    }
     const err = new Error(`No lockfile found in ${projectRoot}. Run your package manager's install first.`);
     throw err;
   }

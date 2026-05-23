@@ -1166,6 +1166,94 @@ pub fn napi_detect_ecosystems(project_root: String) -> Vec<String> {
         .collect()
 }
 
+// ── v0.9 multi-ecosystem engine dispatch ────────────────────────────────────
+
+/// Audit the project using the appropriate engine(s) (npm, cargo, go, python, etc.)
+#[napi(js_name = "auditEngine")]
+pub fn napi_audit_engine(project_root: String, ecosystem: Option<String>) -> String {
+    use better_core::engine::EngineRegistry;
+    use std::path::Path;
+    let root = Path::new(&project_root);
+    let registry = EngineRegistry::new();
+    let engines: Vec<_> = if let Some(ref eco) = ecosystem {
+        registry.get(eco).into_iter().collect()
+    } else {
+        registry.detect(root)
+    };
+    let mut all_vulns = vec![];
+    for engine in engines {
+        match engine.resolve(root) {
+            Ok(graph) => {
+                match engine.audit(&graph) {
+                    Ok(vulns) => {
+                        for v in vulns {
+                            all_vulns.push(serde_json::json!({
+                                "engine": engine.name(),
+                                "id": v.id,
+                                "package": v.package,
+                                "version": v.version,
+                                "severity": v.severity,
+                                "summary": v.summary,
+                                "fixed_in": v.fixed_in,
+                            }));
+                        }
+                    }
+                    Err(e) => {
+                        all_vulns.push(serde_json::json!({
+                            "engine": engine.name(),
+                            "error": e.message
+                        }));
+                    }
+                }
+            }
+            Err(e) => {
+                all_vulns.push(serde_json::json!({
+                    "engine": engine.name(),
+                    "error": e.message
+                }));
+            }
+        }
+    }
+    serde_json::json!({ "ok": true, "vulnerabilities": all_vulns }).to_string()
+}
+
+/// Outdated check using the appropriate engine(s)
+#[napi(js_name = "outdatedEngine")]
+pub fn napi_outdated_engine(project_root: String, ecosystem: Option<String>) -> String {
+    use better_core::engine::EngineRegistry;
+    use std::path::Path;
+    let root = Path::new(&project_root);
+    let registry = EngineRegistry::new();
+    let engines: Vec<_> = if let Some(ref eco) = ecosystem {
+        registry.get(eco).into_iter().collect()
+    } else {
+        registry.detect(root)
+    };
+    let mut all_outdated = vec![];
+    for engine in engines {
+        match engine.outdated(root) {
+            Ok(pkgs) => {
+                for p in pkgs {
+                    all_outdated.push(serde_json::json!({
+                        "engine": engine.name(),
+                        "package": p.name,
+                        "current": p.current,
+                        "latest": p.latest,
+                        "update_type": p.update_type,
+                    }));
+                }
+            }
+            Err(e) => {
+                all_outdated.push(serde_json::json!({
+                    "engine": engine.name(),
+                    "error": e.message
+                }));
+            }
+        }
+    }
+    serde_json::json!({ "ok": true, "outdated": all_outdated }).to_string()
+}
+
 // ── v1.0 schema version ─────────────────────────────────────────────────────
 
 #[napi(js_name = "schemaVersion")]

@@ -456,6 +456,20 @@ export function runPlanMigrationNapi(fromPkg, toPkg, projectRoot) {
   try { return JSON.parse(json); } catch { return null; }
 }
 
+export function runAuditEngineNapi(projectRoot, ecosystem) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.auditEngine) return null;
+  const json = addon.auditEngine(projectRoot, ecosystem ?? null);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
+export function runOutdatedEngineNapi(projectRoot, ecosystem) {
+  const addon = tryLoadNapiAddon();
+  if (!addon?.outdatedEngine) return null;
+  const json = addon.outdatedEngine(projectRoot, ecosystem ?? null);
+  try { return JSON.parse(json); } catch { return null; }
+}
+
 export async function runBetterCoreInstall(corePath, projectRoot, opts = {}) {
   const args = ["install", "--project-root", projectRoot];
   if (opts.lockfile) args.push("--lockfile", String(opts.lockfile));
