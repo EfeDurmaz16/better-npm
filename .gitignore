@@ -22,6 +22,8 @@ health.json
 
 # better tool runtime state files
 .better-env-profile.json
+.better-receipt.json
+better.lock.json
 
 # Native addon build artifacts
 crates/better-napi/*.node

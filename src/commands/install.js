@@ -483,7 +483,8 @@ export async function cmdInstall(argv) {
                  [--parity-check auto|off|warn|strict]
                  [--strict] [--hoist] [--node-layout strict|hoist]
                  [--workspace PKG | -w PKG] [--workspace-concurrency N] [--workspace-topo]
-                 [--lazy]
+                 [--lazy] [--approved-only]
+                 [--sandbox] [--verify-provenance] [--require-provenance]
                  [-- --<pm-specific flags>]
 
 Offline options:
