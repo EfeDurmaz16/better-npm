@@ -1886,6 +1886,27 @@ Workspace options:
     // Non-fatal: delta snapshot is optional
   }
 
+  // Write .better-receipt.json install receipt
+  try {
+    const receiptPath = path.join(projectRoot, ".better-receipt.json");
+    const receipt = {
+      kind: "better.receipt",
+      schemaVersion: 1,
+      timestamp: endedAt,
+      runId,
+      pm: { name: pm, engine },
+      projectRoot,
+      packagesInstalled: installMetrics.packagesInstalled,
+      packagesTotal: installMetrics.packagesAfter,
+      wallTimeMs: install.wallTimeMs,
+      lockfile: frozenLockfileResult?.lockfile ?? null,
+      lockfileHash: frozenLockfileResult?.hash ?? null,
+      globalCacheHit: globalCacheDecision.hit === true,
+      reuseMarkerHit: reuseDecision.hit === true
+    };
+    await fs.writeFile(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
+  } catch { /* non-fatal */ }
+
   if (values.report) {
     const outPath = path.resolve(values.report);
     await fs.writeFile(outPath, `${JSON.stringify(report, null, 2)}\n`);
