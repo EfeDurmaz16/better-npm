@@ -549,7 +549,9 @@ Workspace options:
       "workspace-concurrency": { type: "string", default: "4" },
       "workspace-topo": { type: "boolean", default: true },
       // Lazy mode: resolve + fetch to CAS without materialising node_modules
-      lazy: { type: "boolean", default: false }
+      lazy: { type: "boolean", default: false },
+      // Approval gate: abort if any resolved package is not in .better-approved.json
+      "approved-only": { type: "boolean", default: false }
     },
     allowPositionals: true,
     strict: false
@@ -614,7 +616,8 @@ Workspace options:
     "w",
     "workspace-concurrency",
     "workspace-topo",
-    "lazy"
+    "lazy",
+    "approved-only"
   ]);
   const passIndex = positionals.indexOf("--");
   const passthroughPositionals = passIndex >= 0 ? positionals.slice(passIndex + 1) : positionals;
@@ -802,6 +805,54 @@ Workspace options:
       } catch {
         // lockfile not available, skip validation
       }
+    }
+  }
+
+  // Approval gate: abort before install if any lockfile package is not approved
+  if (values["approved-only"]) {
+    const approvedPath = path.join(projectRoot, ".better-approved.json");
+    let approvedConfig = { mode: "allowlist", packages: {}, scopes: {} };
+    try {
+      const raw = await fs.readFile(approvedPath, "utf8");
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") approvedConfig = { ...approvedConfig, ...parsed };
+    } catch { /* no file = empty allowlist */ }
+
+    const lockfilePath = path.join(projectRoot, "package-lock.json");
+    const lockfilePackages = new Map();
+    try {
+      const lock = JSON.parse(await fs.readFile(lockfilePath, "utf8"));
+      for (const [key, entry] of Object.entries(lock.packages ?? {})) {
+        if (!key) continue;
+        const name = entry.name
+          ?? key.replace(/^node_modules\//, "").split("/node_modules/").pop();
+        const version = entry.version ?? "";
+        if (name) lockfilePackages.set(name, version);
+      }
+    } catch { /* lockfile absent, gate is a no-op */ }
+
+    const { packages: approvedPkgs = {}, scopes: approvedScopes = {} } = approvedConfig;
+    const unapproved = [];
+    for (const [name, version] of lockfilePackages) {
+      const scope = name.startsWith("@") ? name.split("/")[0] : null;
+      if (scope && approvedScopes[scope]) continue;
+      const pkgEntry = approvedPkgs[name];
+      if (!pkgEntry) { unapproved.push(`${name}@${version}`); continue; }
+      const approvedVersions = pkgEntry.approved_versions ?? [];
+      if (approvedVersions.length > 0 && !approvedVersions.includes(version)) {
+        unapproved.push(`${name}@${version}`);
+      }
+    }
+
+    if (unapproved.length > 0) {
+      const preview = unapproved.slice(0, 20).join("\n  ");
+      const more = unapproved.length > 20 ? `\n  ... and ${unapproved.length - 20} more` : "";
+      const err = new Error(
+        `--approved-only: ${unapproved.length} package(s) not approved:\n  ${preview}${more}\nRun: better policy approve <name> to approve packages`
+      );
+      err.exitCode = 1;
+      err.unapprovedPackages = unapproved;
+      throw err;
     }
   }
 

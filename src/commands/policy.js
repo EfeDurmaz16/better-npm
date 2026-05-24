@@ -144,6 +144,9 @@ export async function cmdPolicy(argv) {
     printText(`Usage:
   better policy check [--json] [--threshold N] [--project-root PATH]
   better policy init [--json] [--project-root PATH]
+  better policy approve <package[@range]> [--reason TEXT] [--scope] [--json] [--project-root PATH]
+  better policy revoke <package> [--json] [--project-root PATH]
+  better policy pending [--json] [--project-root PATH]
 `);
     return;
   }
@@ -275,5 +278,157 @@ export async function cmdPolicy(argv) {
     return;
   }
 
-  throw new Error(`Unknown policy subcommand '${sub}'. Expected check|init.`);
+  if (sub === "approve") {
+    const { values: approveValues, positionals: approvePositionals } = parseArgs({
+      args: rest,
+      options: {
+        json: { type: "boolean", default: runtime.json === true },
+        "project-root": { type: "string" },
+        reason: { type: "string", default: "" },
+        scope: { type: "boolean", default: false },
+        "review-url": { type: "string" }
+      },
+      allowPositionals: true,
+      strict: false
+    });
+    const projectRoot2 = approveValues["project-root"] ? path.resolve(approveValues["project-root"]) : process.cwd();
+    const spec = approvePositionals[0];
+    if (!spec) {
+      printText("Usage: better policy approve <package[@range]> [--reason TEXT] [--scope]");
+      process.exitCode = 1;
+      return;
+    }
+    const approvedPath = path.join(projectRoot2, ".better-approved.json");
+    let approved = { version: 1, mode: "allowlist", packages: {}, scopes: {}, settings: { allow_transitive_unapproved: true, require_reason: false } };
+    try { approved = JSON.parse(await fs.readFile(approvedPath, "utf8")); } catch { /* new file */ }
+
+    const author = process.env.USER || process.env.USERNAME || "unknown";
+    const today = new Date().toISOString().split("T")[0];
+
+    if (approveValues.scope || spec.startsWith("@") && !spec.includes("/")) {
+      approved.scopes ??= {};
+      approved.scopes[spec] = { auto_approve: true, reason: approveValues.reason || "Auto-approved scope" };
+    } else {
+      const atIdx = spec.lastIndexOf("@");
+      const name = atIdx > 0 ? spec.slice(0, atIdx) : spec;
+      const range = atIdx > 0 ? spec.slice(atIdx + 1) : "*";
+      approved.packages ??= {};
+      if (!approved.packages[name]) {
+        approved.packages[name] = { approved_versions: [], approved_by: author, approved_at: today, reason: approveValues.reason || "" };
+      }
+      if (!approved.packages[name].approved_versions.includes(range)) {
+        approved.packages[name].approved_versions.push(range);
+      }
+      if (approveValues.reason) approved.packages[name].reason = approveValues.reason;
+      if (approveValues["review-url"]) approved.packages[name].review_url = approveValues["review-url"];
+    }
+
+    await fs.writeFile(approvedPath, JSON.stringify(approved, null, 2) + "\n");
+    const out = { ok: true, kind: "better.policy.approve", schemaVersion: 1, spec, approvedPath };
+    if (approveValues.json) printJson(out);
+    else printText(`better policy approve: approved ${spec}`);
+    return;
+  }
+
+  if (sub === "revoke") {
+    const { values: revokeValues, positionals: revokePositionals } = parseArgs({
+      args: rest,
+      options: {
+        json: { type: "boolean", default: runtime.json === true },
+        "project-root": { type: "string" }
+      },
+      allowPositionals: true,
+      strict: false
+    });
+    const projectRoot3 = revokeValues["project-root"] ? path.resolve(revokeValues["project-root"]) : process.cwd();
+    const name = revokePositionals[0];
+    if (!name) {
+      printText("Usage: better policy revoke <package>");
+      process.exitCode = 1;
+      return;
+    }
+    const approvedPath2 = path.join(projectRoot3, ".better-approved.json");
+    let approved2 = { version: 1, mode: "allowlist", packages: {}, scopes: {} };
+    try { approved2 = JSON.parse(await fs.readFile(approvedPath2, "utf8")); } catch { /* no file */ }
+
+    const wasPackage = name in (approved2.packages ?? {});
+    const wasScope = name in (approved2.scopes ?? {});
+    delete (approved2.packages ?? {})[name];
+    delete (approved2.scopes ?? {})[name];
+
+    if (wasPackage || wasScope) {
+      await fs.writeFile(approvedPath2, JSON.stringify(approved2, null, 2) + "\n");
+    }
+
+    const out2 = { ok: true, kind: "better.policy.revoke", schemaVersion: 1, name, wasApproved: wasPackage || wasScope };
+    if (revokeValues.json) printJson(out2);
+    else printText(`better policy revoke: ${wasPackage || wasScope ? `revoked ${name}` : `${name} was not approved`}`);
+    return;
+  }
+
+  if (sub === "pending") {
+    const { values: pendingValues } = parseArgs({
+      args: rest,
+      options: {
+        json: { type: "boolean", default: runtime.json === true },
+        "project-root": { type: "string" }
+      },
+      allowPositionals: true,
+      strict: false
+    });
+    const projectRoot4 = pendingValues["project-root"] ? path.resolve(pendingValues["project-root"]) : process.cwd();
+    const approvedPath3 = path.join(projectRoot4, ".better-approved.json");
+    let approved3 = { version: 1, mode: "allowlist", packages: {}, scopes: {} };
+    try { approved3 = JSON.parse(await fs.readFile(approvedPath3, "utf8")); } catch { /* no file */ }
+
+    // Read lockfile to get installed packages
+    const lockfilePath = path.join(projectRoot4, "package-lock.json");
+    let lockPackages = [];
+    try {
+      const lock = JSON.parse(await fs.readFile(lockfilePath, "utf8"));
+      lockPackages = Object.entries(lock.packages ?? {})
+        .filter(([k]) => k && k !== "")
+        .map(([k, v]) => ({ name: k.replace(/^node_modules\//, ""), version: v.version ?? "0.0.0" }));
+    } catch { /* no lockfile */ }
+
+    function isApproved(name, _version) {
+      if (approved3.mode === "allowlist") {
+        // Check scope auto-approve
+        const scope = name.startsWith("@") ? name.split("/").slice(0, 2).join("/") : null;
+        if (scope && approved3.scopes?.[scope]?.auto_approve) return true;
+        if (approved3.packages?.[name]) return true;
+        return false;
+      }
+      // denylist mode: everything allowed unless explicitly denied
+      return !(name in (approved3.packages ?? {}));
+    }
+
+    const unapproved = lockPackages.filter(p => !isApproved(p.name, p.version));
+    const out3 = {
+      ok: true,
+      kind: "better.policy.pending",
+      schemaVersion: 1,
+      mode: approved3.mode ?? "allowlist",
+      total: lockPackages.length,
+      unapproved: unapproved.length,
+      packages: unapproved.slice(0, 100)
+    };
+
+    if (pendingValues.json) printJson(out3);
+    else {
+      if (unapproved.length === 0) {
+        printText(`better policy pending: all ${lockPackages.length} packages approved`);
+      } else {
+        const lines = [
+          `better policy pending: ${unapproved.length} unapproved package(s) of ${lockPackages.length} total`,
+          ...unapproved.slice(0, 20).map(p => `  - ${p.name}@${p.version}`),
+          ...(unapproved.length > 20 ? [`  ... and ${unapproved.length - 20} more`] : [])
+        ];
+        printText(lines.join("\n"));
+      }
+    }
+    return;
+  }
+
+  throw new Error(`Unknown policy subcommand '${sub}'. Expected check|init|approve|revoke|pending.`);
 }
