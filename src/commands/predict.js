@@ -1,10 +1,110 @@
 import { parseArgs } from "node:util";
 import path from "node:path";
 import fs from "node:fs/promises";
+import https from "node:https";
 import { printJson, printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
 import { runPredictMaintenanceNapi } from "../lib/core.js";
+
+const KNOWN_DEPRECATED = new Set(["request", "node-uuid", "tslint", "bower", "grunt-cli", "jade", "stylus", "inferno-compat"]);
+
+function fetchJson(url) {
+  return new Promise((resolve) => {
+    const req = https.get(url, { headers: { "User-Agent": "better-npm/1.0" } }, (res) => {
+      if (res.statusCode !== 200) { resolve(null); return; }
+      const chunks = [];
+      res.on("data", c => chunks.push(c));
+      res.on("end", () => {
+        try { resolve(JSON.parse(Buffer.concat(chunks).toString())); } catch { resolve(null); }
+      });
+    });
+    req.on("error", () => resolve(null));
+    req.setTimeout(8000, () => { req.destroy(); resolve(null); });
+  });
+}
+
+async function predictFromRegistry(packageName, version) {
+  try {
+    const meta = await fetchJson(`https://registry.npmjs.org/${encodeURIComponent(packageName)}`);
+    if (!meta || meta.error) return null;
+
+    const latest = meta["dist-tags"]?.latest ?? version;
+    const latestMeta = meta.versions?.[latest] ?? {};
+    const isDeprecated = !!latestMeta.deprecated || KNOWN_DEPRECATED.has(packageName);
+    const lastPublishedStr = meta.time?.[latest] ?? meta.time?.modified ?? null;
+    const daysSince = lastPublishedStr
+      ? (Date.now() - new Date(lastPublishedStr).getTime()) / (1000 * 60 * 60 * 24)
+      : null;
+    const versionCount = Object.keys(meta.versions ?? {}).length;
+    const maintainerCount = (meta.maintainers ?? []).length;
+
+    const signals = [];
+    let riskScore = 0;
+    let currentStatus = "active";
+    let predicted = "active";
+
+    if (isDeprecated) {
+      riskScore = 0.95;
+      currentStatus = "deprecated";
+      predicted = "deprecated";
+      signals.push({ signal: "Package is deprecated", trend: "declining" });
+    } else if (daysSince !== null) {
+      if (daysSince > 730) {
+        riskScore = 0.75;
+        currentStatus = "slowing_down";
+        predicted = "unmaintained";
+        signals.push({ signal: `No publish in ${Math.floor(daysSince)} days`, trend: "declining" });
+      } else if (daysSince > 365) {
+        riskScore = 0.5;
+        currentStatus = "slowing_down";
+        predicted = "at_risk";
+        signals.push({ signal: `No publish in ${Math.floor(daysSince)} days`, trend: "slowing" });
+      } else if (daysSince > 180) {
+        riskScore = 0.3;
+        currentStatus = "active";
+        predicted = "slowing_down";
+        signals.push({ signal: `Last publish ${Math.floor(daysSince)} days ago`, trend: "neutral" });
+      } else {
+        riskScore = 0.05;
+        signals.push({ signal: "Recently published", trend: "stable" });
+      }
+    }
+
+    if (maintainerCount === 1 && riskScore < 0.5) {
+      riskScore = Math.min(0.9, riskScore + 0.1);
+      signals.push({ signal: "Single maintainer (bus factor 1)", trend: "concern" });
+    }
+    if (versionCount < 3) {
+      riskScore = Math.min(0.9, riskScore + 0.1);
+      signals.push({ signal: "Few published versions", trend: "concern" });
+    }
+
+    let recommended_action = { type: "no_action" };
+    if (riskScore > 0.7) {
+      recommended_action = { type: "migrate_now", to: "alternative", reason: "High maintenance risk", effort: "medium" };
+    } else if (riskScore > 0.4) {
+      recommended_action = { type: "plan_migration", to: "alternative", effort: "low", reason: "Declining maintenance trend" };
+    } else if (riskScore > 0.2) {
+      recommended_action = { type: "monitor", reason: "Watch for further decline" };
+    }
+
+    return {
+      package: packageName,
+      version: latest,
+      current_status: currentStatus,
+      predicted_status_6mo: predicted,
+      confidence: 0.65,
+      risk_score: riskScore,
+      signals,
+      recommended_action,
+      alternatives: [],
+      source: "npm_registry"
+    };
+  } catch {
+    return null;
+  }
+}
 
 export async function cmdPredict(argv) {
   if (argv.includes("--help") || argv.includes("-h")) {
@@ -69,7 +169,7 @@ Options:
 
     if (!values.json) printText(`Predicting maintenance for ${depNames.length} packages...`);
 
-    const predictions = depNames.map(name => runOnePrediction(name, ecosystem, "latest"));
+    const predictions = await Promise.all(depNames.map(name => runOnePrediction(name, ecosystem, "latest")));
     const atRisk = predictions.filter(p => p.risk_score > 0.3).sort((a, b) => b.risk_score - a.risk_score);
 
     const out = {
@@ -99,7 +199,7 @@ Options:
     return;
   }
 
-  const prediction = runOnePrediction(packageName, ecosystem, values.version ?? "latest");
+  const prediction = await runOnePrediction(packageName, ecosystem, values.version ?? "latest");
 
   if (values.json) {
     printJson({ ok: true, kind: "better.predict", schemaVersion: 1, ...prediction });
@@ -109,27 +209,34 @@ Options:
   printText(formatOnePrediction(prediction));
 }
 
-function runOnePrediction(packageName, ecosystem, version) {
+async function runOnePrediction(packageName, ecosystem, version) {
   const result = runPredictMaintenanceNapi(packageName, ecosystem, version);
-  if (result === null || !result.ok) {
+  if (result !== null && result.ok) {
+    const d = result.data ?? result;
     return {
-      package: packageName, version, ecosystem,
-      current_status: "unknown", predicted_status_6mo: "unknown",
-      confidence: 0, risk_score: 0, signals: [], recommended_action: { type: "no_action" },
-      alternatives: [], error: result?.error ?? "napi_unavailable"
+      package: d.package ?? packageName,
+      version: d.version ?? version,
+      current_status: d.current_status,
+      predicted_status_6mo: d.predicted_status_6mo,
+      confidence: d.confidence,
+      risk_score: d.risk_score,
+      signals: d.signals ?? [],
+      recommended_action: d.recommended_action ?? { type: "no_action" },
+      alternatives: d.alternatives ?? []
     };
   }
-  const d = result.data ?? result;
+
+  // JS fallback: try npm registry for npm packages
+  if (ecosystem === "npm") {
+    const regResult = await predictFromRegistry(packageName, version);
+    if (regResult) return regResult;
+  }
+
   return {
-    package: d.package ?? packageName,
-    version: d.version ?? version,
-    current_status: d.current_status,
-    predicted_status_6mo: d.predicted_status_6mo,
-    confidence: d.confidence,
-    risk_score: d.risk_score,
-    signals: d.signals ?? [],
-    recommended_action: d.recommended_action ?? { type: "no_action" },
-    alternatives: d.alternatives ?? []
+    package: packageName, version, ecosystem,
+    current_status: "unknown", predicted_status_6mo: "unknown",
+    confidence: 0, risk_score: 0, signals: [], recommended_action: { type: "no_action" },
+    alternatives: [], error: "signals_unavailable"
   };
 }
 
