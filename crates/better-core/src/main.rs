@@ -3076,10 +3076,11 @@ fn main() {
                     }
                     w.end_array();
                     w.key("dependedOnBy"); w.begin_array();
-                    for (name, ver) in &report.depended_on_by {
+                    for (name, ver, range) in &report.depended_on_by {
                         w.begin_object();
                         w.key("name"); w.value_string(name);
                         w.key("version"); w.value_string(ver);
+                        w.key("range"); w.value_string(range);
                         w.end_object();
                     }
                     w.end_array();

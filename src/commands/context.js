@@ -146,11 +146,10 @@ Options:
     ? path.resolve(values["project-root"])
     : process.cwd();
 
-  // Try better-core binary first
+  // Try better-core binary first (only in human mode — binary's JSON support is limited)
   const corePath = await findBetterCore();
-  if (corePath) {
+  if (corePath && !values.json) {
     const args = ["context", ...positionals];
-    if (values.json) args.push("--json");
     if (values.all) args.push("--all");
     if (values["project-root"]) args.push("--project-root", values["project-root"]);
     const res = await runCommand(corePath, args, { cwd: projectRoot, passthroughStdio: true });

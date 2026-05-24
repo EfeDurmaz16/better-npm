@@ -55,7 +55,9 @@ test("search with --limit validates the number", async (t) => {
     if (result.ok && result.stdout.trim()) {
       const out = JSON.parse(result.stdout);
       assert.equal(out.kind, "better.search");
-      assert.ok(out.results.length <= 3, "should not return more than --limit results");
+      // Binary uses 'packages', JS-native uses 'results'
+      const items = out.results ?? out.packages ?? [];
+      assert.ok(items.length <= 3, "should not return more than --limit results");
     }
   } finally {
     await rmrf(dir);

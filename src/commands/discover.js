@@ -481,20 +481,26 @@ export async function cmdDiscover(argv) {
 
   const query = positionals[0];
 
-  // Try better-core binary for live registry queries
-  const corePath = await findBetterCore();
-  if (corePath) {
-    const coreArgs = ["discover"];
-    if (query) coreArgs.push(query);
-    if (values.category) coreArgs.push("--category", values.category);
-    if (values.free)     coreArgs.push("--free");
-    if (values.json)     coreArgs.push("--json");
-    const res = await runCommand(corePath, coreArgs, { passthroughStdio: !values.json });
-    process.exitCode = res.exitCode ?? 0;
-    if (values.json && res.stdout) {
-      try { printJson(JSON.parse(res.stdout.trim())); } catch { printText(res.stdout.trim()); }
+  // Determine if query looks like a domain (for live OSP lookup via binary)
+  // A domain-style query contains at least one dot and looks like an OSP URL
+  const isDomainQuery = query && /^[a-z0-9-]+\.[a-z]{2,}/.test(query.toLowerCase()) && !values.category;
+
+  // For domain-style queries, try the binary for live OSP registry lookup
+  if (isDomainQuery) {
+    const corePath = await findBetterCore();
+    if (corePath) {
+      const coreArgs = ["discover", query];
+      if (values.json) coreArgs.push("--json");
+      const res = await runCommand(corePath, coreArgs, { passthroughStdio: !values.json });
+      // If binary succeeds, use its output; otherwise fall through to curated database
+      if (res.exitCode === 0) {
+        process.exitCode = 0;
+        if (values.json && res.stdout) {
+          try { printJson(JSON.parse(res.stdout.trim())); } catch { printText(res.stdout.trim()); }
+        }
+        return;
+      }
     }
-    return;
   }
 
   // JS-native fallback: curated provider database

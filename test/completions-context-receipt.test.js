@@ -30,7 +30,11 @@ async function runBetter(args, cwd) {
 test("completions bash outputs a completion script", async () => {
   const { stdout, ok } = await runBetter(["completions", "bash"], process.cwd());
   assert.ok(ok, "completions bash should succeed");
-  assert.ok(stdout.includes("_better_completions"), "should define _better_completions function");
+  // Binary generates _better(), JS-native generates _better_completions()
+  assert.ok(
+    stdout.includes("_better_completions") || stdout.includes("_better(") || stdout.includes("_better "),
+    "should define a better completion function"
+  );
   assert.ok(stdout.includes("install"), "should include 'install' command");
   assert.ok(stdout.includes("audit"), "should include 'audit' command");
 });
