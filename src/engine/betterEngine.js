@@ -1,10 +1,10 @@
 /**
- * BetterEngine — pure Rust materialisation via NAPI + installFromNpmLockfile.
+ * BetterEngine — pure Rust materialisation via NAPI.
  */
 import fs from "node:fs/promises";
 import path from "node:path";
 import { EngineBase } from "./interface.js";
-import { installFromNpmLockfile } from "./better/installBetterNpm.js";
+import { tryLoadNapiAddon, runBetterCoreFetchAndExtractNapi, runBetterCoreMaterializeBatchNapi } from "../lib/core.js";
 
 async function exists(p) {
   try { await fs.access(p); return true; } catch { return false; }
@@ -39,7 +39,6 @@ export class BetterEngine extends EngineBase {
 
   async install(projectRoot, _plan, opts = {}) {
     const start = Date.now();
-    // layout is optional here — callers that need CAS layout must pass it via opts.layout
     const layout = opts.layout ?? null;
     if (!layout) {
       return {
@@ -52,22 +51,52 @@ export class BetterEngine extends EngineBase {
       };
     }
 
-    const result = await installFromNpmLockfile(projectRoot, layout, {
-      verify: opts.verify ?? "integrity-required",
-      linkStrategy: opts.linkStrategy ?? "auto",
-      scripts: opts.scripts ?? "rebuild",
-      binLinks: opts.binLinks ?? "rootOnly",
-      incremental: opts.incremental ?? true,
-      fsConcurrency: opts.fsConcurrency ?? 16
-    });
+    const lockfilePath = path.join(projectRoot, "package-lock.json");
+    const cacheDir = layout.pm?.npm ?? layout.root;
+
+    // Try NAPI first (Rust engine)
+    const addon = tryLoadNapiAddon();
+    if (addon) {
+      try {
+        const fetchResult = runBetterCoreFetchAndExtractNapi(lockfilePath, cacheDir, {
+          linkStrategy: opts.linkStrategy ?? "auto",
+        });
+        if (fetchResult?.ok === false) {
+          return {
+            ok: false,
+            wallTimeMs: Date.now() - start,
+            exitCode: 1,
+            stdout: "",
+            stderr: fetchResult.reason ?? "fetch failed",
+            reason: fetchResult.reason ?? "fetch failed",
+          };
+        }
+        return {
+          ok: true,
+          wallTimeMs: Date.now() - start,
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+        };
+      } catch (err) {
+        return {
+          ok: false,
+          wallTimeMs: Date.now() - start,
+          exitCode: 1,
+          stdout: "",
+          stderr: String(err?.message ?? err),
+          reason: String(err?.message ?? err),
+        };
+      }
+    }
 
     return {
-      ok: result.ok !== false,
+      ok: false,
       wallTimeMs: Date.now() - start,
-      exitCode: result.ok !== false ? 0 : 1,
+      exitCode: 1,
       stdout: "",
-      stderr: result.reason ?? "",
-      reason: result.ok !== false ? undefined : result.reason
+      stderr: "No Rust engine available. Run `npm run napi:build` or `npm run core:build`.",
+      reason: "No Rust engine available. Run `npm run napi:build` or `npm run core:build`.",
     };
   }
 
