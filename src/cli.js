@@ -1163,13 +1163,9 @@ export async function runCli(argv) {
       case "dep-why":
         await (await import("./commands/dep-why.js")).cmdDepWhy(rest);
         break;
-      case "completions": {
-        const shell = rest[0] || "bash";
-        const { spawnSync } = await import("node:child_process");
-        const result = spawnSync("better-core", ["completions", shell], { stdio: "inherit" });
-        process.exitCode = result.status;
+      case "completions":
+        await (await import("./commands/completions.js")).cmdCompletions(rest);
         break;
-      }
       case "context": {
         const { spawnSync } = await import("node:child_process");
         const result = spawnSync("better-core", ["context", ...rest], { stdio: "inherit" });

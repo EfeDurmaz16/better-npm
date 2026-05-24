@@ -551,7 +551,12 @@ Workspace options:
       // Lazy mode: resolve + fetch to CAS without materialising node_modules
       lazy: { type: "boolean", default: false },
       // Approval gate: abort if any resolved package is not in .better-approved.json
-      "approved-only": { type: "boolean", default: false }
+      "approved-only": { type: "boolean", default: false },
+      // Script sandboxing: run postinstall scripts in sandbox (requires better-core)
+      sandbox: { type: "boolean", default: false },
+      // Provenance verification
+      "verify-provenance": { type: "boolean", default: false },
+      "require-provenance": { type: "boolean", default: false }
     },
     allowPositionals: true,
     strict: false
@@ -617,7 +622,10 @@ Workspace options:
     "workspace-concurrency",
     "workspace-topo",
     "lazy",
-    "approved-only"
+    "approved-only",
+    "sandbox",
+    "verify-provenance",
+    "require-provenance"
   ]);
   const passIndex = positionals.indexOf("--");
   const passthroughPositionals = passIndex >= 0 ? positionals.slice(passIndex + 1) : positionals;
@@ -854,6 +862,25 @@ Workspace options:
       err.unapprovedPackages = unapproved;
       throw err;
     }
+  }
+
+  // Provenance: warn or abort if --require-provenance used without better-core
+  if (values["require-provenance"] || values["verify-provenance"]) {
+    const provenanceMode = values["require-provenance"] ? "require" : "verify";
+    progress(`provenance: mode=${provenanceMode} (requires better-core for Sigstore verification)`);
+    // Pass flag through to better-core when engine=better handles install
+    // For pm engine installs, we note provenance in the report but can't enforce without Rust
+    if (provenanceMode === "require" && engine !== "better") {
+      const err = new Error("--require-provenance requires --engine better (Sigstore verification is Rust-only)");
+      err.exitCode = 1;
+      throw err;
+    }
+  }
+
+  // Sandbox: warn if --sandbox used without better-core engine
+  if (values.sandbox && engine !== "better") {
+    progress("warning: --sandbox requires --engine better; sandbox will not be enforced with pm engine");
+    if (!values.json) printText("warning: --sandbox is only enforced with --engine better");
   }
 
   const runId = `${Date.now()}-${shortHash(`${projectRoot}:${pm}:${mode}`)}`;

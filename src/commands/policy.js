@@ -14,7 +14,10 @@ const DEFAULT_POLICY = {
     { id: "no-deprecated", severity: "error", description: "Fail on deprecated packages" },
     { id: "max-duplicates", severity: "warning", maxDuplicates: 3, description: "Warn on excessive duplicate versions" },
     { id: "max-depth", severity: "warning", maxDepth: 15, description: "Warn on deep dependency trees" },
-    { id: "no-banned", severity: "error", packages: [], description: "Fail on banned packages" }
+    { id: "no-banned", severity: "error", packages: [], description: "Fail on banned packages" },
+    { id: "max-install-size", severity: "warning", maxMiB: 500, description: "Warn when total node_modules exceeds size limit" },
+    { id: "min-maintainers", severity: "warning", minMaintainers: 1, description: "Warn on packages with no maintainers listed" },
+    { id: "min-publish-age", severity: "warning", minDays: 0, description: "Warn on packages published very recently (potential typosquatting)" }
   ],
   waivers: []
 };
@@ -125,6 +128,78 @@ function evaluateRules(analysis, packages, policy) {
         }
         if (!violations.some(v => v.rule === "no-banned")) {
           passed.push({ rule: rule.id, reason: "no_banned_packages" });
+        }
+        break;
+      }
+      case "max-install-size": {
+        const maxMiB = rule.maxMiB ?? 500;
+        const totalMiB = Number(analysis.nodeModules?.logicalMiB ?? analysis.nodeModulesMiB ?? 0);
+        if (totalMiB > 0 && totalMiB > maxMiB) {
+          violations.push({
+            rule: rule.id,
+            severity: rule.severity ?? "warning",
+            reason: `node_modules size ${totalMiB.toFixed(0)} MiB exceeds limit ${maxMiB} MiB`,
+            remediation: "Run `better prune` or audit large packages with `better size`.",
+            details: { actual: totalMiB, maxAllowed: maxMiB }
+          });
+        } else {
+          passed.push({ rule: rule.id, reason: "within_limits", details: { actual: totalMiB, maxAllowed: maxMiB } });
+        }
+        break;
+      }
+      case "min-maintainers": {
+        const minM = rule.minMaintainers ?? 1;
+        for (const pkg of packages) {
+          const maintainerCount = Array.isArray(pkg.maintainers) ? pkg.maintainers.length : (pkg.maintainerCount ?? null);
+          if (maintainerCount === null) continue;
+          if (maintainerCount < minM) {
+            if (isWaived("min-maintainers", pkg.name, policy.waivers)) {
+              passed.push({ rule: rule.id, package: `${pkg.name}@${pkg.version}`, reason: "waived" });
+              continue;
+            }
+            violations.push({
+              rule: rule.id,
+              severity: rule.severity ?? "warning",
+              package: `${pkg.name}@${pkg.version}`,
+              reason: `Package has ${maintainerCount} maintainer(s), minimum is ${minM}`,
+              remediation: `Consider alternatives to ${pkg.name} with more active maintainers.`,
+              details: { maintainerCount, minMaintainers: minM }
+            });
+          }
+        }
+        if (!violations.some(v => v.rule === "min-maintainers")) {
+          passed.push({ rule: rule.id, reason: "within_limits" });
+        }
+        break;
+      }
+      case "min-publish-age": {
+        const minDays = rule.minDays ?? 0;
+        if (minDays > 0) {
+          const nowMs = Date.now();
+          for (const pkg of packages) {
+            const publishedAt = pkg.publishedAt ?? pkg.time ?? null;
+            if (!publishedAt) continue;
+            const publishedMs = new Date(publishedAt).getTime();
+            if (!Number.isFinite(publishedMs)) continue;
+            const ageDays = (nowMs - publishedMs) / 86400000;
+            if (ageDays < minDays) {
+              if (isWaived("min-publish-age", pkg.name, policy.waivers)) {
+                passed.push({ rule: rule.id, package: `${pkg.name}@${pkg.version}`, reason: "waived" });
+                continue;
+              }
+              violations.push({
+                rule: rule.id,
+                severity: rule.severity ?? "warning",
+                package: `${pkg.name}@${pkg.version}`,
+                reason: `Package was published ${ageDays.toFixed(0)} day(s) ago, minimum is ${minDays} day(s)`,
+                remediation: `Verify ${pkg.name}@${pkg.version} is not a typosquat or malicious release.`,
+                details: { ageDays, minDays }
+              });
+            }
+          }
+        }
+        if (!violations.some(v => v.rule === "min-publish-age")) {
+          passed.push({ rule: rule.id, reason: "within_limits" });
         }
         break;
       }
