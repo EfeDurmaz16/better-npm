@@ -1170,10 +1170,17 @@ export async function runCli(argv) {
         await (await import("./commands/context.js")).cmdContext(rest);
         break;
       case "mcp": {
-        const { spawnSync } = await import("node:child_process");
-        const result = spawnSync("better-core", ["mcp", ...rest], { stdio: ["pipe", "pipe", "inherit"] });
-        if (result.stdout) process.stdout.write(result.stdout);
-        process.exitCode = result.status;
+        const { findBetterCore } = await import("./lib/core.js");
+        const { runCommand } = await import("./lib/spawn.js");
+        const corePath = await findBetterCore();
+        if (!corePath) {
+          const { printText } = await import("./lib/output.js");
+          printText("error: better-core binary not found — MCP server requires the Rust core.\nInstall via: curl -fsSL https://raw.githubusercontent.com/EfeDurmaz16/better-npm/main/scripts/install.sh | sh");
+          process.exitCode = 1;
+          break;
+        }
+        const mcpRes = await runCommand(corePath, ["mcp", ...rest], { passthroughStdio: true });
+        process.exitCode = mcpRes.exitCode ?? 0;
         break;
       }
       case "search":
