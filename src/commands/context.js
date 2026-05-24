@@ -196,7 +196,7 @@ Options:
 
   if (!packageName) {
     // Project-level context
-    const ctx = await buildProjectContext(projectRoot);
+    const { kind: _k1, ...ctx } = await buildProjectContext(projectRoot);
     const out = { ok: true, kind: "better.context.project", schemaVersion: 1, ...ctx };
     if (values.json) { printJson(out); return; }
     printText([
@@ -212,7 +212,7 @@ Options:
 
   // Single package context
   try {
-    const ctx = await buildPackageContext(packageName, projectRoot);
+    const { kind: _k2, ...ctx } = await buildPackageContext(packageName, projectRoot);
     const out = { ok: true, kind: "better.context.package", schemaVersion: 1, ...ctx };
     if (values.json) { printJson(out); return; }
     const lines = [

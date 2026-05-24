@@ -158,4 +158,101 @@ describe("better policy", () => {
       assert.notEqual(result.exitCode, 0);
     });
   });
+
+  describe("approve", () => {
+    let tmpDir;
+    before(async () => {
+      tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "better-policy-approve-"));
+      await fs.writeFile(path.join(tmpDir, "package.json"), JSON.stringify({ name: "test", version: "1.0.0" }));
+    });
+    after(async () => { await fs.rm(tmpDir, { recursive: true, force: true }); });
+
+    it("should approve a package and write .better-approved.json", async () => {
+      const result = await runBetter(["policy", "approve", "lodash@4.17.21", "--json", "--project-root", tmpDir]);
+      assert.equal(result.exitCode, 0);
+      const out = JSON.parse(result.stdout);
+      assert.equal(out.ok, true);
+      assert.equal(out.kind, "better.policy.approve");
+      const approvedPath = path.join(tmpDir, ".better-approved.json");
+      const approved = JSON.parse(await fs.readFile(approvedPath, "utf8"));
+      assert.ok(approved.packages["lodash"], "lodash should be in approved packages");
+      assert.ok(approved.packages["lodash"].approved_versions.includes("4.17.21"));
+    });
+
+    it("should be idempotent — approving twice does not duplicate entries", async () => {
+      await runBetter(["policy", "approve", "express@4.18.0", "--json", "--project-root", tmpDir]);
+      await runBetter(["policy", "approve", "express@4.18.0", "--json", "--project-root", tmpDir]);
+      const approved = JSON.parse(await fs.readFile(path.join(tmpDir, ".better-approved.json"), "utf8"));
+      const versions = approved.packages["express"].approved_versions;
+      assert.equal(versions.filter(v => v === "4.18.0").length, 1, "no duplicate versions");
+    });
+
+    it("should approve a scope with --scope flag", async () => {
+      const result = await runBetter(["policy", "approve", "@types", "--scope", "--json", "--project-root", tmpDir]);
+      assert.equal(result.exitCode, 0);
+      const approved = JSON.parse(await fs.readFile(path.join(tmpDir, ".better-approved.json"), "utf8"));
+      assert.ok(approved.scopes["@types"]);
+    });
+  });
+
+  describe("revoke", () => {
+    let tmpDir;
+    before(async () => {
+      tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "better-policy-revoke-"));
+      await fs.writeFile(path.join(tmpDir, "package.json"), JSON.stringify({ name: "test", version: "1.0.0" }));
+      await runBetter(["policy", "approve", "lodash@4", "--project-root", tmpDir]);
+    });
+    after(async () => { await fs.rm(tmpDir, { recursive: true, force: true }); });
+
+    it("should revoke an approved package", async () => {
+      const result = await runBetter(["policy", "revoke", "lodash", "--json", "--project-root", tmpDir]);
+      assert.equal(result.exitCode, 0);
+      const out = JSON.parse(result.stdout);
+      assert.equal(out.ok, true);
+      assert.equal(out.kind, "better.policy.revoke");
+      assert.equal(out.wasApproved, true);
+    });
+
+    it("should report false wasApproved for unknown package", async () => {
+      const result = await runBetter(["policy", "revoke", "nonexistent-pkg-xyz", "--json", "--project-root", tmpDir]);
+      assert.equal(result.exitCode, 0);
+      const out = JSON.parse(result.stdout);
+      assert.equal(out.wasApproved, false);
+    });
+  });
+
+  describe("pending", () => {
+    let tmpDir;
+    before(async () => {
+      tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "better-policy-pending-"));
+      await fs.writeFile(path.join(tmpDir, "package.json"), JSON.stringify({ name: "test", version: "1.0.0" }));
+      // Write a minimal package-lock.json
+      await fs.writeFile(path.join(tmpDir, "package-lock.json"), JSON.stringify({
+        name: "test", lockfileVersion: 3,
+        packages: {
+          "": { name: "test", version: "1.0.0" },
+          "node_modules/lodash": { name: "lodash", version: "4.17.21" },
+          "node_modules/express": { name: "express", version: "4.18.2" }
+        }
+      }));
+    });
+    after(async () => { await fs.rm(tmpDir, { recursive: true, force: true }); });
+
+    it("should list unapproved packages when no approval list exists", async () => {
+      const result = await runBetter(["policy", "pending", "--json", "--project-root", tmpDir]);
+      assert.equal(result.exitCode, 0);
+      const out = JSON.parse(result.stdout);
+      assert.equal(out.ok, true);
+      assert.equal(out.kind, "better.policy.pending");
+      assert.ok(typeof out.unapproved === "number");
+      assert.ok(out.unapproved >= 2, "both lodash and express should be unapproved");
+    });
+
+    it("should show fewer unapproved after approving a package", async () => {
+      await runBetter(["policy", "approve", "lodash", "--project-root", tmpDir]);
+      const result = await runBetter(["policy", "pending", "--json", "--project-root", tmpDir]);
+      const out = JSON.parse(result.stdout);
+      assert.ok(out.unapproved < out.total, "lodash approval should reduce pending count");
+    });
+  });
 });
