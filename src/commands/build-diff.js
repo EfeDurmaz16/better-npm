@@ -36,7 +36,7 @@ async function captureSnapshot(dir) {
     for (const e of entries) {
       const relPath = rel ? `${rel}/${e.name}` : e.name;
       const full = path.join(d, e.name);
-      if (e.isSymlink()) continue;
+      if (e.isSymbolicLink()) continue;
       if (e.isDirectory()) {
         await walk(full, relPath);
       } else if (e.isFile()) {
