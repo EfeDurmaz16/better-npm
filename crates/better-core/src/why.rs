@@ -294,17 +294,17 @@ mod tests {
     }
 
     #[test]
-    fn extract_dep_names_parses_single_dep() {
+    fn extract_dep_entries_parses_single_dep() {
         let entry = r#""version":"1.0.0","dependencies":{"debug":"^2.0.0"}"#;
-        let names = extract_dep_names(entry);
-        assert!(names.contains(&"debug".to_string()));
+        let entries = extract_dep_entries(entry);
+        assert!(entries.iter().any(|(k, _)| k == "debug"));
     }
 
     #[test]
-    fn extract_dep_names_no_deps_returns_empty() {
+    fn extract_dep_entries_no_deps_returns_empty() {
         let entry = r#""version":"1.0.0""#;
-        let names = extract_dep_names(entry);
-        assert!(names.is_empty());
+        let entries = extract_dep_entries(entry);
+        assert!(entries.is_empty());
     }
 
     #[test]
@@ -312,6 +312,6 @@ mod tests {
         let json = r#"{"packages":{"node_modules/express":{"name":"express","version":"4.18.2","dependencies":{"debug":"^2.0.0"}}}}"#;
         let graph = parse_lockfile_graph(json).unwrap();
         let (_, _, deps) = graph.get("node_modules/express").unwrap();
-        assert!(deps.contains(&"debug".to_string()));
+        assert!(deps.iter().any(|(k, _)| k == "debug"));
     }
 }
