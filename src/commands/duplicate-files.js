@@ -51,7 +51,7 @@ async function scanDir(dir, minSize, results, depth = 0) {
   try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { return; }
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
-    if (entry.isSymlink()) continue;
+    if (entry.isSymbolicLink()) continue;
     if (entry.isDirectory()) {
       if (entry.name === ".git" || entry.name === ".cache") continue;
       await scanDir(full, minSize, results, depth + 1);
