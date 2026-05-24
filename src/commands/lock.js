@@ -330,7 +330,7 @@ async function cmdLockSetupMergeDriver(argv) {
     ? path.resolve(values["project-root"])
     : process.cwd();
 
-  const corePath = findBetterCore();
+  const corePath = await findBetterCore();
   if (corePath) {
     const res = await runCommand(corePath, ["lock", "--project-root", projectRoot, "install-driver"], {
       cwd: projectRoot, passthroughStdio: false, captureLimitBytes: 64 * 1024
