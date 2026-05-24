@@ -1166,12 +1166,9 @@ export async function runCli(argv) {
       case "completions":
         await (await import("./commands/completions.js")).cmdCompletions(rest);
         break;
-      case "context": {
-        const { spawnSync } = await import("node:child_process");
-        const result = spawnSync("better-core", ["context", ...rest], { stdio: "inherit" });
-        process.exitCode = result.status;
+      case "context":
+        await (await import("./commands/context.js")).cmdContext(rest);
         break;
-      }
       case "mcp": {
         const { spawnSync } = await import("node:child_process");
         const result = spawnSync("better-core", ["mcp", ...rest], { stdio: ["pipe", "pipe", "inherit"] });
@@ -1179,12 +1176,9 @@ export async function runCli(argv) {
         process.exitCode = result.status;
         break;
       }
-      case "search": {
-        const { spawnSync } = await import("node:child_process");
-        const result = spawnSync("better-core", ["search", ...rest], { stdio: "inherit" });
-        process.exitCode = result.status;
+      case "search":
+        await (await import("./commands/search.js")).cmdSearch(rest);
         break;
-      }
       case "reputation":
         await (await import("./commands/reputation.js")).cmdReputation(rest);
         break;
