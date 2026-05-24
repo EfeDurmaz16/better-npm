@@ -49,7 +49,7 @@ async function scanSourceFiles(dir, exts, maxFiles = 50) {
     for (const e of entries) {
       if (count >= maxFiles) return;
       const full = path.join(d, e.name);
-      if (e.isSymlink()) continue;
+      if (e.isSymbolicLink()) continue;
       if (e.isDirectory()) {
         if (["node_modules", ".git", "dist", "build", "coverage"].includes(e.name)) continue;
         await walk(full);

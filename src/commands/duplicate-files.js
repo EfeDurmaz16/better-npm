@@ -115,7 +115,7 @@ which may indicate deduplication opportunities.
   try {
     const entries = await fs.readdir(nmPath, { withFileTypes: true });
     for (const e of entries) {
-      if (e.isDirectory() || e.isSymlink()) {
+      if (e.isDirectory() || e.isSymbolicLink()) {
         if (e.name.startsWith("@")) {
           // scoped packages
           const scopeDir = path.join(nmPath, e.name);

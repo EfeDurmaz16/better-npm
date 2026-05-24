@@ -22,7 +22,7 @@ async function getDirSize(dir) {
     const entries = await fs.readdir(dir, { withFileTypes: true });
     await Promise.all(entries.map(async (e) => {
       const full = path.join(dir, e.name);
-      if (e.isSymlink()) return;
+      if (e.isSymbolicLink()) return;
       if (e.isDirectory()) {
         total += await getDirSize(full);
       } else if (e.isFile()) {
@@ -105,14 +105,14 @@ Shows:
   try {
     const entries = await fs.readdir(nmPath, { withFileTypes: true });
     for (const e of entries) {
-      if (!e.isDirectory() && !e.isSymlink()) continue;
+      if (!e.isDirectory() && !e.isSymbolicLink()) continue;
       if (e.name.startsWith(".")) continue;
       if (e.name.startsWith("@")) {
         const scopeDir = path.join(nmPath, e.name);
         try {
           const scoped = await fs.readdir(scopeDir, { withFileTypes: true });
           for (const s of scoped) {
-            if (s.isDirectory() || s.isSymlink()) pkgDirs.push(path.join(scopeDir, s.name));
+            if (s.isDirectory() || s.isSymbolicLink()) pkgDirs.push(path.join(scopeDir, s.name));
           }
         } catch {}
       } else {

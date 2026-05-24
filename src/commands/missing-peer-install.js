@@ -57,7 +57,7 @@ installed, then generates the npm install commands to fix them.
   try {
     const entries = await fs.readdir(nmPath, { withFileTypes: true });
     for (const e of entries) {
-      if (!e.isDirectory() && !e.isSymlink()) continue;
+      if (!e.isDirectory() && !e.isSymbolicLink()) continue;
       if (e.name.startsWith(".")) continue;
       if (e.name.startsWith("@")) {
         const scopeDir = path.join(nmPath, e.name);

@@ -91,13 +91,13 @@ Examples:
   try {
     const entries = await fs.readdir(nmPath, { withFileTypes: true });
     for (const e of entries) {
-      if (!e.isDirectory() && !e.isSymlink()) continue;
+      if (!e.isDirectory() && !e.isSymbolicLink()) continue;
       if (e.name.startsWith("@")) {
         const scopeDir = path.join(nmPath, e.name);
         try {
           const scoped = await fs.readdir(scopeDir, { withFileTypes: true });
           for (const s of scoped) {
-            if (s.isDirectory() || s.isSymlink()) pkgDirs.push(path.join(scopeDir, s.name));
+            if (s.isDirectory() || s.isSymbolicLink()) pkgDirs.push(path.join(scopeDir, s.name));
           }
         } catch {}
       } else if (!e.name.startsWith(".")) {

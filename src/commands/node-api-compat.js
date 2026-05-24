@@ -51,7 +51,7 @@ async function findNativeAddons(dir, maxDepth = 2) {
     try { entries = await fs.readdir(d, { withFileTypes: true }); } catch { return; }
     for (const e of entries) {
       const full = path.join(d, e.name);
-      if (e.isSymlink()) continue;
+      if (e.isSymbolicLink()) continue;
       if (e.isDirectory()) {
         if (["test", "tests", ".bin"].includes(e.name)) continue;
         await walk(full, depth + 1);
@@ -113,7 +113,7 @@ Checks:
   try {
     const entries = await fs.readdir(nmPath, { withFileTypes: true });
     for (const e of entries) {
-      if (!e.isDirectory() && !e.isSymlink()) continue;
+      if (!e.isDirectory() && !e.isSymbolicLink()) continue;
       if (e.name.startsWith(".")) continue;
       if (e.name.startsWith("@")) {
         const scopeDir = path.join(nmPath, e.name);

@@ -100,7 +100,7 @@ for potentially dangerous patterns like network fetches, eval, etc.
     try {
       const entries = await fs.readdir(nmPath, { withFileTypes: true });
       for (const e of entries) {
-        if (!e.isDirectory() && !e.isSymlink()) continue;
+        if (!e.isDirectory() && !e.isSymbolicLink()) continue;
         if (e.name.startsWith(".")) continue;
         if (e.name.startsWith("@")) {
           const scopeDir = path.join(nmPath, e.name);

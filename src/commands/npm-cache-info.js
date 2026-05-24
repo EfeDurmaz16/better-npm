@@ -37,7 +37,7 @@ async function getDirInfo(dir) {
     try { entries = await fs.readdir(d, { withFileTypes: true }); } catch { return; }
     for (const e of entries) {
       const full = path.join(d, e.name);
-      if (e.isSymlink()) continue;
+      if (e.isSymbolicLink()) continue;
       if (e.isDirectory()) {
         dirCount++;
         await walk(full);

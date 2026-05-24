@@ -52,7 +52,7 @@ async function scanDir(dir, exts, visited = new Set()) {
 
   for (const e of entries) {
     const full = path.join(dir, e.name);
-    if (e.isSymlink()) continue;
+    if (e.isSymbolicLink()) continue;
     if (e.isDirectory()) {
       if (["node_modules", ".git", "dist", "build", "coverage", ".next", "test", "tests", "__tests__", "spec"].includes(e.name)) continue;
       if (visited.has(full)) continue;

@@ -84,18 +84,18 @@ Checks:
   const broken = [];
 
   for (const e of entries) {
-    if (!e.isDirectory() && !e.isSymlink()) continue;
+    if (!e.isDirectory() && !e.isSymbolicLink()) continue;
     if (e.name.startsWith(".")) continue;
     if (e.name.startsWith("@")) {
       const scopeDir = path.join(nmPath, e.name);
       try {
         const scoped = await fs.readdir(scopeDir, { withFileTypes: true });
         for (const s of scoped) {
-          if (s.isDirectory() || s.isSymlink()) pkgDirs.push({ name: `${e.name}/${s.name}`, dir: path.join(scopeDir, s.name), isSymlink: s.isSymlink() });
+          if (s.isDirectory() || s.isSymbolicLink()) pkgDirs.push({ name: `${e.name}/${s.name}`, dir: path.join(scopeDir, s.name), isSymlink: s.isSymbolicLink() });
         }
       } catch {}
     } else {
-      pkgDirs.push({ name: e.name, dir: path.join(nmPath, e.name), isSymlink: e.isSymlink() });
+      pkgDirs.push({ name: e.name, dir: path.join(nmPath, e.name), isSymlink: e.isSymbolicLink() });
     }
   }
 

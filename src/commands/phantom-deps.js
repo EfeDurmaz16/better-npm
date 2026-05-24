@@ -60,7 +60,7 @@ async function scanSourceFiles(dir, exts, visited = new Set()) {
 
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
-    if (entry.isSymlink()) continue;
+    if (entry.isSymbolicLink()) continue;
     if (entry.isDirectory()) {
       if (["node_modules", ".git", "dist", "build", "coverage", ".next", ".nuxt"].includes(entry.name)) continue;
       if (visited.has(full)) continue;
