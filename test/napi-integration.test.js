@@ -7,16 +7,29 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
-const napiNodePath = path.join(repoRoot, "crates", "better-napi", "better-core.darwin-arm64.node");
+
+// Find the NAPI addon for the current platform
+const napiDir = path.join(repoRoot, "crates", "better-napi");
+const platformCandidates = [
+  "better-core.darwin-arm64.node",
+  "better-core.darwin-x64.node",
+  "better-core.linux-x64-gnu.node",
+  "better-core.linux-arm64-gnu.node",
+  "better-core.win32-x64-msvc.node",
+];
 
 let addon = null;
 
-try {
-  await fs.access(napiNodePath);
-  const require = createRequire(import.meta.url);
-  addon = require(napiNodePath);
-} catch {
-  // addon stays null; tests will skip
+const require = createRequire(import.meta.url);
+for (const candidate of platformCandidates) {
+  try {
+    const p = path.join(napiDir, candidate);
+    await fs.access(p);
+    addon = require(p);
+    break;
+  } catch {
+    // try next
+  }
 }
 
 const shouldSkip = addon == null;

@@ -53,6 +53,21 @@ Options:
   const sub = positionals[0] ?? "list";
 
   if (sub === "list") {
+    // Prefer JS-native reading of .better-receipt.json (authoritative JSON format)
+    const receipt = await readReceiptFile(projectRoot);
+    if (receipt) {
+      const receipts = [receipt];
+      if (values.json) {
+        printJson({ ok: true, kind: "better.receipt.list", projectRoot, receipts });
+      } else {
+        printText(`Install receipts for ${projectRoot}:`);
+        for (const r of receipts) {
+          printText(`  - ${r.timestamp} — ${r.packagesInstalled} packages`);
+        }
+      }
+      return;
+    }
+    // Fall through to NAPI if no JSON file (binary format receipts)
     const napiResult = runListReceiptsNapi(projectRoot);
     if (napiResult?.ok) {
       if (values.json) {
@@ -70,20 +85,11 @@ Options:
       }
       return;
     }
-    // JS fallback: read .better-receipt.json
-    const receipt = await readReceiptFile(projectRoot);
-    if (receipt) {
-      const receipts = [receipt];
-      if (values.json) {
-        printJson({ ok: true, kind: "better.receipt.list", projectRoot, receipts });
-      } else {
-        printText(`Install receipts for ${projectRoot}:`);
-        printText(`  - ${receipt.timestamp} — ${receipt.packagesInstalled} installed / ${receipt.packagesTotal} total (${receipt.pm?.name ?? "?"}/${receipt.pm?.engine ?? "?"})`);
-      }
+    // No receipt found
+    if (values.json) {
+      printJson({ ok: true, kind: "better.receipt.list", projectRoot, receipts: [] });
     } else {
-      const out = { ok: false, kind: "better.receipt.list", reason: "no_receipt_found" };
-      if (values.json) printJson(out);
-      else printText("No install receipts found. Run 'better install' to create one.");
+      printText("No install receipts found. Run 'better install' to create one.");
     }
     return;
   }
