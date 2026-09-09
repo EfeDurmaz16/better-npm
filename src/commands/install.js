@@ -1,4 +1,5 @@
 import { parseArgs } from "node:util";
+import { prepareLazyInstall } from "../lib/lazyPrepare.js";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { getCacheRoot, cacheLayout, ensureCacheDirs, loadState, saveState } from "../lib/cache.js";
@@ -1009,23 +1010,8 @@ Workspace options:
       throw new Error("NAPI addon not found; --lazy requires the NAPI bridge");
     }
     const lockfilePath = path.join(projectRoot, "package-lock.json");
-    // 1. Resolve
-    const resolved = await (async () => {
-      try {
-        const r = addon.resolve(lockfilePath);
-        return Array.isArray(r?.packages) ? r.packages : [];
-      } catch {
-        return [];
-      }
-    })();
-    // 2. Fetch to CAS (without extracting to node_modules)
-    let fetchedCount = 0;
-    try {
-      const fetchResult = addon.fetchAndExtract(lockfilePath, cacheRoot);
-      fetchedCount = fetchResult?.packagesFetched ?? 0;
-    } catch {
-      // non-fatal: manifest still written; packages may be absent from CAS
-    }
+    // Resolve and fetch must both succeed before publishing a manifest.
+    const { packages: resolved, fetchedCount } = await prepareLazyInstall(addon, lockfilePath, cacheRoot);
     // 3. Write .better-lazy.json manifest
     const manifestPath = path.join(projectRoot, ".better-lazy.json");
     const isoNow = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
