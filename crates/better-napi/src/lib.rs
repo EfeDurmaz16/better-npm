@@ -466,8 +466,11 @@ pub fn fetch_and_extract(
         }
     };
 
-    // Fetch packages
-    match fetch_packages_with_options(&packages, cache, None, &options) {
+    // Match native install configuration: resolve project .npmrc relative to
+    // the lockfile, not the caller's cwd. Transport enforces token scope/TLS.
+    let project_root = lockfile.parent().unwrap_or_else(|| Path::new("."));
+    let npmrc = better_core::parse_npmrc(project_root);
+    match fetch_packages_with_options(&packages, cache, Some(&npmrc), &options) {
         Ok(fetch_result) => NapiFetchResult {
             metrics: Some(NapiFetchMetrics {
                 network_jobs: fetch_result.metrics.network_jobs as f64,
