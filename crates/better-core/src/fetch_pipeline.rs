@@ -108,7 +108,9 @@ fn preflight(source: &Path, limits: ArtifactLimits) -> Result<(), String> {
                 return Err("PAX size differing from file header is unsupported by bounded extraction".into());
             }
         }
-        if kind.is_pax_local_extensions() || kind.is_pax_global_extensions() {
+        // tar-rs ignores global PAX metadata when unpacking. Apply only local
+        // metadata here as well, preserving the library's framing semantics.
+        if kind.is_pax_local_extensions() {
             if let Some(extensions) = entry.pax_extensions().map_err(|e| e.to_string())? {
                 for extension in extensions {
                     let extension = extension.map_err(|e| e.to_string())?;
@@ -117,6 +119,9 @@ fn preflight(source: &Path, limits: ArtifactLimits) -> Result<(), String> {
                         return Err("PAX sparse entries are unsupported by bounded extraction".into());
                     }
                     if key == b"size" {
+                        if pax_size.is_some() {
+                            return Err("Duplicate PAX size records are unsupported by bounded extraction".into());
+                        }
                         let size: u64 = extension.value().map_err(|e| e.to_string())?
                             .parse().map_err(|_| "Invalid PAX size".to_string())?;
                         if size > limits.expanded_bytes {
@@ -232,6 +237,39 @@ mod tests {
         let out = root.path().join("out");
         assert!(extract_verified_tarball(&source, &out, ArtifactLimits::default()).unwrap_err().contains("PAX size"));
         assert!(!out.exists());
+    }
+
+    #[test]
+    fn duplicate_pax_size_is_rejected_consistently() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("duplicate.tgz");
+        let gz = GzEncoder::new(File::create(&source).unwrap(), Compression::default());
+        let mut builder = tar::Builder::new(gz);
+        builder.append_pax_extensions([("size", &b"3"[..]), ("size", &b"3"[..])]).unwrap();
+        let mut h = tar::Header::new_gnu(); h.set_size(3); h.set_mode(0o644); h.set_cksum();
+        builder.append_data(&mut h, "package/index.js", &b"yes"[..]).unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
+        let out = root.path().join("out");
+        assert!(extract_verified_tarball(&source, &out, ArtifactLimits::default()).unwrap_err().contains("Duplicate PAX size"));
+        assert!(!out.exists());
+    }
+
+    #[test]
+    fn global_pax_matches_library_ignored_semantics() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("global.tgz");
+        let gz = GzEncoder::new(File::create(&source).unwrap(), Compression::default());
+        let mut builder = tar::Builder::new(gz);
+        let global = b"10 size=9\n";
+        let mut h = tar::Header::new_ustar(); h.set_entry_type(tar::EntryType::XGlobalHeader);
+        h.set_size(global.len() as u64); h.set_mode(0o644); h.set_cksum();
+        builder.append_data(&mut h, "pax_global_header", &global[..]).unwrap();
+        let mut h = tar::Header::new_gnu(); h.set_size(3); h.set_mode(0o644); h.set_cksum();
+        builder.append_data(&mut h, "package/index.js", &b"yes"[..]).unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
+        let out = root.path().join("out");
+        extract_verified_tarball(&source, &out, ArtifactLimits::default()).unwrap();
+        assert_eq!(std::fs::read(out.join("package/index.js")).unwrap(), b"yes");
     }
 
     #[test]
