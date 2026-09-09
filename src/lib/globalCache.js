@@ -104,6 +104,7 @@ export function buildRuntimeFingerprint(opts = {}) {
     engine: opts.engine ?? "pm",
     scriptsMode: opts.scriptsMode ?? "rebuild",
     nodeLayout: opts.engine === "better" ? (opts.nodeLayout ?? "hoist") : null,
+    linkStrategy: opts.engine === "better" ? (opts.linkStrategy ?? "auto") : null,
     frozen: opts.frozen === true,
     production: opts.production === true,
     cacheKeySalt: opts.cacheKeySalt ?? null
@@ -116,6 +117,7 @@ export function buildRuntimeFingerprint(opts = {}) {
     engine: opts.engine ?? "pm",
     scriptsMode: opts.scriptsMode ?? "rebuild",
     nodeLayout: opts.engine === "better" ? (opts.nodeLayout ?? "hoist") : null,
+    linkStrategy: opts.engine === "better" ? (opts.linkStrategy ?? "auto") : null,
     cacheKeySalt: opts.cacheKeySalt ?? null
   };
   return {
@@ -133,6 +135,7 @@ export async function deriveGlobalCacheContext(projectRoot, opts = {}) {
     frozen = false,
     production = false,
     nodeLayout = "hoist",
+    linkStrategy = "auto",
     cacheKeySalt = null
   } = opts;
 
@@ -161,6 +164,7 @@ export async function deriveGlobalCacheContext(projectRoot, opts = {}) {
     frozen,
     production,
     nodeLayout,
+    linkStrategy,
     cacheKeySalt
   });
   const fingerprintPayload = cacheMode === "relaxed" ? fingerprint.relaxed : fingerprint.strict;

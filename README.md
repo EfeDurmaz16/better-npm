@@ -74,7 +74,9 @@ Files share the same inode — editing one won't affect others (copy-on-write at
 ### Experimental native install option support
 
 Native installs reuse an unchanged local `node_modules` tree when the lockfile and
-installation options match. `--global-cache` snapshot capture and restore are disabled
+installation options match, including layout and link strategy. Reuse checks recorded
+package manifest identities and package links; it does not hash every installed file.
+`--global-cache` snapshot capture and restore are disabled
 for `--engine better` (`native_tree_snapshot_unsupported`): the current snapshot copier
 omits nested `node_modules`, including strict layout contents. If `node_modules` is
 removed, the native installer rebuilds it from the package cache. Frozen checks still

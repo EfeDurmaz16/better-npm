@@ -26,6 +26,7 @@ for (const cacheMode of ["strict", "relaxed"]) {
       assert.notEqual(normal, await key({ nodeLayout: "strict" }));
       assert.notEqual(normal, await key({ production: true }));
       assert.notEqual(normal, await key({ scriptsMode: "off" }));
+      assert.notEqual(normal, await key({ linkStrategy: "copy" }));
     } finally {
       await rmrf(dir);
     }
@@ -82,11 +83,23 @@ for (const cacheMode of ["strict", "relaxed"]) {
         assert.equal(first.betterEngine.ok, true);
         assert.equal((await fs.lstat(modulePath)).isSymbolicLink(), false);
         assert.equal((await exec(process.execPath, ["-e", "console.log(require('foo'), require('bar'))"], { cwd: dir })).stdout.trim(), "42 1");
-        await fs.rm(path.join(dir, "node_modules"), { recursive: true, force: true });
-        const hoistRestored = await run([]);
-        assert.equal(hoistRestored.cacheDecision.hit, false);
-        assert.equal(hoistRestored.betterEngine.ok, true);
+        for (let attempt = 0; attempt < (nested ? 5 : 1); attempt++) {
+          await fs.rm(path.join(dir, "node_modules"), { recursive: true, force: true });
+          const hoistRestored = await run([]);
+          assert.equal(hoistRestored.cacheDecision.hit, false);
+          assert.equal(hoistRestored.betterEngine.ok, true);
+          assert.equal((await exec(process.execPath, ["-e", "console.log(require('foo'), require('bar'))"], { cwd: dir })).stdout.trim(), "42 1");
+        }
+        // Removing one package must invalidate the surviving reuse marker.
+        await fs.rm(path.join(dir, "node_modules/bar"), { recursive: true, force: true });
+        const repaired = await run([]);
+        assert.equal(repaired.reuseDecision.hit, false);
+        assert.equal(repaired.reuseDecision.reason, "package_inventory_mismatch");
         assert.equal((await exec(process.execPath, ["-e", "console.log(require('foo'), require('bar'))"], { cwd: dir })).stdout.trim(), "42 1");
+        const copied = await run(["--link-strategy", "copy"]);
+        assert.equal(copied.reuseDecision.hit, false);
+        const hardlinked = await run(["--link-strategy", "hardlink"]);
+        assert.equal(hardlinked.reuseDecision.hit, false);
         if (nested) return;
         const strict = await run(["--strict"]);
         assert.equal(strict.reuseDecision.hit, false);

@@ -965,6 +965,7 @@ Workspace options:
       frozen,
       production,
       nodeLayout,
+      linkStrategy: values["link-strategy"] ?? "auto",
       cacheKeySalt
     });
     if (engine === "better") {
@@ -1745,7 +1746,7 @@ Workspace options:
   if (engine === "better" && reuseContext?.key) {
     try {
       const markerPayload = {
-        version: 1,
+        version: 2,
         engine: "better",
         globalKey: reuseContext.key,
         lockHash: reuseContext.lockHash ?? null,
