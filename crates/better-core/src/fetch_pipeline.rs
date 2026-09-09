@@ -37,7 +37,7 @@ pub fn stream_to_staging<R: Read, W: Write>(
     loop {
         let count = match source.read(&mut buffer) {
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            value => value.map_err(|e| format!("Failed to read tarball: {e}"))?,
+            value => value.map_err(|_| "Failed to read tarball response body".to_string())?,
         };
         if count == 0 { break; }
         total = total.checked_add(count as u64)
