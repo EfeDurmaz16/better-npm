@@ -76,6 +76,7 @@ pub mod platform_selection;
 pub use platform_selection::*;
 
 pub mod fetch;
+mod transport;
 pub use fetch::*;
 
 pub mod analyze;
