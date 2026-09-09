@@ -30,13 +30,16 @@ export async function detectPackageManager(projectRoot) {
   }
 
   const hasPnpm = await exists(path.join(projectRoot, "pnpm-lock.yaml"));
+  if (hasPnpm) return { pm: "pnpm", reason: "pnpm-lock.yaml" };
+
   const hasYarn = await exists(path.join(projectRoot, "yarn.lock"));
-  const hasYarnBerryConfig = await exists(path.join(projectRoot, ".yarnrc.yml"));
+  if (hasYarn) {
+    const hasYarnBerryConfig = await exists(path.join(projectRoot, ".yarnrc.yml"));
+    return { pm: "yarn", reason: hasYarnBerryConfig ? "yarn.lock + .yarnrc.yml" : "yarn.lock" };
+  }
   const hasNpm = (await exists(path.join(projectRoot, "package-lock.json"))) ||
     (await exists(path.join(projectRoot, "npm-shrinkwrap.json")));
 
-  if (hasPnpm) return { pm: "pnpm", reason: "pnpm-lock.yaml" };
-  if (hasYarn) return { pm: "yarn", reason: hasYarnBerryConfig ? "yarn.lock + .yarnrc.yml" : "yarn.lock" };
   if (hasNpm) return { pm: "npm", reason: "package-lock/shrinkwrap" };
 
   return { pm: "npm", reason: "default" };
