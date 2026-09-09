@@ -26,7 +26,7 @@ fn package_manifest_dir(store_root: &Path, algorithm: &str, pkg_hex: &str) -> Pa
     let a = &pkg_hex[0..2];
     let b = &pkg_hex[2..4];
     store_root
-        .join("packages")
+        .join("packages-sri-v2")
         .join(algorithm)
         .join(a)
         .join(b)
@@ -597,6 +597,23 @@ mod tests {
     }
 
     #[test]
+    fn legacy_package_manifest_is_not_reused_after_integrity_migration() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = tmp.path().join("store");
+        let pkg = tmp.path().join("pkg");
+        let hex = "ab".repeat(64);
+        let legacy = store.join("packages/sha512/ab/ab").join(&hex);
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join("manifest.json"), r#"{"files":[{"type":"file","path":"stale.js"}]}"#).unwrap();
+        setup_pkg_dir(&pkg, &[("index.js", b"verified content")]);
+        let result = ingest_to_file_cas(&store, "sha512", &hex, &pkg).unwrap();
+        assert!(!result.reused);
+        let current = fs::read_to_string(package_manifest_path(&store, "sha512", &hex)).unwrap();
+        assert!(current.contains("index.js"));
+        assert!(!current.contains("stale.js"));
+    }
+
+    #[test]
     fn ingest_single_file_package() {
         let tmp = std::env::temp_dir().join("cas-test-ingest");
         let store = tmp.join("store");
@@ -703,7 +720,7 @@ mod tests {
         let root = std::path::Path::new("/store");
         let hex = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
         let dir = package_manifest_dir(root, "sha256", hex);
-        assert!(dir.to_string_lossy().contains("/packages/sha256/de/ad/"));
+        assert!(dir.to_string_lossy().contains("/packages-sri-v2/sha256/de/ad/"));
     }
 
     #[test]
