@@ -12,7 +12,11 @@ pub const MARKER_VERSION: &str = crate::integrity::VERIFIED_MARKER;
 pub struct ArtifactCache {
     pub tarball: PathBuf,
     pub unpacked: PathBuf,
+    lock_path: PathBuf,
 }
+
+/// Owning guard may cross worker threads while retaining producer ownership.
+pub struct ContentLock { _file: File }
 
 pub struct Staging {
     path: PathBuf,
@@ -39,7 +43,17 @@ fn staging(parent: &Path) -> Result<Staging, String> {
 impl ArtifactCache {
     pub fn new(cache_dir: &Path, algo: &str, hex: &str) -> Self {
         let layout = CasLayout::new(cache_dir);
-        Self { tarball: tarball_path(&layout, algo, hex), unpacked: unpacked_path(&layout, algo, hex) }
+        Self { tarball: tarball_path(&layout, algo, hex), unpacked: unpacked_path(&layout, algo, hex), lock_path: cache_dir.join("store").join("artifact-locks").join(algo).join(format!("{hex}.lock")) }
+    }
+
+    /// Stable lock files are never unlinked: unlinking permits two lock domains.
+    /// The OS releases the exclusive lock when this handle closes or its process dies.
+    pub fn lock(&self) -> Result<ContentLock, String> {
+        fs::create_dir_all(self.lock_path.parent().ok_or("Invalid lock path")?).map_err(|e| e.to_string())?;
+        let file = File::options().read(true).write(true).create(true).truncate(false)
+            .open(&self.lock_path).map_err(|e| format!("Cannot open artifact lock: {e}"))?;
+        file.lock().map_err(|e| format!("Cannot lock artifact: {e}"))?;
+        Ok(ContentLock { _file: file })
     }
 
     pub fn ready(&self) -> bool {
@@ -101,6 +115,20 @@ impl ArtifactCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn content_locks_are_per_key_and_release_on_drop() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = ArtifactCache::new(temp.path(), "sha512", "abcdef");
+        let second = ArtifactCache::new(temp.path(), "sha512", "123456");
+        let guard = first.lock().unwrap();
+        let other_handle = File::options().read(true).write(true).open(&first.lock_path).unwrap();
+        assert!(other_handle.try_lock().is_err());
+        let independent = second.lock().unwrap();
+        drop(independent);
+        drop(guard);
+        other_handle.try_lock().unwrap();
+        assert!(first.lock_path.is_file());
+    }
     #[test]
     fn failed_extraction_never_publishes_partial_content() {
         let temp = tempfile::tempdir().unwrap();

@@ -18,3 +18,16 @@ write its root. Integrity establishes content identity, not package safety.
 
 Concurrent legacy repair requires the per-content producer lock in campaign slot 4.
 Transactional publication alone is not a complete shared-cache concurrency contract.
+## Concurrent producers
+
+Native producers acquire an OS exclusive file lock per validated content identity
+before rechecking the artifact, downloading, and extracting. The lock guard may
+move between pipeline workers. Process termination releases ownership through the
+OS; there is no stale-time eviction. Lock files remain on disk permanently to avoid
+creating multiple lock domains through unlink/recreate races. This requires Rust
+1.89 or newer. Network filesystem lock semantics are outside the tested local-disk
+contract. Duplicate lockfile entries retain their own installation paths, but only
+one producer downloads and extracts their shared artifact.
+
+Run `python3 scripts/tests/native_cache_singleflight.py` after a native debug build
+for 1, 4, and 20 simultaneous processes plus interrupted-producer recovery.
