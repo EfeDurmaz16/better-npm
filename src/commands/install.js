@@ -668,6 +668,9 @@ Workspace options:
   const workspaceConcurrency = Math.max(1, Number.parseInt(values["workspace-concurrency"], 10) || 4);
   const workspaceTopo = values["workspace-topo"] !== false;
   let workspaceResolved = await resolveWorkspacePackages(projectRoot);
+  if (values.engine === "better" && (workspaceResolved.ok || workspaceFilter.length > 0)) {
+    throw new Error("Native install does not support workspaces or workspace selection; use npm install for this project.");
+  }
 
   if (workspaceResolved.ok && workspaceFilter.length > 0) {
     // Filter to specific workspaces + their dependencies
@@ -1224,7 +1227,7 @@ Workspace options:
 
   let workspaceInstallResult = null;
   if (!skippedPmInstall && workspaceResolved.ok && engine !== "better") {
-    // Workspace install path (not used for better engine, which handles workspace links natively)
+    // Workspace installs use the selected package manager; native workspace requests are rejected above.
     progress(`workspace detected: ${workspaceResolved.type}, ${workspaceResolved.packages.length} package(s)`);
     const wsStartMs = Date.now();
     workspaceInstallResult = await workspaceInstall(workspaceResolved, {

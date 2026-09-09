@@ -27,9 +27,16 @@ fn parse_npm_lockfile(json: &str) -> Result<Vec<ResolvedPackage>, String> {
 
     let mut packages = Vec::new();
     for (rel_path, entry) in entries {
-        if rel_path.starts_with("node_modules/") {
-            packages.push(parse_package_entry(rel_path, entry)?);
+        if rel_path.is_empty() {
+            if entry.get("workspaces").is_some_and(|value| value != &serde_json::json!([])) {
+                return Err("Native install does not support root workspaces; use npm install for this project".to_string());
+            }
+            continue;
         }
+        if !rel_path.starts_with("node_modules/") {
+            return Err(format!("Native install does not support workspace/local lockfile entry '{}'; use npm install for this project", rel_path));
+        }
+        packages.push(parse_package_entry(rel_path, entry)?);
     }
     Ok(packages)
 }
@@ -37,6 +44,18 @@ fn parse_npm_lockfile(json: &str) -> Result<Vec<ResolvedPackage>, String> {
 fn parse_package_entry(rel_path: &str, entry: &serde_json::Value) -> Result<ResolvedPackage, String> {
     let entry = entry.as_object()
         .ok_or_else(|| format!("Lockfile entry '{}' must be an object", rel_path))?;
+    match entry.get("link") {
+        Some(serde_json::Value::Bool(true)) => {
+            return Err(format!("Native install does not support linked lockfile entry '{}'; use npm install for this project", rel_path));
+        }
+        Some(serde_json::Value::Bool(false)) | None => {}
+        Some(_) => return Err(format!("Lockfile entry '{}' requires a boolean 'link'", rel_path)),
+    }
+    if entry.get("resolved").and_then(serde_json::Value::as_str)
+        .is_some_and(|value| value.starts_with("file:") || value.starts_with("workspace:"))
+    {
+        return Err(format!("Native install does not support local resolution for '{}'; use npm install for this project", rel_path));
+    }
     if entry.get("inBundle").and_then(serde_json::Value::as_bool) == Some(true) {
         return Err(format!("Native install does not support bundled lockfile entry '{}'; use npm install for this project", rel_path));
     }
