@@ -54,14 +54,34 @@ jobs:
             cargo build --manifest-path crates/Cargo.toml -p better-core --release --target "$BUILD_TARGET"
           fi
 
+      - name: Build resident addon
+        if: matrix.target != 'x86_64-unknown-linux-musl'
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+          USE_CROSS: ${{ matrix.cross }}
+        run: |
+          if [ "$USE_CROSS" = "true" ]; then
+            cross build --manifest-path crates/Cargo.toml -p better-napi --release --target "$BUILD_TARGET"
+          else
+            cargo build --manifest-path crates/Cargo.toml -p better-napi --release --target "$BUILD_TARGET"
+          fi
+
       - name: Package
         env:
           BUILD_TARGET: ${{ matrix.target }}
         run: |
           mkdir -p dist
           cp "crates/target/${BUILD_TARGET}/release/better-core" dist/better-core
+          case "$BUILD_TARGET" in
+            *-apple-darwin) cp "crates/target/${BUILD_TARGET}/release/libbetter_napi.dylib" dist/better-core.node ;;
+            *-linux-gnu) cp "crates/target/${BUILD_TARGET}/release/libbetter_napi.so" dist/better-core.node ;;
+          esac
           cd dist
-          tar -czf "better-${BUILD_TARGET}.tar.gz" better-core
+          if [ -f better-core.node ]; then
+            tar -czf "better-${BUILD_TARGET}.tar.gz" better-core better-core.node
+          else
+            tar -czf "better-${BUILD_TARGET}.tar.gz" better-core
+          fi
           shasum -a 256 "better-${BUILD_TARGET}.tar.gz" > "better-${BUILD_TARGET}.tar.gz.sha256"
 
       - name: Upload artifact
