@@ -1318,7 +1318,6 @@ Workspace options:
         storeRoot: layout.store?.root,
         linkStrategy: values["link-strategy"] ?? "auto",
         ...fetchOptions,
-        jobs: fetchOptions.jobs ?? fsConcurrency,
         scripts: values.scripts !== "off",
         dedup: false,
         nodeLayout,
