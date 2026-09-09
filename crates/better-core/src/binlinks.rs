@@ -385,6 +385,7 @@ mod tests {
         let mut js = std::fs::File::create(dir.join("cli.js")).unwrap();
         js.write_all(b"#!/usr/bin/env node\n").unwrap();
         ResolvedPackage {
+            selection: Default::default(),
             name: name.to_string(),
             version: "1.0.0".to_string(),
             rel_path: name.to_string(),

@@ -69,6 +69,7 @@ impl PackageEngine for NpmEngine {
             .packages
             .iter()
             .map(|node| crate::types::ResolvedPackage {
+                selection: Default::default(),
                 name: node.name.clone(),
                 version: node.version.clone(),
                 rel_path: format!("node_modules/{}", node.name),

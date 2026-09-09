@@ -184,8 +184,32 @@ pub struct MaterializeReport {
 
 // --- Install engine types ---
 
+/// npm lockfile flags describe the complete dependency tree, including shared paths.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PackageSelection {
+    pub dev: bool,
+    pub optional: bool,
+    pub dev_optional: bool,
+    pub os: Option<Vec<String>>,
+    pub cpu: Option<Vec<String>>,
+    pub libc: Option<Vec<String>>,
+    pub dependencies: std::collections::BTreeMap<String, String>,
+    pub dev_dependencies: std::collections::BTreeMap<String, String>,
+    pub optional_dependencies: std::collections::BTreeMap<String, String>,
+    pub peer_dependencies: std::collections::BTreeMap<String, String>,
+    pub peer_dependencies_meta: std::collections::BTreeMap<String, PeerSelection>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(default)]
+pub struct PeerSelection {
+    pub optional: bool,
+}
+
 #[derive(Clone)]
 pub struct ResolvedPackage {
+    pub selection: PackageSelection,
     pub name: String,
     pub version: String,
     pub rel_path: String,
@@ -195,6 +219,7 @@ pub struct ResolvedPackage {
 
 #[derive(Clone)]
 pub struct ResolveResult {
+    pub root_selection: Option<PackageSelection>,
     pub packages: Vec<ResolvedPackage>,
     pub lockfile_version: u64,
 }

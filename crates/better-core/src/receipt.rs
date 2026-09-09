@@ -213,6 +213,7 @@ mod tests {
 
     fn make_pkg(name: &str, version: &str) -> ResolvedPackage {
         ResolvedPackage {
+            selection: Default::default(),
             name: name.to_string(),
             version: version.to_string(),
             rel_path: format!("node_modules/{}", name),

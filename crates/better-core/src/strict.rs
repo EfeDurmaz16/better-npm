@@ -352,6 +352,7 @@ mod tests {
     fn test_find_dep_version_hoisted() {
         let packages = vec![
             ResolvedPackage {
+                selection: Default::default(),
                 name: "express".into(),
                 version: "4.18.2".into(),
                 rel_path: "node_modules/express".into(),
@@ -359,6 +360,7 @@ mod tests {
                 integrity: "".into(),
             },
             ResolvedPackage {
+                selection: Default::default(),
                 name: "debug".into(),
                 version: "2.6.9".into(),
                 rel_path: "node_modules/debug".into(),
@@ -374,6 +376,7 @@ mod tests {
     fn test_find_dep_version_nested() {
         let packages = vec![
             ResolvedPackage {
+                selection: Default::default(),
                 name: "express".into(),
                 version: "4.18.2".into(),
                 rel_path: "node_modules/express".into(),
@@ -381,6 +384,7 @@ mod tests {
                 integrity: "".into(),
             },
             ResolvedPackage {
+                selection: Default::default(),
                 name: "debug".into(),
                 version: "4.3.4".into(),
                 rel_path: "node_modules/debug".into(),
@@ -388,6 +392,7 @@ mod tests {
                 integrity: "".into(),
             },
             ResolvedPackage {
+                selection: Default::default(),
                 name: "debug".into(),
                 version: "2.6.9".into(),
                 rel_path: "node_modules/express/node_modules/debug".into(),
@@ -403,6 +408,7 @@ mod tests {
     #[test]
     fn find_dep_version_missing_returns_none() {
         let packages = vec![ResolvedPackage {
+            selection: Default::default(),
             name: "express".into(),
             version: "4.18.2".into(),
             rel_path: "node_modules/express".into(),
