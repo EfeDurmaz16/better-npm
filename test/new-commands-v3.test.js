@@ -58,35 +58,25 @@ test("better changelog-gen parses conventional commits correctly", async () => {
 
     // Create initial commit
     spawnSync("git", ["add", "."], { cwd: dir });
-    spawnSync("git", ["commit", "-m", "chore: initial commit"], { cwd: dir });
+    spawnSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "chore: initial commit"], { cwd: dir });
 
     // Add more commits
     await fs.writeFile(path.join(dir, "index.js"), "// hello\n");
     spawnSync("git", ["add", "."], { cwd: dir });
-    spawnSync("git", ["commit", "-m", "feat: add new feature"], { cwd: dir });
+    spawnSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "feat: add new feature"], { cwd: dir });
 
     await fs.writeFile(path.join(dir, "fix.js"), "// fix\n");
     spawnSync("git", ["add", "."], { cwd: dir });
-    spawnSync("git", ["commit", "-m", "fix(core): resolve bug in parser"], { cwd: dir });
+    spawnSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "fix(core): resolve bug in parser"], { cwd: dir });
 
     const result = await runBetter(["changelog-gen", "--json"], dir);
-    if (result.stdout?.startsWith("{")) {
-      const json = JSON.parse(result.stdout);
-      // If git signing fails or commits aren't available in this env, ok:false is acceptable
-      if (json.ok === false) {
-        assert.ok(typeof json.error === "string", "error response should have a message");
-        return; // acceptable failure — git signing may not be available in this test env
-      }
-      assert.ok(json.kind === "better.changelog-gen", `Expected kind, got: ${JSON.stringify(json)}`);
-      assert.ok(typeof json.commits === "number");
-      assert.ok(typeof json.markdown === "string");
-      if (json.commits >= 2) {
-        assert.ok(json.markdown.includes("Features") || json.markdown.includes("feat") || json.markdown.includes("Fix"));
-      }
-    } else {
-      // No commits or no git — acceptable in test env
-      assert.ok(result.stdout !== undefined);
-    }
+    const json = JSON.parse(result.stdout);
+    assert.equal(json.ok, true, result.stdout);
+    assert.equal(json.kind, "better.changelog-gen");
+    assert.equal(json.totalCommits, 3);
+    const entries = Object.values(json.categories).flat();
+    assert.ok(entries.some((entry) => entry.message.includes("add new feature")));
+    assert.ok(entries.some((entry) => entry.message.includes("resolve bug in parser")));
   } finally {
     await rmrf(dir);
   }
@@ -105,7 +95,7 @@ test("better changelog-gen --write creates CHANGELOG.md", async () => {
     });
 
     spawnSync("git", ["add", "."], { cwd: dir });
-    spawnSync("git", ["commit", "-m", "feat: initial feature"], { cwd: dir });
+    spawnSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "feat: initial feature"], { cwd: dir });
 
     const result = await runBetter(["changelog-gen", "--write"], dir);
     // Any of these outcomes is valid: updated, no commits found, or empty output
