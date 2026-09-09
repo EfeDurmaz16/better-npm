@@ -80,6 +80,7 @@ pub use platform_selection::*;
 pub mod integrity;
 pub mod artifact_cache;
 mod artifact_inventory;
+mod archive_materialize;
 pub mod fetch;
 pub mod fetch_pipeline;
 pub mod fetch_scheduler;
@@ -702,6 +703,71 @@ impl MaterializeStaging {
         Ok(false)
     }
 
+    /// Materialize verified, invocation-owned bytes without reopening an expanded
+    /// source file. Mutable destination contents are still compared in full.
+    pub(crate) fn copy_bytes_if_changed(
+        &mut self,
+        expected: &[u8],
+        dst: &Path,
+        mode: u32,
+    ) -> Result<bool, String> {
+        if self.matches_independent_bytes(expected, dst, mode) {
+            return Ok(true);
+        }
+        self.publish(
+            dst,
+            |staged| {
+                use std::io::Write;
+                let mut file = fs::OpenOptions::new().write(true).create_new(true).open(staged)?;
+                file.write_all(expected)?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    file.set_permissions(fs::Permissions::from_mode(mode & 0o7777))?;
+                }
+                Ok(())
+            },
+            |staged| fs::rename(staged, dst),
+        )?;
+        Ok(false)
+    }
+
+    #[cfg(not(unix))]
+    fn matches_independent_bytes(&mut self, _expected: &[u8], _dst: &Path, _mode: u32) -> bool {
+        false
+    }
+
+    #[cfg(unix)]
+    fn matches_independent_bytes(&mut self, expected: &[u8], dst: &Path, mode: u32) -> bool {
+        use std::io::Read;
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+        let mut compare = || -> std::io::Result<bool> {
+            let mut file = fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                .open(dst)?;
+            let before = file.metadata()?;
+            if !before.is_file()
+                || before.nlink() != 1
+                || before.len() != expected.len() as u64
+                || before.mode() & 0o7777 != mode & 0o7777
+            {
+                return Ok(false);
+            }
+            let (_, buffer) = self
+                .comparison_buffers
+                .get_or_insert_with(|| (vec![0; 64 * 1024], vec![0; 64 * 1024]));
+            for chunk in expected.chunks(buffer.len()) {
+                file.read_exact(&mut buffer[..chunk.len()])?;
+                if buffer[..chunk.len()] != *chunk {
+                    return Ok(false);
+                }
+            }
+            Ok(same_file_observation(&before, &fs::symlink_metadata(dst)?))
+        };
+        compare().unwrap_or(false)
+    }
+
     #[cfg(not(unix))]
     fn matches_independent_file(&mut self, _src: &Path, _dst: &Path, _mode: Option<u32>) -> bool {
         // Do not infer independence on platforms without the inode/link checks below.
@@ -711,25 +777,28 @@ impl MaterializeStaging {
     #[cfg(unix)]
     fn matches_independent_file(&mut self, src: &Path, dst: &Path, mode: Option<u32>) -> bool {
         use std::io::Read;
-        use std::os::unix::fs::MetadataExt;
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
         let mut compare = || -> std::io::Result<bool> {
             // Fresh installations stop here, before opening or reading the source.
-            let destination = fs::symlink_metadata(dst)?;
+            // Open without following the final symlink. Nonblocking is necessary
+            // because a mutable destination can have been replaced with a FIFO.
+            let open = |path: &Path| {
+                fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                    .open(path)
+            };
+            let mut destination_file = open(dst)?;
+            let destination = destination_file.metadata()?;
             if !destination.is_file() || destination.nlink() != 1 {
                 return Ok(false);
             }
-            let source = fs::symlink_metadata(src)?;
+            let mut source_file = open(src)?;
+            let source = source_file.metadata()?;
             if !source.is_file()
                 || source.len() != destination.len()
                 || (source.dev(), source.ino()) == (destination.dev(), destination.ino())
                 || destination.mode() & 0o7777 != mode.unwrap_or(source.mode()) & 0o7777
-            {
-                return Ok(false);
-            }
-            let mut source_file = fs::File::open(src)?;
-            let mut destination_file = fs::File::open(dst)?;
-            if !same_file_observation(&source, &source_file.metadata()?)
-                || !same_file_observation(&destination, &destination_file.metadata()?)
             {
                 return Ok(false);
             }
@@ -746,11 +815,11 @@ impl MaterializeStaging {
                 }
                 remaining -= count as u64;
             }
-            // Recheck both handles and path identities after comparing, including
-            // link counts and change times, to conservatively reject concurrent edits.
-            Ok(same_file_observation(&source, &source_file.metadata()?)
-                && same_file_observation(&destination, &destination_file.metadata()?)
-                && same_file_observation(&source, &fs::symlink_metadata(src)?)
+            // Path observations must still identify the opened inodes, including
+            // their link counts and change times. Comparing the initial handle
+            // metadata to these final observations detects replacements and edits
+            // without separately repeating fstat on those same inodes.
+            Ok(same_file_observation(&source, &fs::symlink_metadata(src)?)
                 && same_file_observation(&destination, &fs::symlink_metadata(dst)?))
         };
         compare().unwrap_or(false)
@@ -1061,6 +1130,81 @@ mod staging_reuse_tests {
 
     #[cfg(unix)]
     #[test]
+    fn reuse_compares_past_buffer_boundaries_and_rejects_special_files() {
+        use std::ffi::CString;
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let target = temp.path().join("target");
+        let contents = vec![42; 2 * 64 * 1024 + 1];
+        fs::write(&source, &contents).unwrap();
+        fs::write(&target, &contents).unwrap();
+        let mut arena = MaterializeStaging::default();
+        assert!(arena.matches_independent_file(&source, &target, None));
+        let mut modified = contents.clone();
+        *modified.last_mut().unwrap() = 43;
+        fs::write(&target, modified).unwrap();
+        assert!(!arena.matches_independent_file(&source, &target, None));
+        fs::write(&target, &contents).unwrap();
+
+        let link = temp.path().join("source-link");
+        symlink(&source, &link).unwrap();
+        assert!(!arena.matches_independent_file(&link, &target, None));
+        assert!(!arena.matches_independent_file(&source, &link, None));
+
+        let fifo = temp.path().join("fifo");
+        let fifo_name = CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        // No writer is opened. A blocking open would hang instead of declining.
+        assert_eq!(unsafe { libc::mkfifo(fifo_name.as_ptr(), 0o600) }, 0);
+        assert!(!arena.matches_independent_file(&source, &fifo, None));
+        assert!(!arena.matches_independent_file(&fifo, &target, None));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_bytes_reuse_repairs_mutations_modes_links_and_special_files() {
+        use std::ffi::CString;
+        use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        let other = temp.path().join("other");
+        let expected = vec![42; 2 * 64 * 1024 + 1];
+        let mut arena = MaterializeStaging::default();
+        assert!(!arena.copy_bytes_if_changed(&expected, &target, 0o644).unwrap());
+        let inode = fs::metadata(&target).unwrap().ino();
+        assert!(arena.copy_bytes_if_changed(&expected, &target, 0o644).unwrap());
+        assert_eq!(fs::metadata(&target).unwrap().ino(), inode);
+        let mut modified = expected.clone();
+        *modified.last_mut().unwrap() = 43;
+        fs::write(&target, &modified).unwrap();
+        assert!(!arena.copy_bytes_if_changed(&expected, &target, 0o644).unwrap());
+        assert_eq!(fs::read(&target).unwrap(), expected);
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!arena.copy_bytes_if_changed(&expected, &target, 0o644).unwrap());
+        assert_eq!(fs::metadata(&target).unwrap().mode() & 0o7777, 0o644);
+
+        fs::hard_link(&target, &other).unwrap();
+        assert!(!arena.copy_bytes_if_changed(&expected, &target, 0o644).unwrap());
+        assert_ne!(fs::metadata(&target).unwrap().ino(), fs::metadata(&other).unwrap().ino());
+        fs::write(&target, &modified).unwrap();
+        assert_eq!(fs::read(&other).unwrap(), expected);
+        fs::remove_file(&target).unwrap();
+        symlink(&other, &target).unwrap();
+        assert!(!arena.copy_bytes_if_changed(&expected, &target, 0o644).unwrap());
+        assert!(fs::symlink_metadata(&target).unwrap().is_file());
+        assert_eq!(fs::read(&other).unwrap(), expected);
+
+        fs::remove_file(&target).unwrap();
+        let name = CString::new(target.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        assert!(!arena.copy_bytes_if_changed(&expected, &target, 0o644).unwrap());
+        assert_eq!(fs::read(&target).unwrap(), expected);
+        assert!(!arena.copy_bytes_if_changed(&[], &target, 0o644).unwrap());
+        assert!(arena.copy_bytes_if_changed(&[], &target, 0o644).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn symlink_reuse_preserves_matching_inode_and_repairs_wrong_target() {
         use std::os::unix::fs::MetadataExt;
         let temp = tempfile::tempdir().unwrap();
@@ -1120,6 +1264,20 @@ mod staging_reuse_tests {
         fs::write(target.join("keep"), "existing state").unwrap();
         assert!(!try_clonefile_dir(&source, &target));
         assert_eq!(fs::read_to_string(target.join("keep")).unwrap(), "existing state");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn clone_fastpath_validates_source_before_removing_empty_destination() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let target = temp.path().join("target");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&target).unwrap();
+        std::os::unix::fs::symlink("../../outside", source.join("escape")).unwrap();
+        assert!(!try_clonefile_dir(&source, &target));
+        assert!(target.is_dir());
+        assert!(fs::read_dir(&target).unwrap().next().is_none());
     }
 
     #[cfg(not(target_os = "macos"))]

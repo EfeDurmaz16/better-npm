@@ -297,6 +297,11 @@ pub fn run_install(options: InstallOptions) -> Result<String, InstallError> {
     let cas_linked = std::sync::atomic::AtomicU64::new(0);
     let cas_copied = std::sync::atomic::AtomicU64::new(0);
     let fallback_materialized = std::sync::atomic::AtomicU64::new(0);
+    // Diagnostic work sums across concurrently materialized packages, not wall time.
+    let materialize_scan_work_us = std::sync::atomic::AtomicU64::new(0);
+    let materialize_mkdir_work_us = std::sync::atomic::AtomicU64::new(0);
+    let materialize_copy_work_us = std::sync::atomic::AtomicU64::new(0);
+    let archive_snapshot_packages = std::sync::atomic::AtomicU64::new(0);
     let mut strict_stats: Option<StrictMaterializeStats> = None;
 
     if node_layout == NodeLayout::Strict {
@@ -398,11 +403,39 @@ pub fn run_install(options: InstallOptions) -> Result<String, InstallError> {
                         node_modules.join(&pkg.rel_path)
                     };
 
+                    let use_snapshot = !dedup && fresh_tree.is_none() && dest_path.is_dir()
+                        && matches!(link_strategy, LinkStrategy::Auto | LinkStrategy::Copy);
                     if let Err(reason) = crate::create_materialize_dir(&node_modules, &dest_path) {
                         if let Ok(mut guard) = materialize_error.lock() {
                             *guard = Some(reason);
                         }
                         return;
+                    }
+
+                    if use_snapshot {
+                        match crate::archive_materialize::reconcile(
+                            &tarball_path(&layout, &algo, &hex), &pkg.integrity,
+                            &dest_path, artifact_limits,
+                        ) {
+                            Ok(Some((stats, phases))) => {
+                                use std::sync::atomic::Ordering::Relaxed;
+                                total_files.fetch_add(stats.files, Relaxed);
+                                total_dirs.fetch_add(stats.directories, Relaxed);
+                                files_reused.fetch_add(stats.files_reused, Relaxed);
+                                materialize_scan_work_us.fetch_add(phases.scan_us, Relaxed);
+                                materialize_mkdir_work_us.fetch_add(phases.mkdir_us, Relaxed);
+                                materialize_copy_work_us.fetch_add(phases.link_copy_us, Relaxed);
+                                archive_snapshot_packages.fetch_add(1, Relaxed);
+                                fallback_materialized.fetch_add(1, Relaxed);
+                                progress.inc_extract();
+                                return;
+                            }
+                            Ok(None) => {}
+                            Err(reason) => {
+                                if let Ok(mut guard) = materialize_error.lock() { *guard = Some(reason); }
+                                return;
+                            }
+                        }
                     }
 
                     if dedup {
@@ -464,6 +497,18 @@ pub fn run_install(options: InstallOptions) -> Result<String, InstallError> {
                         MaterializeProfile::Auto,
                     ) {
                         Ok(report) => {
+                            materialize_scan_work_us.fetch_add(
+                                report.phases.scan_us,
+                                std::sync::atomic::Ordering::Relaxed,
+                            );
+                            materialize_mkdir_work_us.fetch_add(
+                                report.phases.mkdir_us,
+                                std::sync::atomic::Ordering::Relaxed,
+                            );
+                            materialize_copy_work_us.fetch_add(
+                                report.phases.link_copy_us,
+                                std::sync::atomic::Ordering::Relaxed,
+                            );
                             total_files.fetch_add(
                                 report.stats.files,
                                 std::sync::atomic::Ordering::Relaxed,
@@ -770,6 +815,8 @@ pub fn run_install(options: InstallOptions) -> Result<String, InstallError> {
     w.value_u64(total_symlinks);
     w.key("filesReused");
     w.value_u64(files_reused.load(std::sync::atomic::Ordering::Relaxed));
+    w.key("archiveSnapshotPackages");
+    w.value_u64(archive_snapshot_packages.load(std::sync::atomic::Ordering::Relaxed));
     w.key("symlinksReused");
     w.value_u64(symlinks_reused.load(std::sync::atomic::Ordering::Relaxed));
     w.key("cloned");
@@ -861,6 +908,12 @@ pub fn run_install(options: InstallOptions) -> Result<String, InstallError> {
     w.value_u64(phase_fetch_micros);
     w.key("materializeMicros");
     w.value_u64(phase_materialize_micros);
+    w.key("materializeScanWorkMicros");
+    w.value_u64(materialize_scan_work_us.load(std::sync::atomic::Ordering::Relaxed));
+    w.key("materializeMkdirWorkMicros");
+    w.value_u64(materialize_mkdir_work_us.load(std::sync::atomic::Ordering::Relaxed));
+    w.key("materializeCopyWorkMicros");
+    w.value_u64(materialize_copy_work_us.load(std::sync::atomic::Ordering::Relaxed));
     w.key("binLinksMicros");
     w.value_u64(phase_binlinks_micros);
     w.key("scriptsMicros");
