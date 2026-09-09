@@ -65,11 +65,12 @@ pub fn materialize_strict(
     file_cas_root: &Path,
     link_strategy: LinkStrategy,
 ) -> Result<StrictMaterializeStats, String> {
+    crate::validate_package_paths(packages)?;
     let mut stats = StrictMaterializeStats::default();
 
     let node_modules = project_root.join("node_modules");
     let store_dir = node_modules.join(".better");
-    let _ = fs::create_dir_all(&store_dir);
+    crate::create_materialize_dir(&node_modules, &store_dir)?;
 
     // Build name@version -> ResolvedPackage lookup
     let mut by_key: HashMap<String, &ResolvedPackage> = HashMap::new();
@@ -94,13 +95,8 @@ pub fn materialize_strict(
             .join("node_modules")
             .join(&pkg.name);
 
-        // Skip if already materialized
-        if pkg_real_dir.join("package.json").exists() {
-            stats.packages += 1;
-            continue;
-        }
+        crate::create_materialize_dir(&node_modules, &pkg_real_dir)?;
 
-        let _ = fs::create_dir_all(&pkg_real_dir);
         stats.directories += 1;
 
         // Try to get files from CAS or extract from tarball
@@ -112,7 +108,7 @@ pub fn materialize_strict(
                 let _ = ingest_to_file_cas(file_cas_root, &algo, &hex, &src_dir);
 
                 // Try clonefile first (macOS APFS)
-                if try_clonefile_dir(&src_dir, &pkg_real_dir) {
+                if matches!(link_strategy, LinkStrategy::Auto) && try_clonefile_dir(&src_dir, &pkg_real_dir) {
                     true
                 } else {
                     // Fallback to materialize_tree

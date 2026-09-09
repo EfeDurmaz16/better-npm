@@ -636,17 +636,117 @@ pub fn create_symlink(target: &Path, dst: &Path, _src_path: &Path) -> std::io::R
     fs::copy(target, dst).map(|_| ())
 }
 
+/// Publish an independent inode without truncating an existing hardlink or following
+/// a destination symlink. Staging stays on the destination filesystem for rename.
+/// Auto may use copy-on-write; explicit Copy still uses the platform copy primitive.
 pub fn copy_file_with_retry(src: &Path, dst: &Path) -> Result<(), String> {
-    match fs::copy(src, dst) {
-        Ok(_) => Ok(()),
-        Err(err) => {
-            if err.kind() != std::io::ErrorKind::AlreadyExists {
-                return Err(err.to_string());
-            }
-            remove_path_if_exists(dst)?;
-            fs::copy(src, dst).map(|_| ()).map_err(|e| e.to_string())
+    copy_file_with_mode(src, dst, None)
+}
+
+pub fn copy_file_with_mode(src: &Path, dst: &Path, mode: Option<u32>) -> Result<(), String> {
+    publish_file(dst, |staged| {
+        if !try_clonefile(src, staged) { fs::copy(src, staged)?; }
+        #[cfg(unix)]
+        if let Some(mode) = mode {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(staged, fs::Permissions::from_mode(mode & 0o7777))?;
+        }
+        #[cfg(not(unix))]
+        let _ = mode;
+        Ok(())
+    })
+}
+
+/// Per-file publication, not a whole-package transaction or power-loss guarantee.
+pub(crate) fn publish_file(dst: &Path, write: impl FnOnce(&Path) -> std::io::Result<()>) -> Result<(), String> {
+    with_staged_file(dst, write, |staged| fs::rename(staged, dst))
+}
+
+/// Atomic no-replace publication inside CAS only. The staging inode is never
+/// installed into a worktree. Unsupported filesystems return an error so callers
+/// can fall back to tree materialization without claiming successful CAS ingest.
+pub(crate) fn publish_cas_file(src: &Path, dst: &Path) -> Result<bool, String> {
+    with_staged_file(dst, |staged| {
+        if !try_clonefile(src, staged) { fs::copy(src, staged)?; }
+        Ok(())
+    }, |staged| match fs::hard_link(staged, dst) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(e),
+    })
+}
+
+fn with_staged_file<T>(dst: &Path, write: impl FnOnce(&Path) -> std::io::Result<()>,
+    publish: impl FnOnce(&Path) -> std::io::Result<T>) -> Result<T, String> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let parent = dst.parent().ok_or("materialize destination has no parent")?;
+    let staging = loop {
+        let path = parent.join(format!(".better-copy-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        match fs::create_dir(&path) {
+            Ok(()) => break path,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("create staging for {}: {}", dst.display(), e)),
+        }
+    };
+    let staged = staging.join("file");
+    let result = write(&staged).and_then(|()| publish(&staged));
+    let _ = fs::remove_file(&staged);
+    let _ = fs::remove_dir(&staging);
+    result.map_err(|e| format!("materialize {}: {}", dst.display(), e))
+}
+
+/// Validate lockfile paths before joining them to the installation root.
+pub fn validate_package_paths(packages: &[ResolvedPackage]) -> Result<(), String> {
+    for package in packages {
+        let valid_relative = |value: &str| !value.is_empty()
+            && !value.contains('\\')
+            && Path::new(value).components().all(|part| matches!(part, std::path::Component::Normal(_)));
+        if !package.rel_path.starts_with("node_modules/") || !valid_relative(&package.rel_path)
+            || !valid_relative(&package.name) || !valid_relative(&package.version)
+            || package.version.contains('/') {
+            return Err(format!("Invalid materialization path for {}", package.rel_path));
         }
     }
+    Ok(())
+}
+
+/// Package symlinks may resolve within the package, never outside it.
+pub fn validate_materialize_symlink(root: &Path, dst: &Path, target: &Path) -> Result<(), String> {
+    let parent = dst.parent().ok_or("symlink missing parent")?;
+    let mut depth = parent.strip_prefix(root).map_err(|e| e.to_string())?.components().count();
+    for component in target.components() {
+        match component {
+            std::path::Component::Normal(_) => depth += 1,
+            std::path::Component::CurDir => {},
+            std::path::Component::ParentDir if depth > 0 => depth -= 1,
+            _ => return Err(format!("Package symlink escapes destination: {}", dst.display())),
+        }
+    }
+    Ok(())
+}
+
+/// Refuse destination directory symlinks rather than writing through them.
+pub fn create_materialize_dir(root: &Path, dir: &Path) -> Result<(), String> {
+    let relative = dir.strip_prefix(root).map_err(|e| e.to_string())?;
+    let mut current = root.to_path_buf();
+    let mut paths = vec![current.clone()];
+    for component in relative.components() {
+        if !matches!(component, std::path::Component::Normal(_)) {
+            return Err("invalid materialization directory".into());
+        }
+        current.push(component);
+        paths.push(current.clone());
+    }
+    for path in paths {
+        match fs::symlink_metadata(&path) {
+            Ok(md) if !md.is_dir() || md.file_type().is_symlink() => return Err(format!("materialization directory is not a real directory: {}", path.display())),
+            Ok(_) => {},
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => fs::create_dir_all(&path).map_err(|e| e.to_string())?,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Ok(())
 }
 
 pub fn hardlink_with_retry(src: &Path, dst: &Path) -> Result<(), String> {
@@ -656,20 +756,14 @@ pub fn hardlink_with_retry(src: &Path, dst: &Path) -> Result<(), String> {
             if err.kind() != std::io::ErrorKind::AlreadyExists {
                 return Err(err.to_string());
             }
-            remove_path_if_exists(dst)?;
+            fs::remove_file(dst).map_err(|e| e.to_string())?;
             fs::hard_link(src, dst).map_err(|e| e.to_string())
         }
     }
 }
 
 pub fn create_symlink_with_retry(task: &MaterializeSymlinkTask) -> Result<(), String> {
-    match create_symlink(&task.target, &task.dst, &task.src) {
-        Ok(()) => Ok(()),
-        Err(_) => {
-            remove_path_if_exists(&task.dst)?;
-            create_symlink(&task.target, &task.dst, &task.src).map_err(|e| e.to_string())
-        }
-    }
+    publish_file(&task.dst, |staged| create_symlink(&task.target, staged, &task.src))
 }
 
 // --- clonefile (macOS APFS copy-on-write) ---
@@ -702,9 +796,30 @@ pub fn try_clonefile(_src: &Path, _dst: &Path) -> bool {
     false
 }
 
+/// Validate links before a whole-directory clone, which bypasses per-file scanning.
+pub fn validate_clone_source(src: &Path) -> Result<(), String> {
+    let mut stack = vec![src.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let kind = entry.file_type().map_err(|e| e.to_string())?;
+            if kind.is_symlink() {
+                let target = fs::read_link(entry.path()).map_err(|e| e.to_string())?;
+                validate_materialize_symlink(src, &entry.path(), &target)?;
+            } else if kind.is_dir() {
+                // Tree materialization excludes nested installation state.
+                if entry.file_name() == "node_modules" { return Err("nested node_modules requires tree materialization".into()); }
+                stack.push(entry.path());
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Try to clone a directory using clonefile. If clonefile fails (e.g. dest exists),
 /// remove dest first and retry once.
 pub fn try_clonefile_dir(src: &Path, dst: &Path) -> bool {
+    if validate_clone_source(src).is_err() || fs::symlink_metadata(dst).is_ok_and(|md| md.file_type().is_symlink()) { return false; }
     if try_clonefile(src, dst) {
         return true;
     }
