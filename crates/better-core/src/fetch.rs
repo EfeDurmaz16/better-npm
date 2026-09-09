@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::types::*;
-use crate::{package_name_from_path, registry_for_package};
+use crate::package_name_from_path;
 
 // --- Install engine: resolve and fetch ---
 
@@ -150,13 +150,7 @@ pub fn fetch_packages(
     let bytes_downloaded = AtomicU64::new(0);
 
     // Shared HTTP/2 client — reuses connections and multiplexes requests
-    let http_client = reqwest::blocking::Client::builder()
-        .use_rustls_tls()
-        .http2_adaptive_window(true)
-        .pool_max_idle_per_host(10)
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+    let http_client = crate::transport::client()?;
 
     // Process packages in parallel
     packages.par_iter().try_for_each(|pkg| -> Result<(), String> {
@@ -184,36 +178,11 @@ pub fn fetch_packages(
             fs::create_dir_all(&unpacked)
                 .map_err(|e| format!("Failed to create unpacked dir: {}", e))?;
 
-            let mut download_url = pkg.resolved_url.clone();
-            let mut auth_token: Option<&str> = None;
-            if let Some(cfg) = npmrc {
-                let (_reg, tok) = registry_for_package(cfg, &pkg.name);
-                auth_token = tok;
-                if !cfg.default_registry.starts_with("https://registry.npmjs.org")
-                    && download_url.starts_with("https://registry.npmjs.org/")
-                {
-                    download_url = download_url.replacen(
-                        "https://registry.npmjs.org/",
-                        cfg.default_registry.trim_end_matches('/').to_string().as_str(),
-                        1,
-                    );
-                    if !download_url.contains("://") {
-                        download_url = format!("{}/{}", cfg.default_registry.trim_end_matches('/'), &download_url);
-                    }
-                }
-            }
-
-            let mut request = http_client.get(&download_url);
-            if let Some(token) = auth_token {
-                request = request.header("Authorization", format!("Bearer {}", token));
-            }
-            let response = request
-                .send()
-                .map_err(|e| format!("Failed to download {}: {}", pkg.name, e))?;
+            let response = crate::transport::download(&http_client, pkg, npmrc)?;
 
             // Read full response bytes (needed for both hashing and extraction)
             let bytes = response.bytes()
-                .map_err(|e| format!("Failed to read download: {}", e))?;
+                .map_err(|_| format!("Failed to read download for {}", pkg.name))?;
             let byte_count = bytes.len() as u64;
 
             // Hash on-the-fly from the in-memory buffer
