@@ -103,6 +103,8 @@ export function buildRuntimeFingerprint(opts = {}) {
     pm: opts.pm ?? "npm",
     engine: opts.engine ?? "pm",
     scriptsMode: opts.scriptsMode ?? "rebuild",
+    nodeLayout: opts.engine === "better" ? (opts.nodeLayout ?? "hoist") : null,
+    linkStrategy: opts.engine === "better" ? (opts.linkStrategy ?? "auto") : null,
     frozen: opts.frozen === true,
     production: opts.production === true,
     cacheKeySalt: opts.cacheKeySalt ?? null
@@ -110,9 +112,12 @@ export function buildRuntimeFingerprint(opts = {}) {
   const relaxedPayload = {
     platform: process.platform,
     arch: process.arch,
+    production: opts.production === true,
     pm: opts.pm ?? "npm",
     engine: opts.engine ?? "pm",
     scriptsMode: opts.scriptsMode ?? "rebuild",
+    nodeLayout: opts.engine === "better" ? (opts.nodeLayout ?? "hoist") : null,
+    linkStrategy: opts.engine === "better" ? (opts.linkStrategy ?? "auto") : null,
     cacheKeySalt: opts.cacheKeySalt ?? null
   };
   return {
@@ -129,6 +134,8 @@ export async function deriveGlobalCacheContext(projectRoot, opts = {}) {
     scriptsMode = "rebuild",
     frozen = false,
     production = false,
+    nodeLayout = "hoist",
+    linkStrategy = "auto",
     cacheKeySalt = null
   } = opts;
 
@@ -156,6 +163,8 @@ export async function deriveGlobalCacheContext(projectRoot, opts = {}) {
     scriptsMode,
     frozen,
     production,
+    nodeLayout,
+    linkStrategy,
     cacheKeySalt
   });
   const fingerprintPayload = cacheMode === "relaxed" ? fingerprint.relaxed : fingerprint.strict;
@@ -168,9 +177,11 @@ export async function deriveGlobalCacheContext(projectRoot, opts = {}) {
   const key = hashString(stableJson(payload));
   return {
     decision: {
-      eligible: true,
+      // The native copier filters nested node_modules as package contents.
+      // Keep deriving identity for local reuse, but never snapshot an installed tree.
+      eligible: engine !== "better",
       hit: false,
-      reason: "key_derived",
+      reason: engine === "better" ? "native_tree_snapshot_unsupported" : "key_derived",
       key,
       pmSupportPhase: globalCacheSupportPhase({ engine, pm }),
       mode: cacheMode

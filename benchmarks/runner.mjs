@@ -1,135 +1,93 @@
 #!/usr/bin/env node
-// benchmarks/runner.mjs
-// Run cross-tool benchmark scenarios and write results.json
-
-import { execFileSync, spawnSync } from "node:child_process";
+// Same npm lockfile, scripts disabled, isolated cold caches, verified inventory.
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { parseArgs } from "node:util";
+import { fileURLToPath } from "node:url";
+import { installedInventory } from "../src/commands/benchmark.js";
 
 const { values: opts } = parseArgs({
   options: {
     "dry-run": { type: "boolean", default: false },
-    "output": { type: "string", default: "benchmarks/results.json" },
-    "rounds": { type: "string", default: "3" },
-    "tools": { type: "string", default: "better,npm,pnpm" },
+    output: { type: "string", default: "benchmarks/results.json" },
+    rounds: { type: "string", default: "3" },
+    tools: { type: "string", default: "npm,better" },
   },
-  strict: false
+  strict: true
 });
-
-const ROUNDS = parseInt(opts["rounds"]) || 3;
-const TOOLS = opts["tools"].split(",");
-const DRY_RUN = opts["dry-run"];
-
-const FIXTURE_PKG = {
-  name: "bench-test",
-  version: "1.0.0",
-  dependencies: {
-    "lodash": "^4.17.21",
-    "axios": "^1.6.0",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-  }
+const rounds = Number(opts.rounds);
+const tools = opts.tools.split(",");
+if (!Number.isInteger(rounds) || rounds < 1) throw new Error("--rounds must be a positive integer");
+if (tools.some(tool => !["npm", "better"].includes(tool))) {
+  throw new Error("Verified cross-tool runner supports npm,better (shared npm lockfile) only");
+}
+const pkg = {
+  name: "bench-test", version: "1.0.0",
+  dependencies: { lodash: "4.17.21", axios: "1.6.0", react: "18.2.0", "react-dom": "18.2.0" }
 };
-
-function median(arr) {
-  const sorted = [...arr].sort((a, b) => a - b);
+const betterBin = fileURLToPath(new URL("../bin/better.js", import.meta.url));
+const median = values => {
+  const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
-}
-
-function timeCmd(cmd, args, cwd) {
-  const start = performance.now();
-  const result = spawnSync(cmd, args, { cwd, stdio: "pipe", timeout: 120_000 });
-  const elapsed = performance.now() - start;
-  return { elapsed, success: result.status === 0, stderr: result.stderr?.toString() };
-}
-
-async function runScenario(name, toolFn) {
-  if (DRY_RUN) {
-    console.log(`  [dry-run] ${name}`);
-    return { name, tools: {} };
-  }
-
-  const results = { name, tools: {} };
-  for (const tool of TOOLS) {
-    const times = [];
-    let success = true;
-    for (let r = 0; r < ROUNDS; r++) {
-      const dir = mkdtempSync(join(tmpdir(), `bench-${tool}-${r}-`));
-      try {
-        writeFileSync(join(dir, "package.json"), JSON.stringify(FIXTURE_PKG, null, 2));
-        const { elapsed, success: ok } = toolFn(tool, dir);
-        times.push(elapsed);
-        if (!ok) success = false;
-      } finally {
-        rmSync(dir, { recursive: true, force: true });
-      }
-    }
-    results.tools[tool] = {
-      median_ms: Math.round(median(times)),
-      min_ms: Math.round(Math.min(...times)),
-      max_ms: Math.round(Math.max(...times)),
-      success
-    };
-    console.log(`    ${tool}: ${results.tools[tool].median_ms}ms`);
-  }
-  return results;
-}
-
-function installFn(tool, dir) {
-  const cmds = {
-    better: ["better", ["install", "--frozen"]],
-    npm: ["npm", ["ci"]],
-    pnpm: ["pnpm", ["install", "--frozen-lockfile"]],
-    yarn: ["yarn", ["install", "--frozen-lockfile"]],
-    bun: ["bun", ["install"]],
-  };
-  // Generate lockfile first
-  if (tool === "npm") {
-    spawnSync("npm", ["install", "--package-lock-only"], { cwd: dir, stdio: "pipe" });
-  }
-  const [cmd, args] = cmds[tool] || cmds.npm;
-  return timeCmd(cmd, args, dir);
-}
-
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+};
 async function main() {
-  console.log(`Running benchmarks: ${TOOLS.join(", ")} (${ROUNDS} rounds each)`);
-
-  if (DRY_RUN) {
-    console.log("Scenarios to run:");
-    const scenarios = ["cold-install", "warm-install", "audit"];
-    for (const s of scenarios) console.log(`  - ${s}`);
+  if (opts["dry-run"]) {
+    console.log(`cold-install: ${tools.join(", ")}; scripts off; shared lockfile; isolated caches; verified output`);
     return;
   }
-
-  const allResults = [];
-
-  console.log("\n[cold-install] Installing from scratch...");
-  const coldInstall = await runScenario("cold-install", installFn);
-  allResults.push(coldInstall);
-
-  const report = {
-    generated_at: new Date().toISOString(),
-    rounds: ROUNDS,
-    tools: TOOLS,
-    scenarios: allResults,
-  };
-
-  writeFileSync(opts["output"], JSON.stringify(report, null, 2));
-  console.log(`\nResults written to ${opts["output"]}`);
-
-  // Summary
-  const coldInstallResult = allResults[0];
-  if (coldInstallResult) {
-    const sorted = Object.entries(coldInstallResult.tools)
-      .sort(([, a], [, b]) => a.median_ms - b.median_ms);
-    console.log("\nCold install summary (fastest first):");
-    for (const [tool, data] of sorted) {
-      console.log(`  ${tool}: ${data.median_ms}ms`);
+  const root = mkdtempSync(join(tmpdir(), "better-benchmark-"));
+  const result = { name: "cold-install", tools: {} };
+  try {
+    writeFileSync(join(root, "package.json"), JSON.stringify(pkg));
+    const setup = spawnSync("npm", ["install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund"], {
+      cwd: root, encoding: "utf8", timeout: 120_000,
+      env: { ...process.env, npm_config_cache: join(root, "setup-cache"), npm_config_ignore_scripts: "true" }
+    });
+    if (setup.status !== 0) throw new Error(`Lockfile setup failed: ${setup.stderr || setup.error}`);
+    const lock = readFileSync(join(root, "package-lock.json"));
+    let expected;
+    for (const tool of tools) {
+      const times = [];
+      const failures = [];
+      for (let round = 0; round < rounds; round++) {
+        const dir = mkdtempSync(join(root, `${tool}-`));
+        writeFileSync(join(dir, "package.json"), JSON.stringify(pkg));
+        writeFileSync(join(dir, "package-lock.json"), lock);
+        const cache = join(dir, "cache");
+        const args = tool === "npm"
+          ? ["ci", "--ignore-scripts", "--no-audit", "--no-fund"]
+          : [betterBin, "install", "--engine", "better", "--experimental", "--frozen", "--scripts", "off", "--cache-scripts", "off", "--cache-root", cache];
+        const start = performance.now();
+        const install = spawnSync(tool === "npm" ? "npm" : process.execPath, args, {
+          cwd: dir, encoding: "utf8", timeout: 120_000,
+          env: { ...process.env, npm_config_cache: join(cache, "npm"), npm_config_ignore_scripts: "true" }
+        });
+        const elapsed = performance.now() - start;
+        try {
+          if (install.status !== 0) throw new Error(install.stderr || String(install.error || `exit ${install.status}`));
+          const inventory = JSON.stringify(await installedInventory(dir));
+          if (expected !== undefined && expected !== inventory) throw new Error("Installed inventory differs across tools/rounds");
+          expected = inventory;
+          times.push(elapsed);
+        } catch (error) { failures.push({ round: round + 1, error: error.message }); }
+      }
+      const success = failures.length === 0;
+      result.tools[tool] = {
+        success, verifiedSamples: times.length, failures,
+        median_ms: success ? Math.round(median(times)) : null,
+        min_ms: success ? Math.round(Math.min(...times)) : null,
+        max_ms: success ? Math.round(Math.max(...times)) : null
+      };
     }
-  }
+    writeFileSync(resolve(opts.output), JSON.stringify({
+      generated_at: new Date().toISOString(), rounds, tools,
+      conditions: { scripts: "off", cache: "isolated-cold", lockfile: "shared-npm", verification: "installed-package-inventory" },
+      scenarios: [result]
+    }, null, 2));
+    if (Object.values(result.tools).some(value => !value.success)) process.exitCode = 1;
+  } finally { rmSync(root, { recursive: true, force: true }); }
 }
-
-main().catch(err => { console.error(err); process.exit(1); });
+main().catch(error => { console.error(error); process.exitCode = 1; });

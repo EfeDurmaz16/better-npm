@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
+import fs from "node:fs/promises";
 import { makeTempDir, rmrf, writeJson, writeFile } from "./helpers.js";
 import { verifyFrozenLockfile } from "../src/lib/frozenLockfile.js";
 import { loadOverrides, validateOverrides, suggestOverridesForVulns } from "../src/lib/overrides.js";
@@ -317,3 +318,26 @@ test("overrides: suggestOverridesForVulns generates suggestions", () => {
   assert.equal(suggestions.lodash, "4.17.21");
   assert.equal(suggestions.minimist, "1.2.8"); // highest fixed version
 });
+
+for (const group of ["dependencies", "devDependencies", "optionalDependencies"]) {
+  for (const changed of [{ foo: "2.0.0" }, {}]) {
+    test(`frozenLockfile: rejects changed ${group} root specs even when package exists`, async () => {
+      const dir = await makeTempDir("better-frozen-spec-");
+      try {
+        const manifest = { name: "fixture", [group]: changed };
+        const lock = { lockfileVersion: 3, packages: {
+          "": { name: "fixture", [group]: { foo: "1.0.0" } },
+          "node_modules/foo": { version: "1.0.0" }
+        } };
+        await writeJson(path.join(dir, "package.json"), manifest);
+        await writeJson(path.join(dir, "package-lock.json"), lock);
+        const result = await verifyFrozenLockfile(dir);
+        assert.equal(result.ok, false);
+        assert.match(result.errors.join("\n"), /spec differs from the lockfile root snapshot/);
+        assert.deepEqual(JSON.parse(await fs.readFile(path.join(dir, "package-lock.json"), "utf8")), lock);
+      } finally {
+        await rmrf(dir);
+      }
+    });
+  }
+}

@@ -2595,7 +2595,15 @@ fn main() {
                 let materialize_error: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
                 progress.set_extract_total(selected_packages.len() as u64);
 
-                selected_packages.par_iter().for_each(|pkg| {
+                // Materializing a parent may replace its entire directory. Finish
+                // shallower packages before descendants; siblings remain parallel.
+                let mut layers = std::collections::BTreeMap::new();
+                for pkg in &selected_packages {
+                    let depth = std::path::Path::new(&pkg.rel_path).components().count();
+                    layers.entry(depth).or_insert_with(Vec::new).push(pkg);
+                }
+                for packages in layers.values() {
+                packages.par_iter().for_each(|pkg| {
                     if materialize_error.lock().ok().and_then(|g| g.as_ref().cloned()).is_some() { return; }
                     let (algo, hex) = match cas_key_from_integrity(&pkg.integrity) { Some(k) => k, None => { progress.inc_extract(); return } };
                     let unpacked = unpacked_path(&layout, &algo, &hex);
@@ -2659,6 +2667,7 @@ fn main() {
                     }
                     progress.inc_extract();
                 });
+                }
                 progress.finish_extract();
 
                 if let Some(reason) = materialize_error.lock().ok().and_then(|g| g.clone()) {
