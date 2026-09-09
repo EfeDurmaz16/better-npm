@@ -15,3 +15,6 @@ explicit safe maintenance mechanism is implemented.
 
 This cache is not an isolation boundary against another process that can directly
 write its root. Integrity establishes content identity, not package safety.
+
+Concurrent legacy repair requires the per-content producer lock in campaign slot 4.
+Transactional publication alone is not a complete shared-cache concurrency contract.
