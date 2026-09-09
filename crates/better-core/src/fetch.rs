@@ -37,6 +37,9 @@ fn parse_npm_lockfile(json: &str) -> Result<Vec<ResolvedPackage>, String> {
 fn parse_package_entry(rel_path: &str, entry: &serde_json::Value) -> Result<ResolvedPackage, String> {
     let entry = entry.as_object()
         .ok_or_else(|| format!("Lockfile entry '{}' must be an object", rel_path))?;
+    if entry.get("inBundle").and_then(serde_json::Value::as_bool) == Some(true) {
+        return Err(format!("Native install does not support bundled lockfile entry '{}'; use npm install for this project", rel_path));
+    }
     let required_string = |field: &str| -> Result<String, String> {
         entry.get(field).and_then(serde_json::Value::as_str)
             .filter(|value| !value.is_empty())
