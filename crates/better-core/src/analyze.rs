@@ -118,7 +118,7 @@ pub fn run_materialize_tasks_parallel(
                         MaterializeTask::File(task) => {
                             counters.files.fetch_add(1, Ordering::Relaxed);
                             match strategy {
-                                LinkStrategy::Copy => {
+                                LinkStrategy::Copy | LinkStrategy::Auto => {
                                     if let Err(err) = copy_file_with_retry(&task.src, &task.dst) {
                                         Err(err)
                                     } else {
@@ -126,7 +126,7 @@ pub fn run_materialize_tasks_parallel(
                                         Ok(())
                                     }
                                 }
-                                LinkStrategy::Hardlink | LinkStrategy::Auto => {
+                                LinkStrategy::Hardlink => {
                                     match hardlink_with_retry(&task.src, &task.dst) {
                                         Ok(()) => {
                                             counters.files_linked.fetch_add(1, Ordering::Relaxed);
@@ -222,6 +222,7 @@ pub fn materialize_tree(
             }
             if ft.is_symlink() {
                 let target = fs::read_link(&src).map_err(|e| e.to_string())?;
+                crate::validate_materialize_symlink(dst_root, &dst, &target)?;
                 tasks.push(MaterializeTask::Symlink(MaterializeSymlinkTask {
                     src,
                     dst,
@@ -242,7 +243,7 @@ pub fn materialize_tree(
     directories.sort();
     directories.dedup();
     for dir in &directories {
-        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        crate::create_materialize_dir(dst_root, dir)?;
     }
     phases.mkdir_ms = mkdir_start.elapsed().as_millis() as u64;
 
