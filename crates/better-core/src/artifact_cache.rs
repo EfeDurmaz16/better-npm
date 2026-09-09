@@ -83,7 +83,12 @@ impl ArtifactCache {
             if fs::read_to_string(self.unpacked.join(".better_extracted")).ok().as_deref() == Some(MARKER_VERSION) { return Ok(()); }
             // Retain incomplete legacy content instead of deleting potentially live data.
             let quarantine = parent.join(format!(".better-quarantine-{:016x}", rand::random::<u64>()));
-            fs::rename(&self.unpacked, quarantine).map_err(|e| format!("Cannot quarantine incomplete artifact: {e}"))?;
+            match fs::rename(&self.unpacked, quarantine) {
+                Ok(()) => {}
+                // Another publisher may have quarantined the same legacy entry.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(format!("Cannot quarantine incomplete artifact: {e}")),
+            }
         }
         match fs::rename(&candidate, &self.unpacked) {
             Ok(()) => Ok(()),
