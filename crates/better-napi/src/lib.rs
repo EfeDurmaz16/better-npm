@@ -509,7 +509,7 @@ pub fn materialize_batch(
             let dest_path = Path::new(&entry.dest);
 
             // Try clonefile — near-instant on APFS (same volume)
-            if try_clonefile(src_path, dest_path) {
+            if matches!(strategy, LinkStrategy::Auto) && better_core::validate_clone_source(src_path).is_ok() && try_clonefile(src_path, dest_path) {
                 return (true, Ok(better_core::MaterializeReport::default()));
             }
 

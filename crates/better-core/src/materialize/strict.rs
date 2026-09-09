@@ -60,7 +60,7 @@ pub struct StrictPkgFile {
 pub struct StrictLayoutPlan {
     /// Directories to create (in order).
     pub dirs: Vec<PathBuf>,
-    /// Hard-link operations: (cas_path, target_path)
+    /// File materialization operations: (cas_path, target_path). Field name retained for compatibility.
     pub hard_links: Vec<(PathBuf, PathBuf)>,
     /// Symlink operations: (target, link_path)
     pub symlinks: Vec<(PathBuf, PathBuf)>,
@@ -184,23 +184,13 @@ pub fn materialise_strict_plan(plan: &StrictLayoutPlan) -> Result<StrictLayoutSt
         stats.dirs_created += 1;
     }
 
-    // Hard-link files from CAS
+    // Publish independent files from CAS (including replacement of legacy links)
     for (cas_path, target) in &plan.hard_links {
-        if target.exists() {
-            stats.skipped += 1;
-            continue;
-        }
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent)?;
         }
-        match fs::hard_link(cas_path, target) {
-            Ok(()) => stats.files_linked += 1,
-            Err(_) if cas_path.exists() => {
-                fs::copy(cas_path, target)?;
-                stats.files_copied += 1;
-            }
-            Err(e) => return Err(e),
-        }
+        crate::copy_file_with_retry(cas_path, target).map_err(io::Error::other)?;
+        stats.files_copied += 1;
     }
 
     // Create symlinks

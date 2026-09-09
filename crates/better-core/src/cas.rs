@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::types::*;
-use crate::{extract_json_field, get_file_mode, chrono_now, JsonWriter};
+use crate::{get_file_mode, chrono_now, JsonWriter};
 
 // --- File-level CAS (Content Addressable Store) ---
 
@@ -155,19 +155,8 @@ pub fn ingest_to_file_cas(
                         .map_err(|e| format!("Failed to create store directory: {}", e))?;
                 }
 
-                // Atomic write: write to tmp, then rename
-                let tmp_path = format!("{}.tmp-{}", store_path.display(), std::process::id());
-                fs::copy(full_path, &tmp_path)
-                    .map_err(|e| format!("Failed to copy file to store: {}", e))?;
-
-                match fs::rename(&tmp_path, &store_path) {
-                    Ok(_) => true,
-                    Err(_) => {
-                        // Another process may have created it - that's fine
-                        let _ = fs::remove_file(&tmp_path);
-                        false
-                    }
-                }
+                // Each writer gets private staging, including workers in this process.
+                crate::publish_cas_file(full_path, &store_path)?
             } else {
                 false
             };
@@ -300,12 +289,7 @@ pub fn ingest_to_file_cas(
     fs::create_dir_all(&manifest_dir)
         .map_err(|e| format!("Failed to create manifest directory: {}", e))?;
 
-    let tmp_manifest = format!("{}.tmp-{}", manifest_path.display(), std::process::id());
-    fs::write(&tmp_manifest, manifest_json)
-        .map_err(|e| format!("Failed to write manifest: {}", e))?;
-
-    fs::rename(&tmp_manifest, &manifest_path)
-        .map_err(|e| format!("Failed to rename manifest: {}", e))?;
+    crate::publish_file(&manifest_path, |staged| fs::write(staged, manifest_json))?;
 
     Ok(FileCasIngestResult {
         total_files,
@@ -317,7 +301,8 @@ pub fn ingest_to_file_cas(
 }
 
 /// Materialize a package from file CAS to a destination directory.
-/// Creates hardlinks from the global store, falling back to copy.
+/// Auto creates independent copy-on-write files where supported, otherwise copies.
+/// Hardlink explicitly opts into shared mutable inodes with the global store.
 pub fn materialize_from_file_cas(
     store_root: &Path,
     pkg_algorithm: &str,
@@ -330,7 +315,7 @@ pub fn materialize_from_file_cas(
     // Read manifest
     let manifest_content = match fs::read_to_string(&manifest_path) {
         Ok(content) => content,
-        Err(_) => {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Ok(FileCasMaterializeResult {
                 ok: false,
                 files: 0,
@@ -339,137 +324,52 @@ pub fn materialize_from_file_cas(
                 symlinks: 0,
             });
         }
+        Err(e) => return Err(format!("Read file CAS manifest: {}", e)),
     };
 
-    // Parse manifest to extract file entries from the "files" object.
-    // Works with single-line JSON (produced by JsonWriter).
-    // Format: {"version":1,...,"files":{"rel/path":{"type":"file","hash":"abc","size":1,"mode":420},...}}
-
+    // Treat corrupt manifests as errors, never as a successful empty package.
+    let manifest: serde_json::Value = serde_json::from_str(&manifest_content)
+        .map_err(|e| format!("Invalid file CAS manifest: {}", e))?;
+    let entries = manifest.get("files").and_then(|v| v.as_object())
+        .ok_or("Invalid file CAS manifest: missing files object")?;
     let mut file_entries = Vec::new();
     let mut symlink_entries = Vec::new();
-
-    // Find the "files" object
-    if let Some(files_start) = manifest_content.find("\"files\"") {
-        let after_files = &manifest_content[files_start + 7..]; // skip "files"
-        if let Some(obj_start) = after_files.find('{') {
-            let files_section = &after_files[obj_start..];
-
-            // State machine to extract entries from the files object
-            let mut depth = 0i32;
-            let mut in_string = false;
-            let mut escape_next = false;
-            let mut current_key = String::new();
-            let mut current_entry = String::new();
-            let mut reading_key = false;
-            let mut collecting_entry = false;
-            let mut key_done = false;
-
-            for ch in files_section.chars() {
-                if escape_next {
-                    if reading_key {
-                        current_key.push(ch);
-                    } else if collecting_entry {
-                        current_entry.push(ch);
-                    }
-                    escape_next = false;
-                    continue;
-                }
-
-                if ch == '\\' && in_string {
-                    escape_next = true;
-                    if reading_key {
-                        current_key.push(ch);
-                    } else if collecting_entry {
-                        current_entry.push(ch);
-                    }
-                    continue;
-                }
-
-                if ch == '"' {
-                    in_string = !in_string;
-                    if depth == 1 && !collecting_entry {
-                        if !key_done && in_string {
-                            reading_key = true;
-                            current_key.clear();
-                        } else if !key_done && !in_string {
-                            reading_key = false;
-                            key_done = true;
-                        }
-                    } else if collecting_entry {
-                        current_entry.push(ch);
-                    }
-                    continue;
-                }
-
-                if in_string {
-                    if reading_key {
-                        current_key.push(ch);
-                    } else if collecting_entry {
-                        current_entry.push(ch);
-                    }
-                    continue;
-                }
-
-                // Outside string
-                if ch == '{' {
-                    depth += 1;
-                    if depth == 2 && key_done {
-                        collecting_entry = true;
-                        current_entry.clear();
-                    } else if depth > 2 && collecting_entry {
-                        current_entry.push(ch);
-                    }
-                } else if ch == '}' {
-                    if depth == 2 && collecting_entry {
-                        // Parse this entry
-                        let entry_type = if current_entry.contains("\"type\":\"file\"") {
-                            "file"
-                        } else if current_entry.contains("\"type\":\"symlink\"") {
-                            "symlink"
-                        } else {
-                            ""
-                        };
-
-                        if entry_type == "file" {
-                            if let Some(hash) =
-                                extract_json_field(&current_entry, "hash")
-                            {
-                                file_entries
-                                    .push((current_key.clone(), hash));
-                            }
-                        } else if entry_type == "symlink" {
-                            if let Some(tgt) =
-                                extract_json_field(&current_entry, "target")
-                            {
-                                symlink_entries
-                                    .push((current_key.clone(), tgt));
-                            }
-                        }
-
-                        collecting_entry = false;
-                        current_entry.clear();
-                        key_done = false;
-                    } else if depth > 2 && collecting_entry {
-                        current_entry.push(ch);
-                    }
-                    depth -= 1;
-                    if depth == 0 {
-                        break; // End of "files" object
-                    }
-                } else if ch == ',' && depth == 1 {
-                    key_done = false;
-                } else if collecting_entry {
-                    current_entry.push(ch);
-                }
-            }
+    for (path, entry) in entries {
+        if path.is_empty() || !Path::new(path).components().all(|c| matches!(c, std::path::Component::Normal(_))) {
+            return Err(format!("Invalid file CAS path: {}", path));
         }
+        match entry.get("type").and_then(|v| v.as_str()) {
+            Some("file") => {
+                let hash = entry.get("hash").and_then(|v| v.as_str()).ok_or("Missing CAS file hash")?;
+                if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return Err("Invalid CAS file hash".into());
+                }
+                let mode = entry.get("mode").and_then(|v| v.as_u64()).and_then(|v| u32::try_from(v).ok())
+                    .ok_or("Missing or invalid CAS file mode")?;
+                file_entries.push((path.clone(), hash.to_string(), mode));
+            }
+            Some("symlink") => {
+                let target = entry.get("target").and_then(|v| v.as_str()).ok_or("Missing CAS symlink target")?;
+                crate::validate_materialize_symlink(dest_dir, &dest_dir.join(path), Path::new(target))?;
+                symlink_entries.push((path.clone(), target.to_string()));
+            }
+            _ => return Err("Invalid CAS entry type".into()),
+        }
+    }
+
+    // Validate every source before publishing any destination file. I/O failures
+    // during publication still return Err; callers must not mark that tree reusable.
+    for (_, hash, _) in &file_entries {
+        let source = file_store_path(store_root, hash);
+        let metadata = fs::symlink_metadata(&source).map_err(|e| format!("Read CAS source: {}", e))?;
+        if !metadata.is_file() { return Err("CAS source is not a regular file".into()); }
     }
 
     // Collect all directories needed (sorted shortest-first)
     let mut dirs_needed = HashSet::new();
     dirs_needed.insert(dest_dir.to_path_buf());
 
-    for (rel_path, _) in &file_entries {
+    for (rel_path, _, _) in &file_entries {
         if let Some(parent_str) = Path::new(rel_path).parent() {
             if parent_str.as_os_str().len() > 0 {
                 dirs_needed.insert(dest_dir.join(parent_str));
@@ -490,8 +390,7 @@ pub fn materialize_from_file_cas(
 
     // Create all directories
     for dir in sorted_dirs {
-        fs::create_dir_all(&dir)
-            .map_err(|e| format!("Failed to create directory: {}", e))?;
+        crate::create_materialize_dir(dest_dir, &dir)?;
     }
 
     // Materialize files in parallel using rayon
@@ -501,34 +400,28 @@ pub fn materialize_from_file_cas(
     let linked_count = AtomicU64::new(0);
     let copied_count = AtomicU64::new(0);
 
-    file_entries
-        .par_iter()
-        .for_each(|(rel_path, hash)| {
-            let store_path = file_store_path(store_root, hash);
-            let dest_path = dest_dir.join(rel_path);
-
-            file_count.fetch_add(1, Ordering::Relaxed);
-
-            match link_strategy {
-                LinkStrategy::Copy => {
-                    if fs::copy(&store_path, &dest_path).is_ok() {
-                        copied_count.fetch_add(1, Ordering::Relaxed);
-                    }
-                }
-                LinkStrategy::Hardlink | LinkStrategy::Auto => {
-                    match fs::hard_link(&store_path, &dest_path) {
-                        Ok(_) => {
-                            linked_count.fetch_add(1, Ordering::Relaxed);
-                        }
-                        Err(_) => {
-                            if fs::copy(&store_path, &dest_path).is_ok() {
-                                copied_count.fetch_add(1, Ordering::Relaxed);
-                            }
-                        }
-                    }
+    file_entries.par_iter().try_for_each(|(rel_path, hash, mode)| -> Result<(), String> {
+        let store_path = file_store_path(store_root, hash);
+        let dest_path = dest_dir.join(rel_path);
+        match link_strategy {
+            LinkStrategy::Copy | LinkStrategy::Auto => {
+                crate::copy_file_with_mode(&store_path, &dest_path, Some(*mode))?;
+                copied_count.fetch_add(1, Ordering::Relaxed);
+            }
+            LinkStrategy::Hardlink => {
+                let stored_mode = fs::metadata(&store_path).map(|md| get_file_mode(&md) & 0o7777)
+                    .map_err(|e| format!("Read CAS file metadata: {}", e))?;
+                if stored_mode == (*mode & 0o7777) && crate::hardlink_with_retry(&store_path, &dest_path).is_ok() {
+                    linked_count.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    crate::copy_file_with_mode(&store_path, &dest_path, Some(*mode))?;
+                    copied_count.fetch_add(1, Ordering::Relaxed);
                 }
             }
-        });
+        }
+        file_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    })?;
 
     let mut stats = FileCasMaterializeResult {
         ok: true,
@@ -542,32 +435,9 @@ pub fn materialize_from_file_cas(
     for (rel_path, target) in symlink_entries {
         let dest_path = dest_dir.join(&rel_path);
 
-        // Remove existing file/link if present
-        let _ = fs::remove_file(&dest_path);
-
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink(&target, &dest_path)
-                .map_err(|e| format!("Failed to create symlink: {}", e))?;
-        }
-
-        #[cfg(windows)]
-        {
-            // On Windows, try to determine if target is a directory
-            let target_path = if Path::new(&target).is_absolute() {
-                PathBuf::from(&target)
-            } else {
-                dest_path.parent().unwrap_or(dest_dir).join(&target)
-            };
-
-            if target_path.is_dir() {
-                std::os::windows::fs::symlink_dir(&target, &dest_path)
-                    .map_err(|e| format!("Failed to create directory symlink: {}", e))?;
-            } else {
-                std::os::windows::fs::symlink_file(&target, &dest_path)
-                    .map_err(|e| format!("Failed to create file symlink: {}", e))?;
-            }
-        }
+        crate::create_symlink_with_retry(&MaterializeSymlinkTask {
+            src: dest_path.clone(), dst: dest_path, target: PathBuf::from(target),
+        })?;
 
         stats.symlinks += 1;
     }

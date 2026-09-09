@@ -173,7 +173,11 @@ pub fn materialise_lazy_package(
     entry: &LazyPackageEntry,
     project_root: &Path,
 ) -> Result<(), String> {
+    if !entry.rel_path.starts_with("node_modules/") || !Path::new(&entry.rel_path).components().all(|c| matches!(c, std::path::Component::Normal(_))) {
+        return Err("lazy: invalid package destination".into());
+    }
     let target = project_root.join(&entry.rel_path);
+    crate::create_materialize_dir(project_root, &target)?;
     let src = Path::new(&entry.cas_path);
     if !src.exists() {
         return Err(format!(
@@ -181,31 +185,9 @@ pub fn materialise_lazy_package(
             entry.name
         ));
     }
-    std::fs::create_dir_all(&target)
-        .map_err(|e| format!("lazy: create dir {}: {}", target.display(), e))?;
-    if !crate::try_clonefile_dir(src, &target) {
-        copy_dir(src, &target)
-            .map_err(|e| format!("lazy: materialise {} failed: {}", entry.name, e))?;
-    }
-    Ok(())
-}
-
-fn copy_dir(src: &Path, dst: &Path) -> Result<(), String> {
-    for entry in std::fs::read_dir(src)
-        .map_err(|e| format!("readdir {}: {}", src.display(), e))?
-    {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let dest_path = dst.join(entry.file_name());
-        let ft = entry.file_type().map_err(|e| e.to_string())?;
-        if ft.is_dir() {
-            std::fs::create_dir_all(&dest_path).map_err(|e| e.to_string())?;
-            copy_dir(&entry.path(), &dest_path)?;
-        } else {
-            std::fs::copy(entry.path(), &dest_path)
-                .map(|_| ())
-                .map_err(|e| e.to_string())?;
-        }
-    }
+    crate::materialize_tree(src, &target, crate::types::LinkStrategy::Auto, 4,
+        crate::types::MaterializeProfile::Auto)
+        .map_err(|e| format!("lazy: materialise {} failed: {}", entry.name, e))?;
     Ok(())
 }
 
