@@ -1023,7 +1023,7 @@ pub fn extract_json_field(json: &str, field_name: &str) -> Option<String> {
 
 pub fn package_name_from_path(rel_path: &str) -> String {
     let parts: Vec<&str> = rel_path.split('/').collect();
-    if let Some(idx) = parts.iter().position(|&p| p == "node_modules") {
+    if let Some(idx) = parts.iter().rposition(|&p| p == "node_modules") {
         if idx + 1 < parts.len() {
             let first = parts[idx + 1];
             if first.starts_with('@') && idx + 2 < parts.len() {

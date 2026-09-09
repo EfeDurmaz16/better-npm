@@ -124,3 +124,30 @@ fn bundled_descriptors_report_unsupported_in_v2_and_v3_lockfiles() {
         assert!(error.contains("use npm install"), "{error}");
     }
 }
+
+#[test]
+fn nested_package_names_come_from_the_innermost_node_modules_segment() {
+    let result = resolve(&json!({"packages": {
+        "node_modules/foo": package(),
+        "node_modules/foo/node_modules/bar": package(),
+        "node_modules/@outer/foo/node_modules/@inner/bar": package(),
+        "node_modules/foo/node_modules/bar/node_modules/baz": package()
+    }}))
+    .unwrap();
+    for (path, expected) in [
+        ("node_modules/foo", "foo"),
+        ("node_modules/foo/node_modules/bar", "bar"),
+        (
+            "node_modules/@outer/foo/node_modules/@inner/bar",
+            "@inner/bar",
+        ),
+        ("node_modules/foo/node_modules/bar/node_modules/baz", "baz"),
+    ] {
+        let package = result
+            .packages
+            .iter()
+            .find(|package| package.rel_path == path)
+            .unwrap();
+        assert_eq!(package.name, expected, "{path}");
+    }
+}
