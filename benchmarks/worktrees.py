@@ -145,7 +145,7 @@ def validate(project, packages, changed=False):
             path = project / 'node_modules' / name / filename
             if not path.is_file() or path.read_bytes() != expected:
                 errors.append(f'{name}/{filename}: missing or incorrect content')
-    actual = {p.name for p in (project / 'node_modules').glob('fixture-*')}
+    actual = {p.name for p in (project / 'node_modules').glob('*') if not p.name.startswith('.')}
     if actual != set(packages):
         errors.append('package inventory mismatch')
     return errors

@@ -29,6 +29,8 @@ class EvidenceTests(unittest.TestCase):
             self.assertIn('incorrect content', bench.validate(project, packages)[0])
             (target / 'package.json').unlink()
             self.assertEqual(len(bench.validate(project, packages)), 2)
+            (project / 'node_modules' / 'unexpected-package').mkdir()
+            self.assertIn('package inventory mismatch', bench.validate(project, packages))
 
     def test_change_updates_manifest_and_lock_together(self):
         packages = {f'fixture-{i}': {v: bench.archive(f'fixture-{i}', v, 10)
