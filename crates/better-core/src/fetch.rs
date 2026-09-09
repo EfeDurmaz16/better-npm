@@ -133,6 +133,8 @@ pub fn fetch_packages(
 ) -> Result<FetchResult, String> {
     use rayon::prelude::*;
     use crate::integrity::Integrity;
+    use crate::fetch_pipeline::{ArtifactLimits, stream_to_staging, extract_verified_tarball};
+    let limits = ArtifactLimits::default();
 
     let layout = CasLayout::new(cache_dir);
 
@@ -176,17 +178,18 @@ pub fn fetch_packages(
         if !retained {
             let response = crate::transport::download(&http_client, pkg, npmrc)?;
 
-            // Read full response bytes (needed for both hashing and extraction)
-            let bytes = response.bytes()
-                .map_err(|_| format!("Failed to read download for {}", pkg.name))?;
-            let byte_count = bytes.len() as u64;
-
-            integrity.verify(&bytes)?;
-
+            if response.content_length().is_some_and(|size| size > limits.compressed_bytes) {
+                return Err("Tarball exceeds compressed byte limit; increase --max-tarball-bytes".into());
+            }
             let stage = artifact.create_download()?;
             let source = stage.path().join("archive.tgz");
-            fs::write(&source, &bytes).map_err(|e| e.to_string())?;
-            artifact.publish_tarball(&source, verify)?;
+            let file = fs::File::create(&source).map_err(|e| e.to_string())?;
+            let mut verifier = integrity.verifier();
+            let byte_count = stream_to_staging(response, file, limits.compressed_bytes,
+                |chunk| verifier.update(chunk))?;
+            verifier.finish()?;
+            // The private staged file was verified incrementally before publication.
+            artifact.publish_tarball(&source, |_| Ok(()))?;
             bytes_downloaded.fetch_add(byte_count, Ordering::Relaxed);
             packages_fetched.fetch_add(1, Ordering::Relaxed);
         } else {
@@ -194,9 +197,7 @@ pub fn fetch_packages(
         }
         packages_cached.fetch_add(multiplicity - 1, Ordering::Relaxed);
         artifact.extract_and_publish(|source, destination| {
-            let file = fs::File::open(source).map_err(|e| e.to_string())?;
-            let gz = flate2::read::GzDecoder::new(file);
-            tar::Archive::new(gz).unpack(destination).map_err(|e| format!("Failed to extract tarball: {e}"))
+            extract_verified_tarball(source, destination, limits)
         })?;
 
         Ok(())
