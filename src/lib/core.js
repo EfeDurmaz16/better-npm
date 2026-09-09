@@ -181,11 +181,10 @@ export function runBetterCoreMaterializeBatchNapi(entries, opts = {}) {
 }
 
 export function runBetterCoreFetchAndExtractNapi(lockfilePath, cacheDir, opts = {}) {
+  validateFetchOptions(opts);
   const addon = tryLoadNapiAddon();
   if (!addon || typeof addon.fetchAndExtract !== "function") return null;
-  const napiOpts = {};
-  if (opts.linkStrategy) napiOpts.linkStrategy = String(opts.linkStrategy);
-  if (opts.jobs != null) napiOpts.jobs = Number(opts.jobs);
+  const napiOpts = { ...validateFetchOptions(opts) };
   const result = addon.fetchAndExtract(lockfilePath, cacheDir, napiOpts);
   if (!result || typeof result !== "object") throw new Error("napi fetchAndExtract returned invalid result");
   return result;
@@ -741,14 +740,29 @@ export function runVerifyLockMetadataNapi(projectRoot) {
   try { return JSON.parse(json); } catch { return null; }
 }
 
+export function validateFetchOptions(opts = {}) {
+  for (const key of ["jobs", "extractJobs", "maxTarballBytes", "maxExpandedBytes", "maxArchiveEntries", "maxArchiveMetadataBytes"]) {
+    if (opts[key] == null) continue;
+    const max = key === "jobs" || key === "extractJobs" ? 256 : Number.MAX_SAFE_INTEGER;
+    if (!Number.isSafeInteger(opts[key]) || opts[key] < 1 || opts[key] > max) {
+      throw new Error(`Invalid ${key}: expected a positive safe integer in 1..${max}`);
+    }
+  }
+  return opts;
+}
+
 export async function runBetterCoreInstall(corePath, projectRoot, opts = {}) {
   assertInstallOptionSupport("better", opts);
+  validateFetchOptions(opts);
   const args = ["install", "--project-root", projectRoot, "--os", process.platform, "--cpu", process.arch];
   if (opts.lockfile) args.push("--lockfile", String(opts.lockfile));
   if (opts.cacheRoot) args.push("--cache-root", String(opts.cacheRoot));
   if (opts.storeRoot) args.push("--store-root", String(opts.storeRoot));
   if (opts.linkStrategy) args.push("--link-strategy", String(opts.linkStrategy));
   if (opts.jobs != null) args.push("--jobs", String(opts.jobs));
+  for (const [key, flag] of [["extractJobs", "--extract-jobs"], ["maxTarballBytes", "--max-tarball-bytes"], ["maxExpandedBytes", "--max-expanded-bytes"], ["maxArchiveEntries", "--max-archive-entries"], ["maxArchiveMetadataBytes", "--max-archive-metadata-bytes"]]) {
+    if (opts[key] != null) args.push(flag, String(opts[key]));
+  }
   if (opts.scripts === false) args.push("--no-scripts");
   if (opts.dedup) args.push("--dedup");
   if (opts.production) args.push("--production");

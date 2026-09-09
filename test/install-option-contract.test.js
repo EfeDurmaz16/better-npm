@@ -5,7 +5,7 @@ import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { runBetterCoreInstall } from "../src/lib/core.js";
+import { runBetterCoreInstall, runBetterCoreFetchAndExtractNapi } from "../src/lib/core.js";
 import { makeTempDir, rmrf, writeJson } from "./helpers.js";
 
 const exec = promisify(execFile);
@@ -115,3 +115,36 @@ test("native install enforces the option contract before resolving packages", as
     await rmrf(dir);
   }
 });
+
+for (const key of ["jobs", "extractJobs", "maxTarballBytes", "maxExpandedBytes", "maxArchiveEntries", "maxArchiveMetadataBytes"]) {
+  test(`fetch bridges reject invalid ${key} before native work`, async () => {
+    for (const value of [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+      await assert.rejects(runBetterCoreInstall("/missing-core", "/missing-project", { [key]: value }), /positive safe integer/);
+      assert.throws(() => runBetterCoreFetchAndExtractNapi("/missing-lock", "/missing-cache", { [key]: value }), /positive safe integer/);
+    }
+  });
+}
+
+test("bridge forwards independent network, extraction and artifact budgets", async () => {
+  const dir = await makeTempDir("better-fetch-options-");
+  try {
+    const stub = path.join(dir, "core");
+    await fs.writeFile(stub, `#!${process.execPath}\nconsole.log(JSON.stringify({ args: process.argv.slice(2) }));\n`, { mode: 0o755 });
+    const report = await runBetterCoreInstall(stub, dir, { jobs: 4, extractJobs: 2,
+      maxTarballBytes: 100, maxExpandedBytes: 200, maxArchiveEntries: 3, maxArchiveMetadataBytes: 50 });
+    assert.deepEqual(report.args.slice(7), ["--jobs", "4", "--extract-jobs", "2",
+      "--max-tarball-bytes", "100", "--max-expanded-bytes", "200",
+      "--max-archive-entries", "3", "--max-archive-metadata-bytes", "50"]);
+  } finally { await rmrf(dir); }
+});
+
+for (const flag of ["--jobs", "--extract-jobs", "--max-tarball-bytes", "--max-expanded-bytes", "--max-archive-entries", "--max-archive-metadata-bytes"]) {
+  test(`CLI rejects invalid ${flag} before creating cache directories`, async () => {
+    const dir = await makeTempDir("better-fetch-invalid-");
+    try {
+      await assert.rejects(exec(process.execPath, [cli, "install", "--engine", "better", "--experimental", flag, "0",
+        "--json", "--project-root", path.join(dir, "missing"), "--cache-root", path.join(dir, "cache")]), /positive safe integer/);
+      assert.deepEqual(await fs.readdir(dir), []);
+    } finally { await rmrf(dir); }
+  });
+}
