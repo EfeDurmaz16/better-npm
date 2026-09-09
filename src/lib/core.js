@@ -3,6 +3,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { runCommand } from "./spawn.js";
+import { assertInstallOptionSupport } from "./installOptions.js";
 
 async function exists(p) {
   try {
@@ -737,6 +738,7 @@ export function runVerifyLockMetadataNapi(projectRoot) {
 }
 
 export async function runBetterCoreInstall(corePath, projectRoot, opts = {}) {
+  assertInstallOptionSupport("better", opts);
   const args = ["install", "--project-root", projectRoot];
   if (opts.lockfile) args.push("--lockfile", String(opts.lockfile));
   if (opts.cacheRoot) args.push("--cache-root", String(opts.cacheRoot));
