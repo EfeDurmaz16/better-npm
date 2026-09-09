@@ -406,7 +406,28 @@ fn napi_fetch_options(opts: Option<NapiFetchOpts>) -> Result<FetchOptions, Strin
 }
 
 #[napi(object)]
+pub struct NapiFetchMetrics {
+    #[napi(js_name = "networkJobs")]
+    pub network_jobs: f64,
+    #[napi(js_name = "extractJobs")]
+    pub extract_jobs: f64,
+    #[napi(js_name = "queueCapacity")]
+    pub queue_capacity: f64,
+    #[napi(js_name = "peakPreparing")]
+    pub peak_preparing: f64,
+    #[napi(js_name = "peakExtracting")]
+    pub peak_extracting: f64,
+    #[napi(js_name = "prepareMicros")]
+    pub prepare_micros: f64,
+    #[napi(js_name = "extractMicros")]
+    pub extract_micros: f64,
+    #[napi(js_name = "backpressureMicros")]
+    pub backpressure_micros: f64,
+}
+
+#[napi(object)]
 pub struct NapiFetchResult {
+    pub metrics: Option<NapiFetchMetrics>,
     pub ok: bool,
     pub reason: Option<String>,
     #[napi(js_name = "packagesFetched")]
@@ -425,7 +446,7 @@ pub fn fetch_and_extract(
 ) -> NapiFetchResult {
     let options = match napi_fetch_options(opts) {
         Ok(options) => options,
-        Err(reason) => return NapiFetchResult { ok: false, reason: Some(reason), packages_fetched: 0.0, packages_cached: 0.0, bytes_downloaded: 0.0 },
+        Err(reason) => return NapiFetchResult { metrics: None, ok: false, reason: Some(reason), packages_fetched: 0.0, packages_cached: 0.0, bytes_downloaded: 0.0 },
     };
     let lockfile = Path::new(&lockfile_path);
     let cache = Path::new(&cache_dir);
@@ -435,6 +456,7 @@ pub fn fetch_and_extract(
         Ok(result) => result.packages,
         Err(reason) => {
             return NapiFetchResult {
+                metrics: None,
                 ok: false,
                 reason: Some(reason),
                 packages_fetched: 0.0,
@@ -447,6 +469,16 @@ pub fn fetch_and_extract(
     // Fetch packages
     match fetch_packages_with_options(&packages, cache, None, &options) {
         Ok(fetch_result) => NapiFetchResult {
+            metrics: Some(NapiFetchMetrics {
+                network_jobs: fetch_result.metrics.network_jobs as f64,
+                extract_jobs: fetch_result.metrics.extract_jobs as f64,
+                queue_capacity: fetch_result.metrics.queue_capacity as f64,
+                peak_preparing: fetch_result.metrics.peak_preparing as f64,
+                peak_extracting: fetch_result.metrics.peak_extracting as f64,
+                prepare_micros: fetch_result.metrics.prepare_micros as f64,
+                extract_micros: fetch_result.metrics.extract_micros as f64,
+                backpressure_micros: fetch_result.metrics.backpressure_micros as f64,
+            }),
             ok: true,
             reason: None,
             packages_fetched: fetch_result.packages_fetched as f64,
@@ -454,6 +486,7 @@ pub fn fetch_and_extract(
             bytes_downloaded: fetch_result.bytes_downloaded as f64,
         },
         Err(reason) => NapiFetchResult {
+            metrics: None,
             ok: false,
             reason: Some(reason),
             packages_fetched: 0.0,

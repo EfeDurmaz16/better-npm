@@ -2521,6 +2521,7 @@ fn main() {
                     packages_fetched: 0,
                     packages_cached: selected_packages.len() as u64,
                     bytes_downloaded: 0,
+                    metrics: Default::default(),
                 }
             } else {
                 // Build registry chain for failover if requested
@@ -2890,6 +2891,16 @@ fn main() {
             w.key("packagesFetched"); w.value_u64(fetch_result.packages_fetched);
             w.key("packagesCached"); w.value_u64(fetch_result.packages_cached);
             w.key("bytesDownloaded"); w.value_u64(fetch_result.bytes_downloaded);
+            w.key("fetchMetrics"); w.begin_object();
+            w.key("networkJobs"); w.value_u64(fetch_result.metrics.network_jobs as u64);
+            w.key("extractJobs"); w.value_u64(fetch_result.metrics.extract_jobs as u64);
+            w.key("queueCapacity"); w.value_u64(fetch_result.metrics.queue_capacity as u64);
+            w.key("peakPreparing"); w.value_u64(fetch_result.metrics.peak_preparing as u64);
+            w.key("peakExtracting"); w.value_u64(fetch_result.metrics.peak_extracting as u64);
+            w.key("prepareMicros"); w.value_u64(fetch_result.metrics.prepare_micros as u64);
+            w.key("extractMicros"); w.value_u64(fetch_result.metrics.extract_micros as u64);
+            w.key("backpressureMicros"); w.value_u64(fetch_result.metrics.backpressure_micros as u64);
+            w.end_object();
             w.key("files"); w.value_u64(total_files);
             w.key("directories"); w.value_u64(total_dirs);
             w.key("symlinks"); w.value_u64(total_symlinks);
