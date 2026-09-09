@@ -92,3 +92,15 @@ fn root_restrictions_are_enforced_even_for_an_empty_install() {
     assert!(select(json!({"os":["linux"]}),vec![],false).unwrap_err().contains("Root package"));
     assert!(select(json!({"libc":["glibc"]}),vec![],false).unwrap_err().contains("root libc"));
 }
+
+#[test]
+fn invalid_cpu_and_missing_root_metadata_fail_explicitly() {
+    assert!(better_core::validate_install_target("darwin", "made-up").unwrap_err().contains("CPU"));
+    let dir = tempfile::tempdir().unwrap();
+    let lock = dir.path().join("package-lock.json");
+    std::fs::write(&lock, json!({"lockfileVersion":3,"packages":{
+        "node_modules/pkg":{"version":"1","resolved":"https://example.test/p.tgz","integrity":"sha512-AAAA","optional":true,"os":["linux"]}
+    }}).to_string()).unwrap();
+    let resolved = resolve_from_lockfile(&lock).unwrap();
+    assert!(select_platform_packages(&resolved,false,"darwin","arm64").err().unwrap().contains("root package metadata"));
+}

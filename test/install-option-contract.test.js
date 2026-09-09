@@ -53,7 +53,7 @@ test("bridge forwards supported native install options", async () => {
       linkStrategy: "copy", jobs: 2, scripts: false, dedup: true,
       production: true, offline: true, nodeLayout: "strict"
     });
-    assert.deepEqual(report.args, ["install", "--project-root", dir,
+    assert.deepEqual(report.args, ["install", "--project-root", dir, "--os", process.platform, "--cpu", process.arch,
       "--lockfile", "custom-lock.json", "--cache-root", "cache", "--store-root", "store",
       "--link-strategy", "copy", "--jobs", "2", "--no-scripts", "--dedup", "--production", "--offline", "--strict"]);
   } finally {

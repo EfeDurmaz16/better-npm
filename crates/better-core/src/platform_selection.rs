@@ -86,7 +86,7 @@ pub fn select_platform_packages(resolved: &ResolveResult, production: bool, os: 
             return Err("Native install does not support root libc restrictions; use npm install".to_string());
         }
     }
-    let packages: Vec<_> = resolved.packages.iter().filter(|p| !production || !p.selection.dev).collect();
+    let packages = crate::select_production_packages(&resolved.packages, production);
     let mut excluded = BTreeSet::new();
     for (index, package) in packages.iter().enumerate() {
         let metadata = &package.selection;
@@ -132,11 +132,11 @@ pub fn select_platform_packages(resolved: &ResolveResult, production: bool, os: 
     finish_selection(packages.into_iter().enumerate().filter(|(index, _)| reachable.contains(index)).map(|(_, package)| package).collect())
 }
 
-fn finish_selection(packages: Vec<&ResolvedPackage>) -> Result<Vec<ResolvedPackage>, String> {
+fn finish_selection(packages: Vec<ResolvedPackage>) -> Result<Vec<ResolvedPackage>, String> {
     for package in &packages {
         if package.selection.libc.is_some() {
             return Err(format!("Native install does not support libc restrictions for '{}'; use npm install", package.rel_path));
         }
     }
-    Ok(packages.into_iter().cloned().collect())
+    Ok(packages)
 }

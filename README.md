@@ -80,6 +80,13 @@ devOptional packages. It refreshes node_modules after fetch succeeds, removing s
 packages and bins while keeping the complete better.lock for frozen checks. Lifecycle
 children receive NODE_ENV=production.
 
+The native installer selects OS/CPU packages for the consuming Node runtime. Required
+platform mismatches fail before fetching or changing node_modules; incompatible optional
+branches are omitted, including orphan dependencies. The complete lockfile is preserved.
+Direct better-core callers can supply --os and --cpu; defaults follow the native binary.
+Reports include the selected target. Matching libc restrictions are explicitly unsupported
+until runtime libc detection is available; use npm for those projects.
+
 Install rejects `--sandbox`, `--verify-provenance`, and `--require-provenance` on every
 engine, before cache reuse or installation. Script isolation and cryptographic provenance
 verification are not fully implemented. Direct `better-core install` also rejects these flags.

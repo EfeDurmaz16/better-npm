@@ -739,7 +739,7 @@ export function runVerifyLockMetadataNapi(projectRoot) {
 
 export async function runBetterCoreInstall(corePath, projectRoot, opts = {}) {
   assertInstallOptionSupport("better", opts);
-  const args = ["install", "--project-root", projectRoot];
+  const args = ["install", "--project-root", projectRoot, "--os", process.platform, "--cpu", process.arch];
   if (opts.lockfile) args.push("--lockfile", String(opts.lockfile));
   if (opts.cacheRoot) args.push("--cache-root", String(opts.cacheRoot));
   if (opts.storeRoot) args.push("--store-root", String(opts.storeRoot));
