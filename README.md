@@ -43,7 +43,7 @@ Benchmarked on a real local project with 15 direct dependencies and 145 resolved
 | **I/O** | macOS `clonefile()` — APFS copy-on-write | near-instant materialization |
 | **Concurrency** | rayon-powered parallel everything | resolution, fetch, extract, link |
 | **Storage** | SHA-512 package cache + SHA-256 file CAS | dedup across projects |
-| **Fallback** | 3-tier: clonefile > CAS hardlinks > copy | works on all filesystems |
+| **Fallback** | Auto: copy-on-write clone > independent copy | works on all filesystems |
 
 </details>
 
@@ -51,19 +51,23 @@ Benchmarked on a real local project with 15 direct dependencies and 145 resolved
 <summary><b>Cross-project dedup (<code>--dedup</code>)</b></summary>
 <br>
 
-Share `node_modules` files across projects via hardlinks from a global store:
+Reuse file contents from the global store with isolated installed files:
 
 ```bash
 better install --dedup
 ```
 
-| Projects | Without dedup | With --dedup | Savings |
-|----------|-------------:|-------------:|--------:|
-| 2 | 28MB | ~16MB | **43%** |
-| 5 | 70MB | ~18MB | **74%** |
-| 10 | 140MB | ~20MB | **86%** |
+The default `--link-strategy auto` uses copy-on-write where supported and independent
+copies otherwise. Disk savings depend on filesystem support and workload.
 
-Files share the same inode — editing one won't affect others (copy-on-write at the filesystem level).
+`--link-strategy hardlink` explicitly shares writable inodes with the store.
+Editing an installed hardlinked file can modify the cache and other installations.
+Use the default strategy for agent worktree isolation.
+
+Materialization errors fail the install. If an existing directory conflicts with a
+package file or symlink, move that conflicting directory aside and retry; the
+fallback does not recursively delete its contents. Publication is atomic per file,
+not a transaction covering the entire package. A failed tree must not be reused.
 
 </details>
 

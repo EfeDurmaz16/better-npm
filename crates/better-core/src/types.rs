@@ -30,7 +30,9 @@ impl NodeLayout {
 
 #[derive(Debug, Clone, Copy)]
 pub enum LinkStrategy {
+    /// Isolated copy-on-write where available, independent copy otherwise.
     Auto,
+    /// Explicit shared-inode opt-in: installed writes can mutate the store.
     Hardlink,
     Copy,
 }

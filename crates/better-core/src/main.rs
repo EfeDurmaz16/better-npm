@@ -2480,6 +2480,10 @@ fn main() {
                     std::process::exit(1);
                 }
             };
+            if let Err(reason) = better_core::validate_package_paths(&selected_packages) {
+                eprintln!("{reason}");
+                std::process::exit(1);
+            }
             let refresh_tree = production || selected_packages.len() != resolve_result.packages.len();
 
             // Step 2: Fetch (skip network in --offline mode, only use CAS)
@@ -2557,6 +2561,10 @@ fn main() {
             let layout = CasLayout::new(&cache_root);
             let file_cas_root = store_root.unwrap_or_else(|| cache_root.join("file-store"));
             let node_modules = project_root.join("node_modules");
+            if std::fs::symlink_metadata(&node_modules).is_ok_and(|md| md.file_type().is_symlink()) {
+                eprintln!("Refusing a symlink node_modules destination");
+                std::process::exit(1);
+            }
             // Refresh only after every selected package has passed fetch/cache checks.
             // This also removes stale dev bins and strict-layout store entries.
             if refresh_tree {
@@ -2585,7 +2593,10 @@ fn main() {
                     std::process::exit(1);
                 }
             }
-            let _ = std::fs::create_dir_all(&node_modules);
+            if let Err(reason) = better_core::create_materialize_dir(&node_modules, &node_modules) {
+                eprintln!("{reason}");
+                std::process::exit(1);
+            }
 
             let total_files = std::sync::atomic::AtomicU64::new(0);
             let total_dirs = std::sync::atomic::AtomicU64::new(0);
@@ -2633,7 +2644,10 @@ fn main() {
                         node_modules.join(&pkg.rel_path)
                     };
                     if let Some(parent) = dest_path.parent() {
-                        let _ = std::fs::create_dir_all(parent);
+                        if let Err(reason) = better_core::create_materialize_dir(&node_modules, parent) {
+                            eprintln!("{reason}");
+                            std::process::exit(1);
+                        }
                     }
                 }
 
@@ -2654,12 +2668,22 @@ fn main() {
                     let (algo, hex) = match cas_key_from_integrity(&pkg.integrity) { Some(k) => k, None => { progress.inc_extract(); return } };
                     let unpacked = unpacked_path(&layout, &algo, &hex);
                     let src_dir = unpacked.join("package");
-                    if !src_dir.exists() { progress.inc_extract(); return; }
+                    if !src_dir.is_dir() {
+                        if let Ok(mut guard) = materialize_error.lock() {
+                            *guard = Some(format!("Missing materialization source for {}", pkg.name));
+                        }
+                        return;
+                    }
                     let dest_path = if pkg.rel_path.starts_with("node_modules/") {
                         node_modules.join(&pkg.rel_path[13..])
                     } else {
                         node_modules.join(&pkg.rel_path)
                     };
+
+                    if let Err(reason) = better_core::create_materialize_dir(&node_modules, &dest_path) {
+                        if let Ok(mut guard) = materialize_error.lock() { *guard = Some(reason); }
+                        return;
+                    }
 
                     if dedup {
                         let _ = ingest_to_file_cas(&file_cas_root, &algo, &hex, &src_dir);
@@ -2673,13 +2697,13 @@ fn main() {
                                 return;
                             }
                         }
-                        if try_clonefile_dir(&src_dir, &dest_path) {
+                        if matches!(link_strategy, LinkStrategy::Auto) && try_clonefile_dir(&src_dir, &dest_path) {
                             cloned.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             progress.inc_extract();
                             return;
                         }
                     } else {
-                        if try_clonefile_dir(&src_dir, &dest_path) {
+                        if matches!(link_strategy, LinkStrategy::Auto) && try_clonefile_dir(&src_dir, &dest_path) {
                             cloned.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             let _ = ingest_to_file_cas(&file_cas_root, &algo, &hex, &src_dir);
                             progress.inc_extract();
