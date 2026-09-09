@@ -24,3 +24,7 @@ Streaming uses a 64 KiB application copy buffer. This is not a process RSS bound
 Extraction deliberately decompresses twice: a bounded preflight validates the archive before the extraction pass writes its entries. This trades decompression CPU for predictable validation before writes. Sparse archives and PAX entries whose declared size differs from the underlying header are unsupported and fail explicitly.
 
 Stage duration totals sum elapsed time across concurrent work. They are neither end-to-end wall time nor CPU time and must not be added together to claim install latency. Measure wall time, CPU time and peak RSS independently when comparing worker settings. More workers can increase memory pressure and disk contention; choose settings from representative measurements.
+
+## Runtime reporting
+
+`install.backend` records the operation actually performed: `native-binary`, `none` for a local no-op reuse, `cache-materialize` for a successful global-cache restore, or `package-manager`. When the native binary performs installation, `engineRuntime.selected` is `rust`, `engineRuntime.backend` is `native-binary`, and `engineRuntime.requested` retains the requested core mode. Explicit `js` or `napi` requests report the binary requirement as the fallback reason. Global-cache restore details remain separately available under `materialize.runtime`; runtime availability alone does not establish that an installer executed.

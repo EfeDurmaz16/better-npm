@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { nativeInstallRuntime } from "../src/commands/install.js";
 import { runBetterCoreInstall, runBetterCoreFetchAndExtractNapi } from "../src/lib/core.js";
 import { makeTempDir, rmrf, writeJson } from "./helpers.js";
 
@@ -103,8 +104,12 @@ test("native install enforces the option contract before resolving packages", as
     const env = { ...process.env, BETTER_CORE_PATH: native };
     const first = JSON.parse((await exec(process.execPath, args, { cwd: dir, env })).stdout);
     assert.equal(first.betterEngine.ok, true);
+    assert.equal(first.engineRuntime.selected, "rust");
+    assert.equal(first.engineRuntime.backend, "native-binary");
+    assert.equal(first.install.backend, "native-binary");
     const reused = JSON.parse((await exec(process.execPath, args, { cwd: dir, env })).stdout);
     assert.equal(reused.reuseDecision.hit, true);
+    assert.equal(reused.install.backend, "none");
     for (const [, flag, reason] of unsupported) {
       await assert.rejects(exec(process.execPath, [...args, flag], { cwd: dir, env }), error => {
         assert.match(error.stdout + error.stderr, reason);
@@ -148,3 +153,15 @@ for (const flag of ["--jobs", "--extract-jobs", "--max-tarball-bytes", "--max-ex
     } finally { await rmrf(dir); }
   });
 }
+
+test("native install runtime reports the binary actually used while preserving requested mode", () => {
+  for (const requested of ["auto", "rust", "napi", "js"]) {
+    const runtime = nativeInstallRuntime(requested, "/actual/better-core");
+    assert.equal(runtime.requested, requested);
+    assert.equal(runtime.selected, "rust");
+    assert.equal(runtime.backend, "native-binary");
+    assert.equal(runtime.corePath, "/actual/better-core");
+    assert.equal(runtime.fallbackUsed, requested === "napi" || requested === "js");
+    assert.equal(runtime.fallbackReason, runtime.fallbackUsed ? "native_install_requires_binary" : null);
+  }
+});

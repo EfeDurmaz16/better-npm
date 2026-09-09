@@ -282,6 +282,18 @@ function normalizeCacheScripts(value) {
   return "rebuild";
 }
 
+export function nativeInstallRuntime(requested, corePath) {
+  const fallbackUsed = requested !== "auto" && requested !== "rust";
+  return {
+    requested,
+    selected: "rust",
+    backend: "native-binary",
+    fallbackUsed,
+    fallbackReason: fallbackUsed ? "native_install_requires_binary" : null,
+    corePath
+  };
+}
+
 async function resolveReplayRuntime(coreMode) {
   const runtime = {
     requested: coreMode,
@@ -972,7 +984,7 @@ Workspace options:
     mode: cacheMode,
     readOnly: cacheReadOnly
   };
-  const engineRuntime = engine === "better"
+  let engineRuntime = engine === "better"
     ? await resolveReplayRuntime(coreMode)
     : {
         requested: "n/a",
@@ -1313,6 +1325,7 @@ Workspace options:
         production,
         offline,
       });
+      engineRuntime = nativeInstallRuntime(coreMode, corePath);
       const ended = Date.now();
       cmd = "better";
       args = ["install", "--engine", "better"];
@@ -1529,6 +1542,7 @@ Workspace options:
     cacheRoot: layout.root,
     command: { cmd, args },
     install: {
+      backend: betterEngine ? "native-binary" : noopReuseInstall ? "none" : globalMaterialize?.ok ? "cache-materialize" : "package-manager",
       wallTimeMs: install.wallTimeMs,
       metrics: installMetrics
     },
