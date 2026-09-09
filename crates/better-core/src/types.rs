@@ -97,6 +97,8 @@ pub struct MaterializeStats {
     pub files: u64,
     pub files_linked: u64,
     pub files_copied: u64,
+    pub files_reused: u64,
+    pub symlinks_reused: u64,
     pub link_fallback_copies: u64,
     pub directories: u64,
     pub symlinks: u64,
@@ -107,6 +109,10 @@ pub struct MaterializeStats {
 
 #[derive(Default)]
 pub struct PhaseDurations {
+    pub scan_us: u64,
+    pub mkdir_us: u64,
+    pub link_copy_us: u64,
+    pub total_us: u64,
     pub scan_ms: u64,
     pub mkdir_ms: u64,
     pub link_copy_ms: u64,
@@ -118,6 +124,8 @@ pub struct MaterializeCounters {
     pub files: AtomicU64,
     pub files_linked: AtomicU64,
     pub files_copied: AtomicU64,
+    pub files_reused: AtomicU64,
+    pub symlinks_reused: AtomicU64,
     pub link_fallback_copies: AtomicU64,
     pub symlinks: AtomicU64,
     pub fallback_eperm: AtomicU64,
@@ -131,6 +139,8 @@ impl MaterializeCounters {
             files: self.files.load(Ordering::Relaxed),
             files_linked: self.files_linked.load(Ordering::Relaxed),
             files_copied: self.files_copied.load(Ordering::Relaxed),
+            files_reused: self.files_reused.load(Ordering::Relaxed),
+            symlinks_reused: self.symlinks_reused.load(Ordering::Relaxed),
             link_fallback_copies: self.link_fallback_copies.load(Ordering::Relaxed),
             directories: 0,
             symlinks: self.symlinks.load(Ordering::Relaxed),
@@ -268,6 +278,8 @@ pub struct FileCasMaterializeResult {
     pub files: u64,
     pub linked: u64,
     pub copied: u64,
+    pub files_reused: u64,
+    pub symlinks_reused: u64,
     pub symlinks: u64,
 }
 
@@ -315,6 +327,9 @@ pub struct StrictMaterializeStats {
     pub internal_symlinks: u64,
     pub root_symlinks: u64,
     pub directories: u64,
+    pub files_reused: u64,
+    pub symlinks_reused: u64,
+    pub package_symlinks: u64,
 }
 
 // --- Materialize task types ---

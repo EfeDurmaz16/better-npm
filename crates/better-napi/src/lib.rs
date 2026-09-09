@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use napi_derive::napi;
+use napi::Env;
 use rayon::prelude::*;
 
 use better_core::{
@@ -223,6 +224,10 @@ pub struct NapiMaterializeStats {
     pub link_fallback_copies: f64,
     pub directories: f64,
     pub symlinks: f64,
+    #[napi(js_name = "filesReused")]
+    pub files_reused: f64,
+    #[napi(js_name = "symlinksReused")]
+    pub symlinks_reused: f64,
 }
 
 #[napi(object)]
@@ -235,6 +240,14 @@ pub struct NapiPhaseDurations {
     pub link_copy_ms: f64,
     #[napi(js_name = "totalMs")]
     pub total_ms: f64,
+    #[napi(js_name = "scanUs")]
+    pub scan_us: f64,
+    #[napi(js_name = "mkdirUs")]
+    pub mkdir_us: f64,
+    #[napi(js_name = "linkCopyUs")]
+    pub link_copy_us: f64,
+    #[napi(js_name = "totalUs")]
+    pub total_us: f64,
 }
 
 #[napi(object)]
@@ -294,6 +307,8 @@ pub fn materialize(
                 files: report.stats.files as f64,
                 files_linked: report.stats.files_linked as f64,
                 files_copied: report.stats.files_copied as f64,
+                files_reused: report.stats.files_reused as f64,
+                symlinks_reused: report.stats.symlinks_reused as f64,
                 link_fallback_copies: report.stats.link_fallback_copies as f64,
                 directories: report.stats.directories as f64,
                 symlinks: report.stats.symlinks as f64,
@@ -303,6 +318,10 @@ pub fn materialize(
                 mkdir_ms: report.phases.mkdir_ms as f64,
                 link_copy_ms: report.phases.link_copy_ms as f64,
                 total_ms: report.phases.total_ms as f64,
+                scan_us: report.phases.scan_us as f64,
+                mkdir_us: report.phases.mkdir_us as f64,
+                link_copy_us: report.phases.link_copy_us as f64,
+                total_us: report.phases.total_us as f64,
             }),
             fallback_reasons: Some(NapiFallbackReasons {
                 eperm: report.stats.fallback_eperm as f64,
@@ -2693,4 +2712,20 @@ mod fetch_option_tests {
         assert!(fetch_option_number(Some(257.0), "jobs", 256).is_err());
         assert_eq!(fetch_option_number(Some(256.0), "jobs", 256).unwrap(), Some(256));
     }
+}
+
+// Canonical resident installation. A deferred uses NAPI's threadsafe function
+// to complete on the JS thread; no libuv worker waits for native installation.
+#[napi]
+pub fn install_resident(env: Env, options_json: String) -> napi::Result<napi::JsObject> {
+    // Validate before creating the deferred, so validation failures cannot leak it.
+    let options = better_core::coordinator::options_from_json(&options_json).map_err(|e| napi::Error::from_reason(e.report))?;
+    let (deferred, promise) = env.create_deferred::<String, _>()?;
+    better_core::coordinator::submit_with_callback(options, move |result| {
+        // Completion consumes the deferred even on queue-full or execution error.
+        // Keep the existing canonical report contract for the JS bridge.
+        let report = match result { Ok(report) => report, Err(error) => error.report };
+        deferred.resolve(move |_env| Ok(report));
+    });
+    Ok(promise)
 }

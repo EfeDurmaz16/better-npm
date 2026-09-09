@@ -13,9 +13,16 @@ pub fn list_tools() -> Vec<ToolDefinition> {
                     "packages": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "Specific packages to install (empty for all)"
+                        "maxItems": 0,
+                        "description": "Only full lockfile installation is supported; leave empty"
                     },
-                    "ecosystem": { "type": "string", "enum": ["npm", "python", "auto"] }
+                    "ecosystem": { "type": "string", "enum": ["npm", "auto"] },
+                    "cache_root": { "type": "string", "description": "Absolute cache directory" },
+                    "scripts": { "type": "boolean" },
+                    "offline": { "type": "boolean" },
+                    "production": { "type": "boolean" },
+                    "frozen": { "type": "boolean" },
+                    "jobs": { "type": "integer", "minimum": 1, "maximum": 256 }
                 },
                 "required": ["project_root"]
             }),
@@ -134,23 +141,33 @@ fn execute_install(args: &serde_json::Value) -> ToolResult {
         None => return ToolResult::error("project_root is required".to_string()),
     };
 
-    // Delegate to the underlying install command via subprocess
-    let mut cmd = std::process::Command::new("better-core");
-    cmd.arg("install")
-        .arg("--project-root")
-        .arg(&project_root);
-
-    match cmd.output() {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            if output.status.success() {
-                ToolResult::text(if stdout.is_empty() { "Install completed successfully".to_string() } else { stdout })
-            } else {
-                ToolResult::error(format!("Install failed: {}{}", stdout, stderr))
-            }
-        }
-        Err(e) => ToolResult::error(format!("Failed to run install: {}", e)),
+    // The resident request deliberately rejects unsupported selection/ecosystem
+    // options instead of silently claiming that they were honored.
+    let Some(fields) = args.as_object() else { return ToolResult::error("Install arguments must be an object".into()); };
+    let mut request = serde_json::Map::new();
+    for (key, value) in fields {
+        let mapped = match key.as_str() {
+            "project_root" => "projectRoot", "cache_root" => "cacheRoot",
+            "store_root" => "storeRoot", "lockfile" => "lockfile",
+            "scripts" => "scripts", "offline" => "offline", "production" => "production",
+            "frozen" => "frozen", "jobs" => "jobs", "extract_jobs" => "extractJobs",
+            "node_layout" => "nodeLayout", "link_strategy" => "linkStrategy", "dedup" => "dedup",
+            "ecosystem" if value.as_str().is_some_and(|v| v == "npm" || v == "auto") => continue,
+            "packages" if value.as_array().is_some_and(|v| v.is_empty()) => continue,
+            _ => return ToolResult::error(format!("Unsupported install option: {key}")),
+        };
+        request.insert(mapped.into(), value.clone());
+    }
+    let absolute = if project_root.is_absolute() { project_root } else {
+        match std::env::current_dir() { Ok(cwd) => cwd.join(project_root), Err(e) => return ToolResult::error(e.to_string()) }
+    };
+    request.insert("projectRoot".into(), serde_json::json!(absolute));
+    let result = crate::coordinator::options_from_json(&serde_json::Value::Object(request).to_string())
+        .and_then(crate::coordinator::submit)
+        .and_then(|ticket| ticket.wait());
+    match result {
+        Ok(report) => ToolResult::text(report),
+        Err(error) => ToolResult::error(error.report),
     }
 }
 

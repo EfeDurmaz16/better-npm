@@ -29,15 +29,21 @@ fn inventory(root: &Path) -> Result<BTreeMap<PathBuf, Entry>, String> {
 }
 
 fn inventory_with_budget(root: &Path, bytes: usize, max_entries: usize) -> Result<BTreeMap<PathBuf, Entry>, String> {
-    let mut budget = MetadataBudget { remaining: bytes };
     let mut entries = BTreeMap::new();
+    visit_inventory(root, bytes, max_entries, |path, entry| { entries.insert(path, entry); Ok(()) })?;
+    Ok(entries)
+}
+
+fn visit_inventory(root: &Path, bytes: usize, max_entries: usize, mut visit: impl FnMut(PathBuf, Entry) -> Result<(), String>) -> Result<usize, String> {
+    let mut budget = MetadataBudget { remaining: bytes };
+    let mut count = 0;
     let mut pending = vec![PathBuf::new()];
     while let Some(relative) = pending.pop() {
         for item in fs::read_dir(root.join(&relative)).map_err(|e| e.to_string())? {
             let item = item.map_err(|e| e.to_string())?;
             let name = item.file_name();
             if relative.as_os_str().is_empty() && (name == INVENTORY_FILE || name == ".better_extracted") { continue; }
-            if entries.len() == max_entries { return Err("Package inventory entry budget exceeded".into()); }
+            if count == max_entries { return Err("Package inventory entry budget exceeded".into()); }
             let path = relative.join(name);
             budget.charge(path.as_os_str().as_encoded_bytes().len())?;
             let metadata = fs::symlink_metadata(root.join(&path)).map_err(|e| e.to_string())?;
@@ -53,10 +59,11 @@ fn inventory_with_budget(root: &Path, bytes: usize, max_entries: usize) -> Resul
             } else if kind.is_file() {
                 Entry::File { size: metadata.len() }
             } else { return Err("Unsupported cache entry type".into()); };
-            entries.insert(path, entry);
+            visit(path, entry)?;
+            count += 1;
         }
     }
-    Ok(entries)
+    Ok(count)
 }
 
 struct LimitedWriter<W> { inner: W, remaining: usize }
@@ -83,19 +90,41 @@ pub fn write(root: &Path) -> Result<(), String> {
     writer.flush().and_then(|_| writer.inner.sync_all()).map_err(|e| e.to_string())
 }
 
-pub fn complete(root: &Path) -> bool {
+/// Index validated against the current filesystem, not a content digest proof.
+/// A consumer must retain a cooperative artifact lease while reusing this index.
+pub struct PackageInventory { entries: BTreeMap<PathBuf, Entry> }
+impl PackageInventory {
+    pub fn paths(&self) -> impl Iterator<Item = &Path> {
+        self.entries.keys().map(PathBuf::as_path)
+    }
+    pub fn file_count(&self) -> usize {
+        self.entries.values().filter(|entry| matches!(entry, Entry::File { .. })).count()
+    }
+}
+
+pub fn validated(root: &Path) -> Option<PackageInventory> {
     let path = root.join(INVENTORY_FILE);
-    let Ok(metadata) = fs::symlink_metadata(&path) else { return false; };
-    if !metadata.is_file() || metadata.len() > MAX_INVENTORY_BYTES { return false; }
+    let metadata = fs::symlink_metadata(&path).ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_INVENTORY_BYTES { return None; }
     use std::io::Read;
-    let Ok(file) = fs::File::open(path) else { return false; };
+    let file = fs::File::open(path).ok()?;
     let mut bytes = Vec::new();
     if file.take(MAX_INVENTORY_BYTES + 1).read_to_end(&mut bytes).is_err()
-        || bytes.len() as u64 > MAX_INVENTORY_BYTES { return false; }
-    let Ok(expected) = serde_json::from_slice::<BTreeMap<PathBuf, Entry>>(&bytes) else { return false; };
-    if expected.len() > MAX_INVENTORY_ENTRIES { return false; }
-    inventory(root).is_ok_and(|actual| actual == expected)
+        || bytes.len() as u64 > MAX_INVENTORY_BYTES { return None; }
+    let expected = serde_json::from_slice::<BTreeMap<PathBuf, Entry>>(&bytes).ok()?;
+    if expected.len() > MAX_INVENTORY_ENTRIES { return None; }
+    drop(bytes);
+    // Compare directly during traversal instead of retaining a second path tree.
+    let count = visit_inventory(root, MAX_INVENTORY_BYTES as usize, MAX_INVENTORY_ENTRIES,
+        |path, entry| {
+            if expected.get(&path) == Some(&entry) { Ok(()) }
+            else { Err("Package inventory mismatch".into()) }
+        }).ok()?;
+    if count != expected.len() { return None; }
+    Some(PackageInventory { entries: expected })
 }
+
+pub fn complete(root: &Path) -> bool { validated(root).is_some() }
 
 #[cfg(test)]
 mod tests {

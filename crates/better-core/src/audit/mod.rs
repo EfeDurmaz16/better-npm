@@ -2,13 +2,14 @@ pub mod scoring;
 pub mod classifier;
 pub mod filter;
 pub mod cache;
+pub mod evidence;
 pub mod allowlist;
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::types::*;
-use crate::{resolve_from_lockfile, JsonWriter};
+use crate::resolve_from_lockfile;
 
 pub use scoring::{DepContext, Severity, ScoredVuln, score_vuln};
 pub use classifier::DepClassifier;
@@ -72,83 +73,17 @@ pub fn run_audit(lockfile: &Path, _project_root: &Path, min_severity: &str) -> R
 
     // Build ordered list of unique packages for cache key and query
     let mut pkg_names: Vec<(String, String)> = Vec::new();
-    let mut seen_for_key: HashSet<String> = HashSet::new();
+    let mut seen_for_key = HashSet::new();
     for pkg in &resolve_result.packages {
-        let key = format!("{}@{}", pkg.name, pkg.version);
+        let key = (pkg.name.as_str(), pkg.version.as_str());
         if seen_for_key.insert(key) {
             pkg_names.push((pkg.name.clone(), pkg.version.clone()));
         }
     }
 
-    // Build deterministic cache key from sorted package list (truncated to 200 chars)
-    let mut sorted_names = pkg_names.clone();
-    sorted_names.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-    let cache_key: String = {
-        let full: String = sorted_names.iter()
-            .map(|(n, v)| format!("{}@{}", n, v))
-            .collect::<Vec<_>>()
-            .join(";");
-        full.chars().take(200).collect()
-    };
-
-    let osv_cache = cache::OsvCache::new();
-
-    // Build OSV batch query
-    let mut query = JsonWriter::new();
-    query.begin_object();
-    query.key("queries");
-    query.begin_array();
-
-    // Deduplicate packages (preserve insertion order to match pkg_names)
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut query_count = 0u64;
-    for pkg in &resolve_result.packages {
-        let key = format!("{}@{}", pkg.name, pkg.version);
-        if seen.insert(key) {
-            query.begin_object();
-            query.key("package");
-            query.begin_object();
-            query.key("name");
-            query.value_string(&pkg.name);
-            query.key("ecosystem");
-            query.value_string("npm");
-            query.end_object();
-            query.key("version");
-            query.value_string(&pkg.version);
-            query.end_object();
-            query_count += 1;
-        }
-    }
-
-    query.end_array();
-    query.end_object();
-    let body = query.finish();
-
-    // Check cache before hitting the network
-    let resp_body = if let Some(cached) = osv_cache.get(&cache_key) {
-        cached
-    } else {
-        // POST to OSV.dev
-        let osv_client = reqwest::blocking::Client::builder()
-            .use_rustls_tls()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
-
-        let resp = osv_client.post("https://api.osv.dev/v1/querybatch")
-            .header("Content-Type", "application/json")
-            .body(body)
-            .send()
-            .map_err(|e| format!("OSV API request failed: {}", e))?;
-
-        let body_text = resp.text()
-            .map_err(|e| format!("Failed to read OSV response: {}", e))?;
-
-        // Store in cache (ignore errors — cache is best-effort)
-        let _ = osv_cache.put(&cache_key, &body_text);
-
-        body_text
-    };
+    let refs: Vec<_> = pkg_names.iter().map(|(n,v)| (n.as_str(), v.as_str())).collect();
+    let query_count = refs.len() as u64;
+    let resp_body = evidence::query_osv(&refs, "npm")?;
 
     // Parse response using serde_json
     let mut vulns: Vec<AuditVulnerability> = Vec::new();
@@ -165,7 +100,7 @@ pub fn run_audit(lockfile: &Path, _project_root: &Path, min_severity: &str) -> R
     let min_rank = severity_rank(min_severity);
 
     let batch_response: OsvBatchResponse = serde_json::from_str(&resp_body)
-        .unwrap_or(OsvBatchResponse { results: None });
+        .map_err(|e| format!("Malformed OSV evidence: {e}"))?;
 
     if let Some(results) = batch_response.results {
         for (pkg_idx, result) in results.iter().enumerate() {

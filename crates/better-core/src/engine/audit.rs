@@ -6,7 +6,8 @@ use std::path::Path;
 use std::time::Instant;
 
 use crate::lockfile::{LockfileReader, ECOSYSTEM_PYTHON};
-use crate::audit::cache::OsvCache;
+
+#[cfg(test)]
 use crate::JsonWriter;
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -147,6 +148,7 @@ fn osv_ecosystem_str(eco: u8) -> &'static str {
 }
 
 /// Build the OSV batch JSON body for the given packages.
+#[cfg(test)]
 fn build_osv_batch(packages: &[(&str, &str)], ecosystem: &str) -> String {
     let mut w = JsonWriter::new();
     w.begin_object();
@@ -165,31 +167,6 @@ fn build_osv_batch(packages: &[(&str, &str)], ecosystem: &str) -> String {
     w.end_array();
     w.end_object();
     w.finish()
-}
-
-/// POST a batch to OSV.dev with caching. Returns the response body.
-fn post_osv_batch(body: &str, cache_key: &str) -> Result<String, String> {
-    let osv_cache = OsvCache::new();
-    if let Some(cached) = osv_cache.get(cache_key) {
-        return Ok(cached);
-    }
-
-    let client = reqwest::blocking::Client::builder()
-        .use_rustls_tls()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| format!("HTTP client error: {e}"))?;
-
-    let resp = client
-        .post("https://api.osv.dev/v1/querybatch")
-        .header("Content-Type", "application/json")
-        .body(body.to_string())
-        .send()
-        .map_err(|e| format!("OSV request failed: {e}"))?;
-
-    let text = resp.text().map_err(|e| format!("OSV read error: {e}"))?;
-    let _ = osv_cache.put(cache_key, &text);
-    Ok(text)
 }
 
 /// Parse an OSV batch response into UnifiedVulnerability records.
@@ -321,20 +298,6 @@ pub fn cross_ecosystem_audit(
     let npm_count = npm_pkgs.len();
     let py_count = py_pkgs.len();
 
-    // Build cache keys
-    let npm_key: String = {
-        let mut pairs = npm_pkgs.clone();
-        pairs.sort();
-        let full: String = pairs.iter().map(|(n, v)| format!("{}@{}", n, v)).collect::<Vec<_>>().join(";");
-        format!("npm:{}", &full.chars().take(200).collect::<String>())
-    };
-    let py_key: String = {
-        let mut pairs = py_pkgs.clone();
-        pairs.sort();
-        let full: String = pairs.iter().map(|(n, v)| format!("{}@{}", n, v)).collect::<Vec<_>>().join(";");
-        format!("pypi:{}", &full.chars().take(200).collect::<String>())
-    };
-
     let npm_refs: Vec<(&str, &str)> = npm_pkgs.iter().map(|(n, v)| (n.as_str(), v.as_str())).collect();
     let py_refs: Vec<(&str, &str)> = py_pkgs.iter().map(|(n, v)| (n.as_str(), v.as_str())).collect();
 
@@ -342,25 +305,23 @@ pub fn cross_ecosystem_audit(
 
     // npm query
     if !npm_refs.is_empty() {
-        let body = build_osv_batch(&npm_refs, "npm");
-        match post_osv_batch(&body, &npm_key) {
+        match crate::audit::evidence::query_osv(&npm_refs, "npm") {
             Ok(resp) => {
                 let vulns = parse_osv_response(&resp, &npm_refs, "npm", min_severity);
                 vulnerabilities.extend(vulns);
             }
-            Err(e) => eprintln!("warn: npm OSV query failed: {e}"),
+            Err(e) => return Err(format!("npm OSV query failed: {e}")),
         }
     }
 
     // PyPI query
     if !py_refs.is_empty() {
-        let body = build_osv_batch(&py_refs, "PyPI");
-        match post_osv_batch(&body, &py_key) {
+        match crate::audit::evidence::query_osv(&py_refs, "PyPI") {
             Ok(resp) => {
                 let vulns = parse_osv_response(&resp, &py_refs, "PyPI", min_severity);
                 vulnerabilities.extend(vulns);
             }
-            Err(e) => eprintln!("warn: PyPI OSV query failed: {e}"),
+            Err(e) => return Err(format!("PyPI OSV query failed: {e}")),
         }
     }
 

@@ -1,3 +1,5 @@
+pub mod install;
+pub mod coordinator;
 use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -647,17 +649,199 @@ pub fn copy_file_with_retry(src: &Path, dst: &Path) -> Result<(), String> {
 }
 
 pub fn copy_file_with_mode(src: &Path, dst: &Path, mode: Option<u32>) -> Result<(), String> {
-    publish_file(dst, |staged| {
-        if !try_clonefile(src, staged) { fs::copy(src, staged)?; }
-        #[cfg(unix)]
-        if let Some(mode) = mode {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(staged, fs::Permissions::from_mode(mode & 0o7777))?;
+    MaterializeStaging::default().copy(src, dst, mode)
+}
+
+/// Invocation-local staging arenas, reused per destination directory. Every
+/// published file still owns an independent inode. No paths survive the batch.
+#[derive(Default)]
+pub(crate) struct MaterializeStaging {
+    directories: std::collections::HashMap<PathBuf, PathBuf>,
+    #[cfg(unix)]
+    comparison_buffers: Option<(Vec<u8>, Vec<u8>)>,
+}
+
+impl MaterializeStaging {
+    fn publish<T>(
+        &mut self,
+        dst: &Path,
+        write: impl FnOnce(&Path) -> std::io::Result<()>,
+        publish: impl FnOnce(&Path) -> std::io::Result<T>,
+    ) -> Result<T, String> {
+        let parent = dst
+            .parent()
+            .ok_or("materialize destination has no parent")?;
+        if !self.directories.contains_key(parent) {
+            self.directories
+                .insert(parent.to_path_buf(), create_staging_directory(parent)?);
         }
-        #[cfg(not(unix))]
-        let _ = mode;
-        Ok(())
-    })
+        let staged = self.directories[parent].join("file");
+        let result = write(&staged).and_then(|()| publish(&staged));
+        // Rename normally consumes the source; no-replace CAS publication does not.
+        // Always remove leftovers before the arena is reused after a failed write.
+        match fs::remove_file(&staged) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("clean staging for {}: {}", dst.display(), error)),
+        }
+        result.map_err(|error| format!("materialize {}: {}", dst.display(), error))
+    }
+
+    /// Return true only for an independently owned destination whose complete
+    /// contents were compared this invocation. Timestamps alone never imply reuse.
+    pub(crate) fn copy_if_changed(
+        &mut self,
+        src: &Path,
+        dst: &Path,
+        mode: Option<u32>,
+    ) -> Result<bool, String> {
+        if self.matches_independent_file(src, dst, mode) {
+            return Ok(true);
+        }
+        self.copy(src, dst, mode)?;
+        Ok(false)
+    }
+
+    #[cfg(not(unix))]
+    fn matches_independent_file(&mut self, _src: &Path, _dst: &Path, _mode: Option<u32>) -> bool {
+        // Do not infer independence on platforms without the inode/link checks below.
+        false
+    }
+
+    #[cfg(unix)]
+    fn matches_independent_file(&mut self, src: &Path, dst: &Path, mode: Option<u32>) -> bool {
+        use std::io::Read;
+        use std::os::unix::fs::MetadataExt;
+        let mut compare = || -> std::io::Result<bool> {
+            // Fresh installations stop here, before opening or reading the source.
+            let destination = fs::symlink_metadata(dst)?;
+            if !destination.is_file() || destination.nlink() != 1 {
+                return Ok(false);
+            }
+            let source = fs::symlink_metadata(src)?;
+            if !source.is_file()
+                || source.len() != destination.len()
+                || (source.dev(), source.ino()) == (destination.dev(), destination.ino())
+                || destination.mode() & 0o7777 != mode.unwrap_or(source.mode()) & 0o7777
+            {
+                return Ok(false);
+            }
+            let mut source_file = fs::File::open(src)?;
+            let mut destination_file = fs::File::open(dst)?;
+            if !same_file_observation(&source, &source_file.metadata()?)
+                || !same_file_observation(&destination, &destination_file.metadata()?)
+            {
+                return Ok(false);
+            }
+            let (source_buffer, destination_buffer) = self
+                .comparison_buffers
+                .get_or_insert_with(|| (vec![0; 64 * 1024], vec![0; 64 * 1024]));
+            let mut remaining = source.len();
+            while remaining > 0 {
+                let count = remaining.min(source_buffer.len() as u64) as usize;
+                source_file.read_exact(&mut source_buffer[..count])?;
+                destination_file.read_exact(&mut destination_buffer[..count])?;
+                if source_buffer[..count] != destination_buffer[..count] {
+                    return Ok(false);
+                }
+                remaining -= count as u64;
+            }
+            // Recheck both handles and path identities after comparing, including
+            // link counts and change times, to conservatively reject concurrent edits.
+            Ok(same_file_observation(&source, &source_file.metadata()?)
+                && same_file_observation(&destination, &destination_file.metadata()?)
+                && same_file_observation(&source, &fs::symlink_metadata(src)?)
+                && same_file_observation(&destination, &fs::symlink_metadata(dst)?))
+        };
+        compare().unwrap_or(false)
+    }
+
+    pub(crate) fn symlink_if_changed(
+        &mut self,
+        task: &MaterializeSymlinkTask,
+    ) -> Result<bool, String> {
+        if fs::read_link(&task.dst).is_ok_and(|target| target == task.target) {
+            return Ok(true);
+        }
+        self.symlink(task)?;
+        Ok(false)
+    }
+
+    pub(crate) fn copy(&mut self, src: &Path, dst: &Path, mode: Option<u32>) -> Result<(), String> {
+        self.publish(
+            dst,
+            |staged| {
+                if !try_clonefile(src, staged) {
+                    fs::copy(src, staged)?;
+                }
+                #[cfg(unix)]
+                if let Some(mode) = mode {
+                    use std::os::unix::fs::PermissionsExt;
+                    fs::set_permissions(staged, fs::Permissions::from_mode(mode & 0o7777))?;
+                }
+                #[cfg(not(unix))]
+                let _ = mode;
+                Ok(())
+            },
+            |staged| fs::rename(staged, dst),
+        )
+    }
+
+    pub(crate) fn symlink(&mut self, task: &MaterializeSymlinkTask) -> Result<(), String> {
+        self.publish(
+            &task.dst,
+            |staged| create_symlink(&task.target, staged, &task.src),
+            |staged| fs::rename(staged, &task.dst),
+        )
+    }
+}
+
+#[cfg(unix)]
+fn same_file_observation(before: &fs::Metadata, after: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    before.is_file()
+        && after.is_file()
+        && before.dev() == after.dev()
+        && before.ino() == after.ino()
+        && before.nlink() == after.nlink()
+        && before.len() == after.len()
+        && before.mode() == after.mode()
+        && before.mtime() == after.mtime()
+        && before.mtime_nsec() == after.mtime_nsec()
+        && before.ctime() == after.ctime()
+        && before.ctime_nsec() == after.ctime_nsec()
+}
+
+impl Drop for MaterializeStaging {
+    fn drop(&mut self) {
+        for directory in self.directories.values() {
+            let _ = fs::remove_file(directory.join("file"));
+            let _ = fs::remove_dir(directory);
+        }
+    }
+}
+
+fn create_staging_directory(parent: &Path) -> Result<PathBuf, String> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    loop {
+        let path = parent.join(format!(
+            ".better-copy-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        match builder.create(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("create staging in {}: {}", parent.display(), error)),
+        }
+    }
 }
 
 /// Per-file publication, not a whole-package transaction or power-loss guarantee.
@@ -681,22 +865,7 @@ pub(crate) fn publish_cas_file(src: &Path, dst: &Path) -> Result<bool, String> {
 
 fn with_staged_file<T>(dst: &Path, write: impl FnOnce(&Path) -> std::io::Result<()>,
     publish: impl FnOnce(&Path) -> std::io::Result<T>) -> Result<T, String> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let parent = dst.parent().ok_or("materialize destination has no parent")?;
-    let staging = loop {
-        let path = parent.join(format!(".better-copy-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
-        match fs::create_dir(&path) {
-            Ok(()) => break path,
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(format!("create staging for {}: {}", dst.display(), e)),
-        }
-    };
-    let staged = staging.join("file");
-    let result = write(&staged).and_then(|()| publish(&staged));
-    let _ = fs::remove_file(&staged);
-    let _ = fs::remove_dir(&staging);
-    result.map_err(|e| format!("materialize {}: {}", dst.display(), e))
+    MaterializeStaging::default().publish(dst, write, publish)
 }
 
 /// Validate lockfile paths before joining them to the installation root.
@@ -819,21 +988,149 @@ pub fn validate_clone_source(src: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Try to clone a directory using clonefile. If clonefile fails (e.g. dest exists),
-/// remove dest first and retry once.
+/// Unsupported platforms decline before scanning or modifying the destination.
+#[cfg(not(target_os = "macos"))]
+pub fn try_clonefile_dir(_src: &Path, _dst: &Path) -> bool { false }
+
+/// Clone only into an absent or empty destination. Existing installation state
+/// must be reconciled per file, never recursively deleted by a failed fast path.
+#[cfg(target_os = "macos")]
 pub fn try_clonefile_dir(src: &Path, dst: &Path) -> bool {
-    if validate_clone_source(src).is_err() || fs::symlink_metadata(dst).is_ok_and(|md| md.file_type().is_symlink()) { return false; }
-    if try_clonefile(src, dst) {
-        return true;
-    }
-    // Retry after removing destination (clonefile fails if dst exists)
-    if dst.exists() {
-        if fs::remove_dir_all(dst).is_err() {
-            return false;
+    if validate_clone_source(src).is_err() { return false; }
+    match fs::symlink_metadata(dst) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            if fs::remove_dir(dst).is_err() { return false; }
+            if try_clonefile(src, dst) { return true; }
+            // Keep the caller's pre-created directory when cloning is unsupported.
+            let _ = fs::create_dir(dst);
+            false
         }
-        return try_clonefile(src, dst);
+        Ok(_) => false,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => try_clonefile(src, dst),
+        Err(_) => false,
     }
-    false
+}
+
+#[cfg(test)]
+mod staging_reuse_tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn unchanged_file_reuse_checks_contents_modes_and_inode_independence() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let target = temp.path().join("target");
+        fs::write(&source, "original").unwrap();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o644)).unwrap();
+        let mut arena = MaterializeStaging::default();
+        assert!(!arena.copy_if_changed(&source, &target, None).unwrap());
+        assert!(arena.comparison_buffers.is_none(), "fresh destination must not read source for comparison");
+        let inode = fs::metadata(&target).unwrap().ino();
+        assert!(arena.copy_if_changed(&source, &target, None).unwrap());
+        assert_eq!(fs::metadata(&target).unwrap().ino(), inode);
+        fs::write(&target, "modified").unwrap(); // Same length, different contents.
+        assert!(!arena.copy_if_changed(&source, &target, None).unwrap());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "original");
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!arena.copy_if_changed(&source, &target, None).unwrap());
+        assert_eq!(fs::metadata(&target).unwrap().mode() & 0o7777, 0o644);
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(arena.copy_if_changed(&source, &target, Some(0o644)).unwrap());
+
+        // Sharing with either the cache source or another worktree requires splitting.
+        fs::remove_file(&target).unwrap();
+        fs::hard_link(&source, &target).unwrap();
+        assert!(!arena.copy_if_changed(&source, &target, None).unwrap());
+        assert_ne!(fs::metadata(&target).unwrap().ino(), fs::metadata(&source).unwrap().ino());
+        let other = temp.path().join("other");
+        fs::hard_link(&target, &other).unwrap();
+        assert!(!arena.copy_if_changed(&source, &target, None).unwrap());
+        fs::write(&target, "local edit").unwrap();
+        assert_eq!(fs::read_to_string(&source).unwrap(), "original");
+        assert_eq!(fs::read_to_string(&other).unwrap(), "original");
+
+        fs::remove_file(&target).unwrap();
+        std::os::unix::fs::symlink(&source, &target).unwrap();
+        assert!(!arena.copy_if_changed(&source, &target, None).unwrap());
+        assert!(fs::symlink_metadata(&target).unwrap().is_file());
+        fs::write(&target, "another edit").unwrap();
+        assert_eq!(fs::read_to_string(&source).unwrap(), "original");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_reuse_preserves_matching_inode_and_repairs_wrong_target() {
+        use std::os::unix::fs::MetadataExt;
+        let temp = tempfile::tempdir().unwrap();
+        let task = MaterializeSymlinkTask {
+            src: temp.path().join("source"), dst: temp.path().join("link"), target: PathBuf::from("correct"),
+        };
+        let mut arena = MaterializeStaging::default();
+        assert!(!arena.symlink_if_changed(&task).unwrap());
+        let inode = fs::symlink_metadata(&task.dst).unwrap().ino();
+        assert!(arena.symlink_if_changed(&task).unwrap());
+        assert_eq!(fs::symlink_metadata(&task.dst).unwrap().ino(), inode);
+        fs::remove_file(&task.dst).unwrap();
+        std::os::unix::fs::symlink("wrong", &task.dst).unwrap();
+        assert!(!arena.symlink_if_changed(&task).unwrap());
+        assert_eq!(fs::read_link(&task.dst).unwrap(), task.target);
+    }
+
+    #[test]
+    fn arena_reuses_directory_and_cleans_failed_publication() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        fs::write(&source, "original").unwrap();
+        let target = temp.path().join("target");
+        fs::create_dir(&target).unwrap();
+        let mut arena = MaterializeStaging::default();
+        arena.copy(&source, &target.join("first"), None).unwrap();
+        let staging = arena.directories[&target].clone();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(&staging).unwrap().permissions().mode() & 0o777, 0o700);
+        }
+        let conflict = target.join("conflict");
+        fs::create_dir(&conflict).unwrap();
+        fs::write(conflict.join("keep"), "preserved").unwrap();
+        assert!(arena.copy(&source, &conflict, None).is_err());
+        assert!(!staging.join("file").exists());
+        assert_eq!(fs::read_to_string(conflict.join("keep")).unwrap(), "preserved");
+        arena.copy(&source, &target.join("second"), None).unwrap();
+        assert_eq!(arena.directories.len(), 1);
+        assert_eq!(arena.directories[&target], staging);
+        drop(arena);
+        assert!(!staging.exists());
+        fs::write(target.join("first"), "changed").unwrap();
+        assert_eq!(fs::read_to_string(&source).unwrap(), "original");
+        assert_eq!(fs::read_to_string(target.join("second")).unwrap(), "original");
+    }
+
+    #[test]
+    fn clone_fastpath_preserves_nonempty_destination() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let target = temp.path().join("target");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&target).unwrap();
+        fs::write(source.join("new"), "new").unwrap();
+        fs::write(target.join("keep"), "existing state").unwrap();
+        assert!(!try_clonefile_dir(&source, &target));
+        assert_eq!(fs::read_to_string(target.join("keep")).unwrap(), "existing state");
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn unavailable_clone_keeps_empty_destination() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        fs::create_dir(&target).unwrap();
+        assert!(!try_clonefile_dir(&temp.path().join("missing"), &target));
+        assert!(target.is_dir());
+    }
 }
 
 // Helper function to get file mode (Unix permissions)

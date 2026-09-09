@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::types::ResolvedPackage;
-use crate::{extract_json_field, JsonWriter};
+use crate::JsonWriter;
 
 // === Dependency firewall: typosquat detection, binary blob scanning, zero-day publisher warnings ===
 
@@ -198,73 +198,101 @@ fn scan_dir_for_binaries(dir: &Path, depth: usize, max_depth: usize, found: &mut
 }
 
 /// Check if package was published recently (< N days) by examining registry metadata.
-fn check_new_package(name: &str, version: &str, max_days: u64) -> Option<String> {
-    let encoded_name = name.replace('/', "%2F");
-    let client = match reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => return None,
-    };
-    // Fetch full package metadata to check the `time` field
-    let full_url = format!("https://registry.npmjs.org/{}", encoded_name);
-    let resp = match client.get(&full_url).send() {
-        Ok(r) => r,
-        Err(_) => return None,
-    };
-    if !resp.status().is_success() {
-        return None;
-    }
-    let full_body = match resp.text() {
-        Ok(b) => b,
-        Err(_) => return None,
-    };
-
-    // Look for time.version in the package metadata
-    if let Some(time_obj) = crate::extract_json_object_raw(&full_body, "time") {
-        if let Some(pub_time) = extract_json_field(&time_obj, version) {
-            // Parse ISO date and check if it's within max_days
-            // Simple check: compare the date prefix (YYYY-MM-DD)
-            if pub_time.len() >= 10 {
-                let pub_date = &pub_time[..10];
-                let now = crate::chrono_now();
-                if now.len() >= 10 {
-                    let now_date = &now[..10];
-                    // Rough comparison: if dates are very close, warn
-                    if let Some(days_diff) = rough_day_diff(pub_date, now_date) {
-                        if days_diff < max_days {
-                            return Some(format!(
-                                "published {} days ago ({})",
-                                days_diff, pub_date
-                            ));
-                        }
-                    }
-                }
-            }
+fn check_new_package(
+    name: &str,
+    version: &str,
+    max_days: u64,
+    config: &crate::types::NpmrcConfig,
+) -> Result<Option<String>, String> {
+    let (base, _) = crate::npmrc::registry_for_package(config, name);
+    let url = crate::audit::evidence::registry_url(base, &[name])?;
+    let token = crate::audit::evidence::registry_token(config, base, &url, name);
+    let full_body = match crate::audit::evidence::registry_get(&url, token)? {
+        crate::audit::evidence::RegistryEvidence::Present(body) => body,
+        crate::audit::evidence::RegistryEvidence::Missing => {
+            return Err("Registry has no publication-age evidence for this package".into());
         }
-    }
+    };
 
-    None
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "System clock is before the Unix epoch")?.as_secs();
+    publication_age(&full_body, version, max_days, now)
 }
 
-/// Rough day difference calculation from YYYY-MM-DD strings.
-fn rough_day_diff(earlier: &str, later: &str) -> Option<u64> {
-    let parse = |s: &str| -> Option<(i64, i64, i64)> {
-        let parts: Vec<&str> = s.split('-').collect();
-        if parts.len() != 3 {
-            return None;
-        }
-        let y = parts[0].parse::<i64>().ok()?;
-        let m = parts[1].parse::<i64>().ok()?;
-        let d = parts[2].parse::<i64>().ok()?;
-        Some((y, m, d))
+/// Only a valid, nonfuture timestamp can establish publication age.
+fn publication_age(body: &str, version: &str, max_days: u64, now: u64) -> Result<Option<String>, String> {
+    let metadata: serde_json::Value = serde_json::from_str(body)
+        .map_err(|_| "Invalid registry publication metadata")?;
+    let timestamp = metadata.get("time").and_then(|time| time.get(version))
+        .and_then(|time| time.as_str()).ok_or("Registry has no timestamp for this package version")?;
+    let published = publication_timestamp(timestamp).ok_or("Registry publication timestamp is invalid")?;
+    let age = i64::try_from(now).map_err(|_| "System clock exceeds supported range")?
+        .checked_sub(published).filter(|age| *age >= 0)
+        .ok_or("Registry publication timestamp is in the future")? as u64;
+    let days = age / 86_400;
+    if days < max_days {
+        Ok(Some(format!("published {} days ago ({})", days, &timestamp[..10])))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Gregorian calendar day relative to 0001-01-01, with strict ASCII YYYY-MM-DD.
+fn calendar_day(date: &str) -> Option<i64> {
+    let bytes = date.as_bytes();
+    if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-'
+        || !bytes.iter().enumerate().all(|(i, byte)| i == 4 || i == 7 || byte.is_ascii_digit()) {
+        return None;
+    }
+    let year = date[..4].parse::<i64>().ok()?;
+    let month = date[5..7].parse::<usize>().ok()?;
+    let day = date[8..10].parse::<i64>().ok()?;
+    if year == 0 || !(1..=12).contains(&month) { return None; }
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let lengths = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    if day < 1 || day > lengths[month - 1] { return None; }
+    let previous = year - 1;
+    Some(previous * 365 + previous / 4 - previous / 100 + previous / 400
+        + lengths[..month - 1].iter().sum::<i64>() + day - 1)
+}
+
+/// RFC3339 timestamp used by npm registry, including fractional seconds and offsets.
+fn publication_timestamp(timestamp: &str) -> Option<i64> {
+    let bytes = timestamp.as_bytes();
+    if !timestamp.is_ascii() || bytes.len() < 20 || bytes[10] != b'T'
+        || bytes[13] != b':' || bytes[16] != b':' { return None; }
+    let day = calendar_day(&timestamp[..10])? - calendar_day("1970-01-01")?;
+    let number = |part: &str| -> Option<i64> {
+        if !part.bytes().all(|byte| byte.is_ascii_digit()) { return None; }
+        part.parse().ok()
     };
-    let (y1, m1, d1) = parse(earlier)?;
-    let (y2, m2, d2) = parse(later)?;
-    let days1 = y1 * 365 + m1 * 30 + d1;
-    let days2 = y2 * 365 + m2 * 30 + d2;
-    Some((days2 - days1).unsigned_abs())
+    let hour = number(&timestamp[11..13])?;
+    let minute = number(&timestamp[14..16])?;
+    let second = number(&timestamp[17..19])?;
+    if hour > 23 || minute > 59 || second > 59 { return None; }
+    let mut offset_start = 19;
+    if bytes[offset_start] == b'.' {
+        offset_start += 1;
+        let fraction_start = offset_start;
+        while offset_start < bytes.len() && bytes[offset_start].is_ascii_digit() { offset_start += 1; }
+        if offset_start == fraction_start { return None; }
+    }
+    let zone = timestamp.get(offset_start..)?;
+    let offset = if zone == "Z" { 0 } else {
+        let zone_bytes = zone.as_bytes();
+        if zone_bytes.len() != 6 || !matches!(zone_bytes[0], b'+' | b'-') || zone_bytes[3] != b':' { return None; }
+        let hours = number(&zone[1..3])?;
+        let minutes = number(&zone[4..6])?;
+        if hours > 23 || minutes > 59 { return None; }
+        let seconds = hours * 3600 + minutes * 60;
+        if zone_bytes[0] == b'+' { seconds } else { -seconds }
+    };
+    Some(day * 86_400 + hour * 3600 + minute * 60 + second - offset)
+}
+
+#[cfg(test)]
+fn rough_day_diff(earlier: &str, later: &str) -> Option<u64> {
+    u64::try_from(calendar_day(later)? - calendar_day(earlier)?).ok()
 }
 
 /// Run firewall checks on resolved packages.
@@ -276,7 +304,16 @@ pub fn run_firewall(
     let mut alerts = Vec::new();
     let node_modules = project_root.join("node_modules");
 
-    for pkg in packages {
+    let registry = crate::npmrc::parse_npmrc(project_root);
+    // Reuse the shared resident pool. Local mutable payload checks remain fresh.
+    let publication = if config.new_package_warning {
+        crate::audit::evidence::map_bounded(packages, |pkg| {
+            check_new_package(&pkg.name, &pkg.version, config.new_package_days, &registry)
+        })
+    } else {
+        vec![Ok(None); packages.len()]
+    };
+    for (pkg, publication) in packages.iter().zip(publication) {
         // 1. Typosquat detection
         if config.typosquat_detection {
             if let Some((similar_to, distance)) = check_typosquat(&pkg.name) {
@@ -315,13 +352,22 @@ pub fn run_firewall(
 
         // 3. Zero-day publisher warning
         if config.new_package_warning {
-            if let Some(info) = check_new_package(&pkg.name, &pkg.version, config.new_package_days) {
+            if let Ok(Some(info)) = &publication {
                 alerts.push(FirewallAlert {
                     package: pkg.name.clone(),
                     version: pkg.version.clone(),
                     alert_type: "new_package".into(),
                     severity: "low".into(),
                     message: format!("\"{}@{}\" was recently {}", pkg.name, pkg.version, info),
+                    details: None,
+                });
+            } else if publication.is_err() {
+                alerts.push(FirewallAlert {
+                    package: pkg.name.clone(),
+                    version: pkg.version.clone(),
+                    alert_type: "registry_unknown".into(),
+                    severity: "medium".into(),
+                    message: "Publication-age evidence could not be retrieved or validated".into(),
                     details: None,
                 });
             }
@@ -574,4 +620,43 @@ mod tests {
         assert!(report.alerts.is_empty());
         assert_eq!(report.total_checked, 1);
     }
+    #[test]
+    fn confirmed_missing_publication_metadata_is_unknown() {
+        let (url, server) = crate::audit::evidence::tests::server(404, "{}", 1);
+        let config = crate::types::NpmrcConfig { default_registry: url, ..Default::default() };
+        let result = check_new_package("fixture", "1.0.0", 7, &config);
+        server.join().unwrap();
+        assert!(result.unwrap_err().contains("no publication-age evidence"));
+    }
+
+    #[test]
+    fn incomplete_or_invalid_publication_metadata_is_unknown() {
+        let now = publication_timestamp("2026-09-10T12:00:00Z").unwrap() as u64;
+        for body in [
+            "{}", r#"{"time":{}}"#, r#"{"time":{"2.0.0":"2020-01-01T00:00:00Z"}}"#,
+            r#"{"time":{"1.0.0":null}}"#, r#"{"time":{"1.0.0":"not-a-date"}}"#,
+            r#"{"time":{"1.0.0":"2026-02-30T00:00:00Z"}}"#,
+            r#"{"time":{"1.0.0":"2026-01-01T99:00:00Z"}}"#,
+            r#"{"time":{"1.0.0":"2020-01-01garbage"}}"#,
+            r#"{"time":{"1.0.0":"2027-01-01T00:00:00Z"}}"#,
+        ] { assert!(publication_age(body, "1.0.0", 7, now).is_err(), "{body}"); }
+        assert!(publication_age(r#"{"time":{"1.0.0":"2026-09-09T12:00:00.123Z"}}"#, "1.0.0", 7, now).unwrap().is_some());
+        assert!(publication_age(r#"{"time":{"1.0.0":"2020-01-01T00:00:00Z"}}"#, "1.0.0", 7, now).unwrap().is_none());
+    }
+
+    #[test]
+    fn calendar_validates_leap_years_offsets_and_future_dates() {
+        assert_eq!(rough_day_diff("2024-02-28", "2024-03-01"), Some(2));
+        assert_eq!(rough_day_diff("2023-02-28", "2023-03-01"), Some(1));
+        assert_eq!(rough_day_diff("2024-03-01", "2024-02-28"), None);
+        assert!(calendar_day("1900-02-29").is_none());
+        assert!(calendar_day("2000-02-29").is_some());
+        assert_eq!(publication_timestamp("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(publication_timestamp("1970-01-01T03:00:00+03:00"), Some(0));
+        assert_eq!(publication_timestamp("1969-12-31T19:00:00-05:00"), Some(0));
+        for value in ["2020-01-01", "2020-01-01T00:00:00.Z", "2020-01-01T00:00:00+24:00", "2020-01-01T00:00:00Zjunk"] {
+            assert!(publication_timestamp(value).is_none(), "{value}");
+        }
+    }
+
 }
