@@ -213,6 +213,8 @@ better workspace run "npm test" # Execute in dependency order
 
 Reads `package.json#workspaces` globs. Uses Kahn's algorithm with cycle detection.
 
+The native Rust installer does not yet materialize workspace or local links. It rejects lockfiles with declared workspaces, local package paths, `link: true`, or `file:`/`workspace:` resolutions before fetching or writing install output. Use `npm install` for those projects.
+
 #### SBOM Export
 
 Software Bill of Materials for supply chain compliance:
