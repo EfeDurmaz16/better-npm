@@ -1,4 +1,6 @@
 use std::{fs, path::Path, process::{Command, Output}};
+use base64::{engine::general_purpose::STANDARD, Engine};
+use sha2::{Digest, Sha512};
 use better_core::{cas_key_from_integrity, tarball_path, unpacked_path, CasLayout};
 use serde_json::{json, Value};
 
@@ -8,21 +10,22 @@ fn fixture(root: &Path, optional: bool) {
     fs::write(root.join("package.json"),project.to_string()).unwrap();
     fs::write(root.join("package-lock.json"),json!({"lockfileVersion":3,"packages":{
         "":project,
-        "node_modules/app":{"version":"1.0.0","resolved":"https://example.test/app.tgz","integrity":"sha512-AAAA"},
+        "node_modules/app":{"version":"1.0.0","resolved":"https://example.test/app.tgz","integrity":format!("sha512-{}", STANDARD.encode(Sha512::digest(b"platform-fixture")))},
         "node_modules/foreign":{"version":"1.0.0","resolved":"https://example.test/foreign.tgz","integrity":"sha512-BBBB","optional":optional,"os":["linux"]}
     }}).to_string()).unwrap();
 }
 
 fn seed_app(root: &Path) {
     let layout = CasLayout::new(&root.join("cache"));
-    let (algo, hex) = cas_key_from_integrity("sha512-AAAA").unwrap();
+    let (algo, hex) = cas_key_from_integrity(&format!("sha512-{}", STANDARD.encode(Sha512::digest(b"platform-fixture")))).unwrap();
     let unpacked = unpacked_path(&layout,&algo,&hex);
     fs::create_dir_all(unpacked.join("package")).unwrap();
     fs::write(unpacked.join("package/package.json"),json!({"name":"app","version":"1.0.0"}).to_string()).unwrap();
     fs::write(unpacked.join(".better_extracted"),"").unwrap();
     let marker = tarball_path(&layout,&algo,&hex).with_extension("tgz.verified");
     fs::create_dir_all(marker.parent().unwrap()).unwrap();
-    fs::write(marker,"").unwrap();
+    fs::write(marker,better_core::integrity::VERIFIED_MARKER).unwrap();
+    fs::write(tarball_path(&layout, &algo, &hex), b"platform-fixture").unwrap();
 }
 
 fn install(root: &Path, layout: &str, os: &str) -> Output {

@@ -2469,13 +2469,17 @@ fn main() {
                     if let Some((algo, hex)) = cas_key_from_integrity(&pkg.integrity) {
                         let verified_marker = tarball_path(&layout, &algo, &hex).with_extension("tgz.verified");
                         let extracted_marker = unpacked_path(&layout, &algo, &hex).join(".better_extracted");
-                        if !verified_marker.exists() || !extracted_marker.exists() {
+                        if !verified_marker.exists() || !extracted_marker.exists()
+                            || !better_core::cached_tarball_is_verified(&layout, &pkg.integrity) {
                             missing = Some(format!(
                                 "package not in cache: {}@{} — run without --offline to fetch",
                                 pkg.name, pkg.version
                             ));
                             break;
                         }
+                    } else {
+                        missing = Some(format!("Invalid integrity for {}@{}", pkg.name, pkg.version));
+                        break;
                     }
                 }
                 if let Some(reason) = missing {

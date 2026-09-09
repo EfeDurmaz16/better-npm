@@ -97,21 +97,8 @@ fn parse_selection(rel_path: &str, entry: &serde_json::Value) -> Result<PackageS
 
 /// Parse integrity string (e.g., "sha512-base64...") into (algorithm, hex_string)
 pub fn cas_key_from_integrity(integrity: &str) -> Option<(String, String)> {
-    let parts: Vec<&str> = integrity.splitn(2, '-').collect();
-    if parts.len() != 2 {
-        return None;
-    }
-
-    let algo = parts[0];
-    let base64_hash = parts[1];
-
-    // Decode base64 to bytes
-    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, base64_hash).ok()?;
-
-    // Convert to hex string
-    let hex = bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>();
-
-    Some((algo.to_string(), hex))
+    let parsed = crate::integrity::Integrity::parse(integrity).ok()?;
+    Some((parsed.algorithm().to_owned(), parsed.hex_digest()))
 }
 
 /// Get tarball path in CAS layout: tarballs_dir/algo/aa/bb/hex.tgz
@@ -128,6 +115,16 @@ pub fn unpacked_path(layout: &CasLayout, algo: &str, hex: &str) -> PathBuf {
     layout.unpacked_dir.join(algo).join(aa).join(bb).join(hex)
 }
 
+/// A legacy marker alone is not proof that the retained archive matches its identity.
+pub fn cached_tarball_is_verified(layout: &CasLayout, value: &str) -> bool {
+    let Ok(integrity) = crate::integrity::Integrity::parse(value) else { return false; };
+    let path = tarball_path(layout, integrity.algorithm(), &integrity.hex_digest());
+    if fs::read_to_string(path.with_extension("tgz.verified")).ok().as_deref()
+        != Some(crate::integrity::VERIFIED_MARKER) { return false; }
+    let Ok(file) = fs::File::open(path) else { return false; };
+    integrity.verify_reader(file).is_ok()
+}
+
 /// Fetch tarballs for resolved packages with parallel downloads and CAS storage
 pub fn fetch_packages(
     packages: &[ResolvedPackage],
@@ -135,7 +132,6 @@ pub fn fetch_packages(
     npmrc: Option<&NpmrcConfig>,
 ) -> Result<FetchResult, String> {
     use rayon::prelude::*;
-    use sha2::{Digest, Sha512};
 
     let layout = CasLayout::new(cache_dir);
 
@@ -155,8 +151,10 @@ pub fn fetch_packages(
     // Process packages in parallel
     packages.par_iter().try_for_each(|pkg| -> Result<(), String> {
         // Parse integrity
-        let (algo, hex) = cas_key_from_integrity(&pkg.integrity)
-            .ok_or_else(|| format!("Invalid integrity format: {}", pkg.integrity))?;
+        let integrity = crate::integrity::Integrity::parse(&pkg.integrity)
+            .map_err(|e| format!("Invalid integrity for {}: {}", pkg.name, e))?;
+        let algo = integrity.algorithm();
+        let hex = integrity.hex_digest();
 
         let tarball = tarball_path(&layout, &algo, &hex);
         let unpacked = unpacked_path(&layout, &algo, &hex);
@@ -164,13 +162,14 @@ pub fn fetch_packages(
         let extracted_marker = unpacked.join(".better_extracted");
 
         // Check if already cached and verified
-        if verified_marker.exists() && extracted_marker.exists() {
+        let verified = cached_tarball_is_verified(&layout, &pkg.integrity);
+        if verified && extracted_marker.exists() {
             packages_cached.fetch_add(1, Ordering::Relaxed);
             return Ok(());
         }
 
         // Stream: download → hash → save tarball → decompress → extract (single pass)
-        if !verified_marker.exists() || !extracted_marker.exists() {
+        if !verified || !extracted_marker.exists() {
             // Ensure parent directories exist
             if let Some(parent) = tarball.parent() {
                 fs::create_dir_all(parent).map_err(|e| format!("Failed to create tarball parent dir: {}", e))?;
@@ -185,14 +184,17 @@ pub fn fetch_packages(
                 .map_err(|_| format!("Failed to read download for {}", pkg.name))?;
             let byte_count = bytes.len() as u64;
 
-            // Hash on-the-fly from the in-memory buffer
-            let mut hasher = Sha512::new();
-            hasher.update(&bytes);
-            let computed_hex = format!("{:x}", hasher.finalize());
+            integrity.verify(&bytes)
+                .map_err(|e| format!("{} for {}", e, pkg.name))?;
 
-            if algo == "sha512" && computed_hex != hex {
-                return Err(format!("Integrity mismatch for {}: expected {}, got {}", pkg.name, hex, computed_hex));
+            // A previously accepted archive may have populated this directory.
+            // Never overlay verified bytes on untrusted leftover files.
+            if unpacked.exists() {
+                fs::remove_dir_all(&unpacked)
+                    .map_err(|e| format!("Failed to discard stale extraction: {}", e))?;
             }
+            fs::create_dir_all(&unpacked)
+                .map_err(|e| format!("Failed to create unpacked dir: {}", e))?;
 
             // Stream: decompress → extract directly from memory (no temp file round-trip)
             let gz = flate2::read::GzDecoder::new(std::io::Cursor::new(&bytes));
@@ -208,7 +210,7 @@ pub fn fetch_packages(
                 .map_err(|e| format!("Failed to move tarball to CAS: {}", e))?;
 
             // Write markers
-            fs::write(&verified_marker, "")
+            fs::write(&verified_marker, crate::integrity::VERIFIED_MARKER)
                 .map_err(|e| format!("Failed to write verified marker: {}", e))?;
             fs::write(&extracted_marker, "")
                 .map_err(|e| format!("Failed to write extracted marker: {}", e))?;
@@ -241,7 +243,7 @@ mod tests {
     #[test]
     fn cas_key_from_integrity_valid_sha512() {
         // SHA-512 integrity string in base64
-        let integrity = "sha512-AAAA";
+        let integrity = "sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
         let result = cas_key_from_integrity(integrity);
         assert!(result.is_some());
         let (algo, _hex) = result.unwrap();
@@ -302,7 +304,7 @@ mod tests {
 
     #[test]
     fn cas_key_from_integrity_sha1() {
-        let integrity = "sha1-AAAAAAAAAAAAAAAAAAAAAA=="; // valid base64
+        let integrity = "sha1-AAAAAAAAAAAAAAAAAAAAAAAAAAA="; // valid base64
         let result = cas_key_from_integrity(integrity);
         assert!(result.is_some());
         let (algo, _) = result.unwrap();
