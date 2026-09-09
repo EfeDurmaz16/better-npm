@@ -75,6 +75,8 @@ enum Command {
         frozen: bool,
         offline: bool,
         production: bool,
+        target_os: String,
+        target_cpu: String,
         json_progress: bool,
         node_layout: NodeLayout,
         sandbox: bool,
@@ -449,6 +451,9 @@ fn parse_args() -> (Command, GlobalFlags) {
     let mut token_env_opt: Option<String> = None;
     let mut priority_opt: Option<u64> = None;
     let mut production = false;
+    let (native_os, native_cpu) = better_core::native_install_target();
+    let mut target_os = native_os.to_string();
+    let mut target_cpu = native_cpu.to_string();
     let mut sandbox_flag = false;
     let mut vex_flag = false;
     let mut verify_provenance_flag = false;
@@ -550,6 +555,11 @@ fn parse_args() -> (Command, GlobalFlags) {
             "--no-scripts" => { scripts_flag = false; i += 1; }
             "--scripts" => { scripts_flag = true; i += 1; }
             "--production" => { production = true; i += 1; }
+            "--os" | "--cpu" => {
+                if i + 1 >= args.len() { return (Command::Help { error: Some(format!("{} requires a value", args[i])) }, global_flags); }
+                if args[i] == "--os" { target_os = args[i + 1].clone(); } else { target_cpu = args[i + 1].clone(); }
+                i += 2;
+            }
             "--sandbox" => { sandbox_flag = true; i += 1; }
             "--no-sandbox" => { sandbox_flag = false; i += 1; }
             "--vex" => { vex_flag = true; i += 1; }
@@ -772,7 +782,7 @@ fn parse_args() -> (Command, GlobalFlags) {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
             let lf = lockfile.unwrap_or_else(|| pr.join("package-lock.json"));
             let cr = cache_root.unwrap_or_else(default_cache_root);
-            Command::Install { lockfile: lf, project_root: pr, cache_root: cr, store_root, link_strategy, jobs, scripts: scripts_flag, dedup, frozen, production, offline: offline_flag, json_progress, node_layout, sandbox: sandbox_flag, verify_provenance: verify_provenance_flag, require_provenance: require_provenance_flag, registry_failover: registry_failover_flag }
+            Command::Install { lockfile: lf, project_root: pr, cache_root: cr, store_root, link_strategy, jobs, scripts: scripts_flag, dedup, frozen, production, target_os, target_cpu, offline: offline_flag, json_progress, node_layout, sandbox: sandbox_flag, verify_provenance: verify_provenance_flag, require_provenance: require_provenance_flag, registry_failover: registry_failover_flag }
         },
         "run" => {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
@@ -1109,7 +1119,7 @@ fn print_help(error: Option<String>) {
         "better-core {VERSION}
 
 Usage:
-  better-core install [--lockfile <path>] [--project-root <path>] [--cache-root <path>] [--dedup] [--frozen] [--offline] [--production]
+  better-core install [--lockfile <path>] [--project-root <path>] [--cache-root <path>] [--dedup] [--frozen] [--offline] [--production] [--os <os>] [--cpu <cpu>]
   better-core run <script> [--watch] [-- extra args...]
   better-core test|lint|build|start [--watch] [args...]
   better-core dev [args...]  (watch mode by default)
@@ -2379,7 +2389,7 @@ fn main() {
                 std::process::exit(1);
             }
         },
-        Command::Install { lockfile, project_root, cache_root, store_root, link_strategy, jobs: _, scripts, dedup, frozen, offline, production, json_progress, node_layout, sandbox, verify_provenance: vp, require_provenance: rp, registry_failover } => {
+        Command::Install { lockfile, project_root, cache_root, store_root, link_strategy, jobs: _, scripts, dedup, frozen, offline, production, target_os, target_cpu, json_progress, node_layout, sandbox, verify_provenance: vp, require_provenance: rp, registry_failover } => {
             let started = Instant::now();
 
             // Engine detection: identify which ecosystem this project uses
@@ -2439,7 +2449,14 @@ fn main() {
                 }
             }
 
-            let selected_packages = better_core::select_production_packages(&resolve_result.packages, production);
+            let selected_packages = match better_core::select_platform_packages(&resolve_result, production, &target_os, &target_cpu) {
+                Ok(packages) => packages,
+                Err(reason) => {
+                    eprintln!("{reason}");
+                    std::process::exit(1);
+                }
+            };
+            let refresh_tree = production || selected_packages.len() != resolve_result.packages.len();
 
             // Step 2: Fetch (skip network in --offline mode, only use CAS)
             let t_fetch = Instant::now();
@@ -2513,29 +2530,29 @@ fn main() {
             let node_modules = project_root.join("node_modules");
             // Refresh only after every selected package has passed fetch/cache checks.
             // This also removes stale dev bins and strict-layout store entries.
-            if production {
+            if refresh_tree {
                 for pkg in &selected_packages {
                     let source = cas_key_from_integrity(&pkg.integrity)
                         .map(|(algo, hex)| unpacked_path(&layout, &algo, &hex).join("package"));
                     if !source.is_some_and(|path| path.is_dir() && path.join("package.json").is_file()) {
-                        eprintln!("Production install requires a complete cached package: {}@{}", pkg.name, pkg.version);
+                        eprintln!("Selected install requires a complete cached package: {}@{}", pkg.name, pkg.version);
                         std::process::exit(1);
                     }
                 }
             }
-            if production && node_modules.exists() {
+            if refresh_tree && node_modules.exists() {
                 // A custom cache/store may live inside the tree being refreshed.
                 // Resolve symlinks too: never delete fetched inputs during cleanup.
                 if let Ok(tree) = node_modules.canonicalize() {
                     for protected in [&cache_root, &file_cas_root] {
                         if protected.canonicalize().is_ok_and(|path| path.starts_with(&tree)) {
-                            eprintln!("Production install requires cache and store roots outside node_modules: {}", protected.display());
+                            eprintln!("Selected install requires cache and store roots outside node_modules: {}", protected.display());
                             std::process::exit(1);
                         }
                     }
                 }
                 if let Err(reason) = std::fs::remove_dir_all(&node_modules) {
-                    eprintln!("Failed to refresh node_modules for production: {reason}");
+                    eprintln!("Failed to refresh node_modules for selection: {reason}");
                     std::process::exit(1);
                 }
             }
@@ -2836,6 +2853,10 @@ fn main() {
             w.key("cacheRoot"); w.value_string(&cache_root.to_string_lossy());
             w.key("durationMs"); w.value_u64(duration_ms);
             w.key("nodeLayout"); w.value_string(node_layout.as_str());
+            w.key("target"); w.begin_object();
+            w.key("os"); w.value_string(&target_os);
+            w.key("cpu"); w.value_string(&target_cpu);
+            w.end_object();
             w.key("stats"); w.begin_object();
             w.key("packagesResolved"); w.value_u64(selected_packages.len() as u64);
             w.key("packagesFetched"); w.value_u64(fetch_result.packages_fetched);
