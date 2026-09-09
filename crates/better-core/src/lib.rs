@@ -72,6 +72,9 @@ pub use env::*;
 pub mod cas;
 pub use cas::*;
 
+pub mod platform_selection;
+pub use platform_selection::*;
+
 pub mod fetch;
 pub use fetch::*;
 
