@@ -113,12 +113,11 @@ fn legacy_markers_cannot_authorize_wrong_sha1_online_or_offline() {
         );
         assert!(!dir.path().join("node_modules").exists());
     }
-    let (url, server) = serve(archive());
+    let url = "http://127.0.0.1:1/no-network".to_string();
     assert!(fetch_packages(&[package(integrity, url)], &cache, None)
         .err()
         .unwrap()
         .contains("Integrity mismatch"));
-    server.join().unwrap();
 }
 
 #[test]
@@ -136,9 +135,10 @@ fn legacy_repair_discards_stale_extracted_files() {
     fs::write(tarball.with_extension("tgz.verified"), "").unwrap();
     fs::write(unpacked.join(".better_extracted"), "").unwrap();
     fs::write(unpacked.join("package/stale.js"), "stale legacy content").unwrap();
-    let (url, server) = serve(bytes);
-    assert_eq!(fetch_packages(&[package(integrity, url)], dir.path(), None).unwrap().packages_fetched, 1);
-    server.join().unwrap();
+    let url = "http://127.0.0.1:1/no-network".to_string();
+    let result = fetch_packages(&[package(integrity, url)], dir.path(), None).unwrap();
+    assert_eq!(result.packages_fetched, 0);
+    assert_eq!(result.packages_cached, 1);
     assert!(!unpacked.join("package/stale.js").exists());
     assert!(unpacked.join("package/package.json").exists());
     assert_eq!(fs::read_to_string(tarball.with_extension("tgz.verified")).unwrap(), better_core::integrity::VERIFIED_MARKER);

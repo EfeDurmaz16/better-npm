@@ -78,36 +78,10 @@ pub fn registry_for_package<'a>(
 /// Longest matching path wins; later configuration wins ties.
 pub(crate) fn find_auth_token<'a>(config: &'a NpmrcConfig, destination: &str) -> Option<&'a str> {
     let url = reqwest::Url::parse(destination).ok()?;
-    if !matches!(url.scheme(), "http" | "https")
-        || !url.username().is_empty()
-        || url.password().is_some()
-    {
-        return None;
-    }
-    // An HTTPS registry token must not be downgraded by an initial lockfile URL.
-    // Plain HTTP auth requires an explicitly configured HTTP registry covering
-    // this destination; a scheme-less auth scope alone is not that permission.
-    if url.scheme() == "http"
-        && !std::iter::once(&config.default_registry)
-            .chain(
-                config
-                    .scoped_registries
-                    .iter()
-                    .map(|(_, registry)| registry),
-            )
-            .filter_map(|registry| reqwest::Url::parse(registry).ok())
-            .any(|registry| {
-                let prefix = registry.path().trim_end_matches('/');
-                registry.scheme() == "http"
-                    && registry.host_str() == url.host_str()
-                    && registry.port_or_known_default() == url.port_or_known_default()
-                    && (url.path() == prefix
-                        || url
-                            .path()
-                            .strip_prefix(prefix)
-                            .is_some_and(|suffix| suffix.starts_with('/')))
-            })
-    {
+    // Registry settings can come from a different configuration layer than the
+    // token. No registry override may authorize sending bearer credentials over
+    // plaintext HTTP, regardless of the merged configuration's provenance.
+    if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
         return None;
     }
     // Do not authenticate ambiguous encoded path separators/dot segments: servers
@@ -236,18 +210,30 @@ mod auth_scope_tests {
         }
     }
     #[test]
-    fn http_requires_explicit_registry_configuration() {
+    fn bearer_tokens_require_https_regardless_of_registry_settings() {
         let mut config = NpmrcConfig::default();
-        parse_npmrc_content("registry=https://registry.example/private/\n//registry.example/private/:_authToken=FAKE", &mut config);
-        assert_eq!(
-            find_auth_token(&config, "http://registry.example/private/pkg"),
-            None
-        );
-        config.default_registry = "http://registry.example/private/".into();
-        assert_eq!(
-            find_auth_token(&config, "http://registry.example/private/pkg"),
-            Some("FAKE")
-        );
+        parse_npmrc_content("//registry.example/private/:_authToken=FAKE", &mut config);
+        for registry in [
+            "https://registry.example/private/",
+            "http://registry.example/private/",
+        ] {
+            parse_npmrc_content(
+                &format!("registry={registry}\n@org:registry={registry}"),
+                &mut config,
+            );
+            assert_eq!(
+                find_auth_token(&config, "http://registry.example/private/pkg"),
+                None
+            );
+            assert_eq!(
+                find_auth_token(&config, "https://registry.example/private/pkg"),
+                Some("FAKE")
+            );
+            if registry.starts_with("http:") {
+                assert_eq!(registry_for_package(&config, "pkg").1, None);
+                assert_eq!(registry_for_package(&config, "@org/pkg").1, None);
+            }
+        }
     }
     #[test]
     fn later_scope_configuration_wins() {

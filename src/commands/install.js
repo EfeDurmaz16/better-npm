@@ -30,6 +30,7 @@ import { executionPlan, affectedPackages } from "../lib/topoSort.js";
 import { loadOverrides, validateOverrides } from "../lib/overrides.js";
 import { verifyFrozenLockfile } from "../lib/frozenLockfile.js";
 import { assertInstallOptionSupport } from "../lib/installOptions.js";
+import { lazyPackageCasPath } from "../lib/lazyCasPath.js";
 import { createInstallProgress } from "../tui/installProgress.js";
 import { parseLockfilePackages, saveSnapshot } from "../lib/deltaUpdate.js";
 
@@ -1061,7 +1062,7 @@ Workspace options:
       name: p.name ?? "",
       version: p.version ?? "",
       rel_path: p.relPath ?? `node_modules/${p.name}`,
-      cas_path: path.join(cacheRoot, "unpacked"),
+      cas_path: lazyPackageCasPath(cacheRoot, p.integrity),
       integrity: p.integrity ?? "",
       has_scripts: false,
       bin: {}

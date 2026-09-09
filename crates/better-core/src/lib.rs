@@ -77,6 +77,7 @@ pub use platform_selection::*;
 
 pub mod integrity;
 pub mod artifact_cache;
+mod artifact_inventory;
 pub mod fetch;
 pub mod fetch_pipeline;
 pub mod fetch_scheduler;

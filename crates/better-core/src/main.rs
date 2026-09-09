@@ -2490,27 +2490,8 @@ fn main() {
             let t_fetch = Instant::now();
             progress.set_fetch_total(selected_packages.len() as u64);
             let fetch_result = if offline {
-                // Offline mode: verify all packages are already in CAS; fail fast if any are missing
-                let layout = CasLayout::new(&cache_root);
-                let mut missing: Option<String> = None;
-                for pkg in &selected_packages {
-                    if let Some((algo, hex)) = cas_key_from_integrity(&pkg.integrity) {
-                        let verified_marker = tarball_path(&layout, &algo, &hex).with_extension("tgz.verified");
-                        let extracted_marker = unpacked_path(&layout, &algo, &hex).join(".better_extracted");
-                        if !verified_marker.exists() || !extracted_marker.exists()
-                            || !better_core::cached_tarball_is_verified(&layout, &pkg.integrity) {
-                            missing = Some(format!(
-                                "package not in cache: {}@{} — run without --offline to fetch",
-                                pkg.name, pkg.version
-                            ));
-                            break;
-                        }
-                    } else {
-                        missing = Some(format!("Invalid integrity for {}@{}", pkg.name, pkg.version));
-                        break;
-                    }
-                }
-                if let Some(reason) = missing {
+                let result = better_core::artifact_cache::prepare_offline_packages(&selected_packages, &cache_root, artifact_limits);
+                if let Err(reason) = result {
                     let mut w = JsonWriter::new();
                     w.begin_object();
                     w.key("ok"); w.value_bool(false);

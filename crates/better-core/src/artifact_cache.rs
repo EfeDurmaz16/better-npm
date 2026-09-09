@@ -59,6 +59,7 @@ impl ArtifactCache {
     pub fn ready(&self) -> bool {
         self.tarball.is_file() && fs::read_to_string(self.tarball.with_extension("tgz.verified")).ok().as_deref() == Some(MARKER_VERSION)
             && fs::read_to_string(self.unpacked.join(".better_extracted")).ok().as_deref() == Some(MARKER_VERSION)
+            && crate::artifact_inventory::complete(&self.unpacked)
     }
 
     pub fn create_download(&self) -> Result<Staging, String> {
@@ -90,11 +91,12 @@ impl ArtifactCache {
         let marker = candidate.join(".better_extracted");
         // An archive cannot supply our completion marker, including a symlink.
         if fs::symlink_metadata(&marker).is_ok() { return Err("Archive contains reserved extraction marker".into()); }
+        crate::artifact_inventory::write(&candidate)?;
         use std::io::Write;
         let mut file = File::create_new(&marker).map_err(|e| e.to_string())?;
         file.write_all(MARKER_VERSION.as_bytes()).and_then(|_| file.sync_all()).map_err(|e| e.to_string())?;
         if self.unpacked.exists() {
-            if fs::read_to_string(self.unpacked.join(".better_extracted")).ok().as_deref() == Some(MARKER_VERSION) { return Ok(()); }
+            if self.ready() { return Ok(()); }
             // Retain incomplete legacy content instead of deleting potentially live data.
             let quarantine = parent.join(format!(".better-quarantine-{:016x}", rand::random::<u64>()));
             match fs::rename(&self.unpacked, quarantine) {
@@ -110,6 +112,36 @@ impl ArtifactCache {
             Err(e) => Err(format!("Cannot publish extraction: {e}")),
         }
     }
+}
+
+/// Prepare selected packages without any network access. Missing or incomplete
+/// extraction is rebuilt from a verified retained archive under the content lock.
+pub fn prepare_offline_packages(packages: &[crate::ResolvedPackage], cache_dir: &Path, limits: crate::fetch_pipeline::ArtifactLimits) -> Result<crate::FetchResult, String> {
+    let mut identities = std::collections::BTreeMap::new();
+    for package in packages {
+        let identity = crate::integrity::Integrity::parse(&package.integrity)
+            .map_err(|e| format!("Invalid integrity for {}: {e}", package.name))?;
+        identities.entry((identity.algorithm(), identity.hex_digest())).or_insert((package, identity));
+    }
+    for (_, (package, identity)) in identities {
+        let artifact = ArtifactCache::new(cache_dir, identity.algorithm(), &identity.hex_digest());
+        let _lock = artifact.lock()?;
+        let verify = |path: &Path| {
+            if fs::metadata(path).map_err(|e| e.to_string())?.len() > limits.compressed_bytes {
+                return Err("Cached archive exceeds compressed byte limit".to_string());
+            }
+            identity.verify_reader(File::open(path).map_err(|e| e.to_string())?)
+        };
+        if !artifact.retained_tarball(verify).map_err(|e| format!("Invalid cached archive for {}: {e}", package.name))? {
+            return Err(format!("package not in cache: {}@{} - run without --offline to fetch", package.name, package.version));
+        }
+        if !artifact.ready() {
+            artifact.extract_and_publish(|source, destination| {
+                crate::fetch_pipeline::extract_verified_tarball(source, destination, limits)
+            })?;
+        }
+    }
+    Ok(crate::FetchResult { packages_fetched: 0, packages_cached: packages.len() as u64, bytes_downloaded: 0, metrics: Default::default() })
 }
 
 #[cfg(test)]

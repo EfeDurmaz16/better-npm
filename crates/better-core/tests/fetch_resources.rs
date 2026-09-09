@@ -66,3 +66,37 @@ fn real_http_obeys_jobs_and_returns_bounded_stage_metrics() {
         assert_eq!(warm.metrics.peak_extracting, 0);
     }
 }
+
+#[test]
+fn retained_archives_obey_compressed_budget_before_reuse_or_repair() {
+    use better_core::{artifact_cache::ArtifactCache, fetch_pipeline::{ArtifactLimits, extract_verified_tarball}, integrity::Integrity};
+    let cache = tempfile::tempdir().unwrap();
+    let bytes = archive("fixture");
+    let sri = format!("sha512-{}", STANDARD.encode(Sha512::digest(&bytes)));
+    let identity = Integrity::parse(&sri).unwrap();
+    let artifact = ArtifactCache::new(cache.path(), identity.algorithm(), &identity.hex_digest());
+    let stage = artifact.create_download().unwrap();
+    let source = stage.path().join("archive.tgz");
+    std::fs::write(&source, &bytes).unwrap();
+    artifact.publish_tarball(&source, |path| identity.verify_reader(std::fs::File::open(path).unwrap())).unwrap();
+    artifact.extract_and_publish(|source, destination| extract_verified_tarball(source, destination, ArtifactLimits::default())).unwrap();
+    let package = ResolvedPackage {
+        name: "fixture".into(), version: "1.0.0".into(), rel_path: "node_modules/fixture".into(),
+        resolved_url: "http://127.0.0.1:1/unused".into(), integrity: sri,
+        selection: PackageSelection::default(),
+    };
+    let mut options = FetchOptions { network_jobs: 1, extract_jobs: 1, ..FetchOptions::default() };
+    options.limits.compressed_bytes = bytes.len() as u64 - 1;
+    for needs_repair in [false, true] {
+        if needs_repair { std::fs::remove_file(artifact.unpacked.join(".better_extracted")).unwrap(); }
+        let error = fetch_packages_with_options(std::slice::from_ref(&package), cache.path(), None, &options).err().expect("retained archive must exceed the budget");
+        assert!(error.contains("Cached archive exceeds compressed byte limit"), "{error}");
+        assert_eq!(std::fs::read(&artifact.tarball).unwrap(), bytes);
+        assert_eq!(artifact.ready(), !needs_repair);
+    }
+    options.limits.compressed_bytes = bytes.len() as u64;
+    let result = fetch_packages_with_options(&[package], cache.path(), None, &options).unwrap();
+    assert_eq!(result.packages_cached, 1);
+    assert_eq!(result.bytes_downloaded, 0);
+    assert!(artifact.ready());
+}

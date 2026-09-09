@@ -4,20 +4,30 @@ use sha2::{Digest, Sha512};
 use better_core::{cas_key_from_integrity, tarball_path, unpacked_path, CasLayout};
 use serde_json::{json, Value};
 
+fn app_archive() -> Vec<u8> {
+    let bytes = json!({"name":"app","version":"1.0.0"}).to_string();
+    let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    let mut archive = tar::Builder::new(encoder);
+    let mut header = tar::Header::new_gnu();
+    header.set_size(bytes.len() as u64); header.set_mode(0o644); header.set_cksum();
+    archive.append_data(&mut header, "package/package.json", bytes.as_bytes()).unwrap();
+    archive.into_inner().unwrap().finish().unwrap()
+}
+
 fn fixture(root: &Path, optional: bool) {
     let project = if optional { json!({"name":"fixture","dependencies":{"app":"1"},"optionalDependencies":{"foreign":"1"}}) }
         else { json!({"name":"fixture","dependencies":{"foreign":"1"}}) };
     fs::write(root.join("package.json"),project.to_string()).unwrap();
     fs::write(root.join("package-lock.json"),json!({"lockfileVersion":3,"packages":{
         "":project,
-        "node_modules/app":{"version":"1.0.0","resolved":"https://example.test/app.tgz","integrity":format!("sha512-{}", STANDARD.encode(Sha512::digest(b"platform-fixture")))},
+        "node_modules/app":{"version":"1.0.0","resolved":"https://example.test/app.tgz","integrity":format!("sha512-{}", STANDARD.encode(Sha512::digest(app_archive())))},
         "node_modules/foreign":{"version":"1.0.0","resolved":"https://example.test/foreign.tgz","integrity":"sha512-BBBB","optional":optional,"os":["linux"]}
     }}).to_string()).unwrap();
 }
 
 fn seed_app(root: &Path) {
     let layout = CasLayout::new(&root.join("cache"));
-    let (algo, hex) = cas_key_from_integrity(&format!("sha512-{}", STANDARD.encode(Sha512::digest(b"platform-fixture")))).unwrap();
+    let (algo, hex) = cas_key_from_integrity(&format!("sha512-{}", STANDARD.encode(Sha512::digest(app_archive())))).unwrap();
     let unpacked = unpacked_path(&layout,&algo,&hex);
     fs::create_dir_all(unpacked.join("package")).unwrap();
     fs::write(unpacked.join("package/package.json"),json!({"name":"app","version":"1.0.0"}).to_string()).unwrap();
@@ -25,7 +35,7 @@ fn seed_app(root: &Path) {
     let marker = tarball_path(&layout,&algo,&hex).with_extension("tgz.verified");
     fs::create_dir_all(marker.parent().unwrap()).unwrap();
     fs::write(marker,better_core::integrity::VERIFIED_MARKER).unwrap();
-    fs::write(tarball_path(&layout, &algo, &hex), b"platform-fixture").unwrap();
+    fs::write(tarball_path(&layout, &algo, &hex), app_archive()).unwrap();
 }
 
 fn install(root: &Path, layout: &str, os: &str) -> Output {
