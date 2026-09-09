@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::types::*;
-use crate::{package_name_from_path, registry_for_package};
+use crate::package_name_from_path;
 
 // --- Install engine: resolve and fetch ---
 
@@ -97,21 +97,8 @@ fn parse_selection(rel_path: &str, entry: &serde_json::Value) -> Result<PackageS
 
 /// Parse integrity string (e.g., "sha512-base64...") into (algorithm, hex_string)
 pub fn cas_key_from_integrity(integrity: &str) -> Option<(String, String)> {
-    let parts: Vec<&str> = integrity.splitn(2, '-').collect();
-    if parts.len() != 2 {
-        return None;
-    }
-
-    let algo = parts[0];
-    let base64_hash = parts[1];
-
-    // Decode base64 to bytes
-    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, base64_hash).ok()?;
-
-    // Convert to hex string
-    let hex = bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>();
-
-    Some((algo.to_string(), hex))
+    let parsed = crate::integrity::Integrity::parse(integrity).ok()?;
+    Some((parsed.algorithm().to_owned(), parsed.hex_digest()))
 }
 
 /// Get tarball path in CAS layout: tarballs_dir/algo/aa/bb/hex.tgz
@@ -128,6 +115,16 @@ pub fn unpacked_path(layout: &CasLayout, algo: &str, hex: &str) -> PathBuf {
     layout.unpacked_dir.join(algo).join(aa).join(bb).join(hex)
 }
 
+/// A legacy marker alone is not proof that the retained archive matches its identity.
+pub fn cached_tarball_is_verified(layout: &CasLayout, value: &str) -> bool {
+    let Ok(integrity) = crate::integrity::Integrity::parse(value) else { return false; };
+    let path = tarball_path(layout, integrity.algorithm(), &integrity.hex_digest());
+    if fs::read_to_string(path.with_extension("tgz.verified")).ok().as_deref()
+        != Some(crate::integrity::VERIFIED_MARKER) { return false; }
+    let Ok(file) = fs::File::open(path) else { return false; };
+    integrity.verify_reader(file).is_ok()
+}
+
 /// Fetch tarballs for resolved packages with parallel downloads and CAS storage
 pub fn fetch_packages(
     packages: &[ResolvedPackage],
@@ -135,7 +132,7 @@ pub fn fetch_packages(
     npmrc: Option<&NpmrcConfig>,
 ) -> Result<FetchResult, String> {
     use rayon::prelude::*;
-    use sha2::{Digest, Sha512};
+    use crate::integrity::Integrity;
 
     let layout = CasLayout::new(cache_dir);
 
@@ -150,105 +147,47 @@ pub fn fetch_packages(
     let bytes_downloaded = AtomicU64::new(0);
 
     // Shared HTTP/2 client — reuses connections and multiplexes requests
-    let http_client = reqwest::blocking::Client::builder()
-        .use_rustls_tls()
-        .http2_adaptive_window(true)
-        .pool_max_idle_per_host(10)
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+    let http_client = crate::transport::client()?;
 
     // Process packages in parallel
     packages.par_iter().try_for_each(|pkg| -> Result<(), String> {
-        // Parse integrity
-        let (algo, hex) = cas_key_from_integrity(&pkg.integrity)
-            .ok_or_else(|| format!("Invalid integrity format: {}", pkg.integrity))?;
-
-        let tarball = tarball_path(&layout, &algo, &hex);
-        let unpacked = unpacked_path(&layout, &algo, &hex);
-        let verified_marker = tarball.with_extension("tgz.verified");
-        let extracted_marker = unpacked.join(".better_extracted");
-
-        // Check if already cached and verified
-        if verified_marker.exists() && extracted_marker.exists() {
+        let integrity = Integrity::parse(&pkg.integrity)?;
+        let algo = integrity.algorithm();
+        let hex = integrity.hex_digest();
+        let artifact = crate::artifact_cache::ArtifactCache::new(cache_dir, algo, &hex);
+        let verify = |path: &Path| -> Result<(), String> {
+            integrity.verify_reader(fs::File::open(path).map_err(|e| e.to_string())?)
+        };
+        if artifact.ready() {
+            artifact.retained_tarball(verify)?;
             packages_cached.fetch_add(1, Ordering::Relaxed);
             return Ok(());
         }
-
-        // Stream: download → hash → save tarball → decompress → extract (single pass)
-        if !verified_marker.exists() || !extracted_marker.exists() {
-            // Ensure parent directories exist
-            if let Some(parent) = tarball.parent() {
-                fs::create_dir_all(parent).map_err(|e| format!("Failed to create tarball parent dir: {}", e))?;
-            }
-            fs::create_dir_all(&unpacked)
-                .map_err(|e| format!("Failed to create unpacked dir: {}", e))?;
-
-            let mut download_url = pkg.resolved_url.clone();
-            let mut auth_token: Option<&str> = None;
-            if let Some(cfg) = npmrc {
-                let (_reg, tok) = registry_for_package(cfg, &pkg.name);
-                auth_token = tok;
-                if !cfg.default_registry.starts_with("https://registry.npmjs.org")
-                    && download_url.starts_with("https://registry.npmjs.org/")
-                {
-                    download_url = download_url.replacen(
-                        "https://registry.npmjs.org/",
-                        cfg.default_registry.trim_end_matches('/').to_string().as_str(),
-                        1,
-                    );
-                    if !download_url.contains("://") {
-                        download_url = format!("{}/{}", cfg.default_registry.trim_end_matches('/'), &download_url);
-                    }
-                }
-            }
-
-            let mut request = http_client.get(&download_url);
-            if let Some(token) = auth_token {
-                request = request.header("Authorization", format!("Bearer {}", token));
-            }
-            let response = request
-                .send()
-                .map_err(|e| format!("Failed to download {}: {}", pkg.name, e))?;
+        let retained = artifact.retained_tarball(verify)?;
+        if !retained {
+            let response = crate::transport::download(&http_client, pkg, npmrc)?;
 
             // Read full response bytes (needed for both hashing and extraction)
             let bytes = response.bytes()
-                .map_err(|e| format!("Failed to read download: {}", e))?;
+                .map_err(|_| format!("Failed to read download for {}", pkg.name))?;
             let byte_count = bytes.len() as u64;
 
-            // Hash on-the-fly from the in-memory buffer
-            let mut hasher = Sha512::new();
-            hasher.update(&bytes);
-            let computed_hex = format!("{:x}", hasher.finalize());
+            integrity.verify(&bytes)?;
 
-            if algo == "sha512" && computed_hex != hex {
-                return Err(format!("Integrity mismatch for {}: expected {}, got {}", pkg.name, hex, computed_hex));
-            }
-
-            // Stream: decompress → extract directly from memory (no temp file round-trip)
-            let gz = flate2::read::GzDecoder::new(std::io::Cursor::new(&bytes));
-            let mut archive = tar::Archive::new(gz);
-            archive.unpack(&unpacked)
-                .map_err(|e| format!("Failed to extract tarball: {}", e))?;
-
-            // Persist tarball to CAS for future cache hits
-            let tmp_file = layout.tmp_dir.join(format!("{}.tgz.tmp", hex));
-            fs::write(&tmp_file, &bytes)
-                .map_err(|e| format!("Failed to write tarball: {}", e))?;
-            fs::rename(&tmp_file, &tarball)
-                .map_err(|e| format!("Failed to move tarball to CAS: {}", e))?;
-
-            // Write markers
-            fs::write(&verified_marker, "")
-                .map_err(|e| format!("Failed to write verified marker: {}", e))?;
-            fs::write(&extracted_marker, "")
-                .map_err(|e| format!("Failed to write extracted marker: {}", e))?;
-
+            let stage = artifact.create_download()?;
+            let source = stage.path().join("archive.tgz");
+            fs::write(&source, &bytes).map_err(|e| e.to_string())?;
+            artifact.publish_tarball(&source, verify)?;
             bytes_downloaded.fetch_add(byte_count, Ordering::Relaxed);
             packages_fetched.fetch_add(1, Ordering::Relaxed);
         } else {
             packages_cached.fetch_add(1, Ordering::Relaxed);
         }
+        artifact.extract_and_publish(|source, destination| {
+            let file = fs::File::open(source).map_err(|e| e.to_string())?;
+            let gz = flate2::read::GzDecoder::new(file);
+            tar::Archive::new(gz).unpack(destination).map_err(|e| format!("Failed to extract tarball: {e}"))
+        })?;
 
         Ok(())
     })?;
@@ -272,7 +211,7 @@ mod tests {
     #[test]
     fn cas_key_from_integrity_valid_sha512() {
         // SHA-512 integrity string in base64
-        let integrity = "sha512-AAAA";
+        let integrity = "sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
         let result = cas_key_from_integrity(integrity);
         assert!(result.is_some());
         let (algo, _hex) = result.unwrap();
@@ -333,7 +272,7 @@ mod tests {
 
     #[test]
     fn cas_key_from_integrity_sha1() {
-        let integrity = "sha1-AAAAAAAAAAAAAAAAAAAAAA=="; // valid base64
+        let integrity = "sha1-AAAAAAAAAAAAAAAAAAAAAAAAAAA="; // valid base64
         let result = cas_key_from_integrity(integrity);
         assert!(result.is_some());
         let (algo, _) = result.unwrap();

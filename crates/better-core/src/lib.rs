@@ -75,7 +75,10 @@ pub use cas::*;
 pub mod platform_selection;
 pub use platform_selection::*;
 
+pub mod integrity;
+pub mod artifact_cache;
 pub mod fetch;
+mod transport;
 pub use fetch::*;
 
 pub mod analyze;
