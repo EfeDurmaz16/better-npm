@@ -149,18 +149,27 @@ pub fn fetch_packages(
     // Shared HTTP/2 client — reuses connections and multiplexes requests
     let http_client = crate::transport::client()?;
 
-    // Process packages in parallel
-    packages.par_iter().try_for_each(|pkg| -> Result<(), String> {
+    // Validate identities before work and coalesce duplicate installation paths.
+    let mut unique = std::collections::BTreeMap::new();
+    for pkg in packages {
+        let identity = Integrity::parse(&pkg.integrity)?;
+        let key = (identity.algorithm(), identity.hex_digest());
+        let entry = unique.entry(key).or_insert((pkg, 0_u64));
+        entry.1 += 1;
+    }
+    let unique: Vec<_> = unique.into_values().collect();
+    unique.par_iter().try_for_each(|(pkg, multiplicity)| -> Result<(), String> {
         let integrity = Integrity::parse(&pkg.integrity)?;
         let algo = integrity.algorithm();
         let hex = integrity.hex_digest();
         let artifact = crate::artifact_cache::ArtifactCache::new(cache_dir, algo, &hex);
+        let _content_lock = artifact.lock()?;
         let verify = |path: &Path| -> Result<(), String> {
             integrity.verify_reader(fs::File::open(path).map_err(|e| e.to_string())?)
         };
         if artifact.ready() {
             artifact.retained_tarball(verify)?;
-            packages_cached.fetch_add(1, Ordering::Relaxed);
+            packages_cached.fetch_add(*multiplicity, Ordering::Relaxed);
             return Ok(());
         }
         let retained = artifact.retained_tarball(verify)?;
@@ -183,6 +192,7 @@ pub fn fetch_packages(
         } else {
             packages_cached.fetch_add(1, Ordering::Relaxed);
         }
+        packages_cached.fetch_add(multiplicity - 1, Ordering::Relaxed);
         artifact.extract_and_publish(|source, destination| {
             let file = fs::File::open(source).map_err(|e| e.to_string())?;
             let gz = flate2::read::GzDecoder::new(file);
