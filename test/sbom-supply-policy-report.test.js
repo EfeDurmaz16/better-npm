@@ -96,16 +96,20 @@ test("sbom-gen --json generates SBOM", async () => {
       name: "test", lockfileVersion: 3,
       packages: {
         "": { name: "test", version: "1.0.0", dependencies: { "pkg-a": "^1.0.0" } },
-        "node_modules/pkg-a": { name: "pkg-a", version: "1.0.0" }
+        "node_modules/pkg-a": {
+          name: "pkg-a", version: "1.0.0",
+          resolved: "https://registry.npmjs.org/pkg-a/-/pkg-a-1.0.0.tgz",
+          integrity: "sha512-AAAA"
+        }
       }
     });
 
-    const { stdout } = await runBetter(["sbom-gen", "--json"], dir);
-    if (stdout.trim()) {
-      const out = JSON.parse(stdout);
-      assert.ok(typeof out.ok === "boolean", "should have ok field");
-      // sbom-gen returns {ok, kind} envelope
-    }
+    const { stdout, ok } = await runBetter(["sbom-gen", "--json"], dir);
+    assert.ok(ok, "sbom-gen should succeed for a complete registry descriptor");
+    const out = JSON.parse(stdout);
+    assert.equal(out.ok, true);
+    assert.equal(out.kind, "better.sbom-gen");
+    assert.equal(out.packages, 1, "the resolved registry package must appear in the SBOM");
   } finally {
     await rmrf(dir);
   }
