@@ -58,7 +58,11 @@ fn dir_stats_recursive(dir: &Path) -> (u64, u64) {
 pub fn cache_gc(cache_root: &Path, max_age_days: u64, dry_run: bool) -> Result<CacheGcReport, String> {
     use std::time::{SystemTime, Duration};
 
-    let cutoff = SystemTime::now() - Duration::from_secs(max_age_days * 86400);
+    if !dry_run {
+        return Err("Native artifact GC is unavailable until shared reader leases are supported; use --dry-run for a non-actionable age estimate".into());
+    }
+    let cutoff = SystemTime::now().checked_sub(Duration::from_secs(max_age_days.saturating_mul(86400)))
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
     let mut removed = 0u64;
     let mut freed = 0u64;
 
