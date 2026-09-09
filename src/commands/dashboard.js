@@ -5,7 +5,7 @@ import { printText } from "../lib/output.js";
 import { getRuntimeConfig } from "../lib/config.js";
 import { childLogger } from "../lib/log.js";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
-import { getCacheRoot, cacheLayout } from "../lib/cache.js";
+import { getCacheRoot, cacheLayout, loadState } from "../lib/cache.js";
 import { runDashboard } from "../tui/dashboard.js";
 
 async function readJsonFile(filePath) {
@@ -122,8 +122,7 @@ function buildDepTree(lockData) {
 
 async function loadCacheStats(layout) {
   try {
-    const stateFile = path.join(layout.root, "state.json");
-    const state = await readJsonFile(stateFile);
+    const state = await loadState(layout);
     if (!state) return null;
 
     const metrics = state.cacheMetrics ?? {};

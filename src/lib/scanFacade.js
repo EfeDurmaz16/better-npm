@@ -92,7 +92,7 @@ export async function scanTreeWithBestEngine(rootDir, opts = {}) {
       const du = await duScan(rootDir, { quickLogical, quickLogicalThresholdBytes });
       if (du.ok) return du;
     }
-    return scanTree(rootDir);
+    return scanTree(rootDir, { observeDirectory: opts.observeDirectory });
   }
 
   // Try napi first (for "auto" or "napi" mode)
@@ -132,7 +132,7 @@ export async function scanTreeWithBestEngine(rootDir, opts = {}) {
         const du = await duScan(rootDir, { quickLogical, quickLogicalThresholdBytes });
         if (du.ok) return du;
       }
-      return scanTree(rootDir);
+      return scanTree(rootDir, { observeDirectory: opts.observeDirectory });
     }
     const res = await runBetterCoreScan(corePath, rootDir);
     if (!res || typeof res !== "object") throw new Error("bad better-core scan output");
@@ -155,6 +155,6 @@ export async function scanTreeWithBestEngine(rootDir, opts = {}) {
       const du = await duScan(rootDir, { quickLogical, quickLogicalThresholdBytes });
       if (du.ok) return du;
     }
-    return scanTree(rootDir);
+    return scanTree(rootDir, { observeDirectory: opts.observeDirectory });
   }
 }

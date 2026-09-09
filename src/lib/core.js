@@ -105,6 +105,7 @@ export async function runBetterCoreScan(corePath, rootDir) {
 // --- napi addon loading ---
 
 let _napiAddon = undefined;
+let _napiAddonPath = undefined;
 
 export function tryLoadNapiAddon() {
   if (_napiAddon !== undefined) return _napiAddon;
@@ -119,6 +120,8 @@ export function tryLoadNapiAddon() {
     platform === "linux" && arch === "arm64" ? "linux-arm64-gnu" :
     null;
   const candidates = [];
+  // A release archive installs the addon alongside its matching native binary.
+  candidates.push(path.join(root, "bin", "better-core.node"));
   if (napiTriple) {
     // Platform-specific pre-built addon (CI artifact)
     candidates.push(path.join(root, "crates", "better-napi", `better-core.${napiTriple}.node`));
@@ -132,6 +135,7 @@ export function tryLoadNapiAddon() {
   for (const p of candidates) {
     try {
       _napiAddon = require(p);
+      _napiAddonPath = path.resolve(p);
       return _napiAddon;
     } catch {
       continue;
@@ -751,9 +755,55 @@ export function validateFetchOptions(opts = {}) {
   return opts;
 }
 
+/** Runs canonical native install in this process when the packaged addon supports it.
+ * No fallback after submission: a failed/uncertain request may have mutated files.
+ * The returned Promise means ready, not merely queued. Cancellation is unsupported.
+ */
+export async function runResidentInstall(projectRoot, opts = {}) {
+  assertInstallOptionSupport("better", opts);
+  validateFetchOptions(opts);
+  const addon = tryLoadNapiAddon();
+  if (typeof addon?.installResident !== "function") return null;
+  const root = path.resolve(projectRoot);
+  const request = {
+    projectRoot: root,
+    targetOs: process.platform,
+    targetCpu: process.arch
+  };
+  for (const key of ["lockfile", "cacheRoot", "storeRoot"]) {
+    if (opts[key] != null) request[key] = path.resolve(root, String(opts[key]));
+  }
+  for (const key of ["linkStrategy", "jobs", "extractJobs", "maxTarballBytes", "maxExpandedBytes", "maxArchiveEntries", "maxArchiveMetadataBytes", "scripts", "dedup", "frozen", "production", "offline", "nodeLayout", "registryFailover"]) {
+    if (opts[key] != null) request[key] = opts[key];
+  }
+  const parsed = JSON.parse(await addon.installResident(JSON.stringify(request)));
+  if (!parsed || parsed.kind !== "better.install.report" || typeof parsed.ok !== "boolean") {
+    throw new Error("Resident install returned an invalid report");
+  }
+  if (!parsed.ok) {
+    const error = new Error(parsed.reason || "Resident install failed");
+    error.core = { exitCode: 1, parsed };
+    throw error;
+  }
+  return parsed;
+}
+
 export async function runBetterCoreInstall(corePath, projectRoot, opts = {}) {
   assertInstallOptionSupport("better", opts);
   validateFetchOptions(opts);
+  // Only a release-installed pair is substituted automatically. Development
+  // debug/release executables may not match a separately built local addon.
+  const bundledRoot = betterInstallRoot();
+  const executable = platformExe("better-core");
+  const canUseResident = !process.env.BETTER_CORE_PATH
+    && String(process.env.BETTER_CORE_PROFILE ?? "release").toLowerCase() !== "debug"
+    && opts.resident !== false
+    && typeof corePath === "string"
+    && path.resolve(corePath) === path.join(bundledRoot, "bin", executable);
+  const resident = canUseResident && tryLoadNapiAddon()
+    && _napiAddonPath === path.join(bundledRoot, "bin", "better-core.node")
+    ? await runResidentInstall(projectRoot, opts) : null;
+  if (resident !== null) return resident;
   const args = ["install", "--project-root", projectRoot, "--os", process.platform, "--cpu", process.arch];
   if (opts.lockfile) args.push("--lockfile", String(opts.lockfile));
   if (opts.cacheRoot) args.push("--cache-root", String(opts.cacheRoot));
@@ -767,6 +817,8 @@ export async function runBetterCoreInstall(corePath, projectRoot, opts = {}) {
   if (opts.dedup) args.push("--dedup");
   if (opts.production) args.push("--production");
   if (opts.offline) args.push("--offline");
+  if (opts.frozen) args.push("--frozen");
+  if (opts.registryFailover) args.push("--registry-failover");
   if (opts.nodeLayout === "strict") args.push("--strict");
   else if (opts.nodeLayout === "hoist") args.push("--hoist");
   const res = await runCommand(corePath, args, {
