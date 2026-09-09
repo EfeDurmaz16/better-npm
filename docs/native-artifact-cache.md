@@ -38,7 +38,10 @@ Each published extraction includes an inventory of relative paths, entry types,
 file sizes, and symlink targets. Cache readiness compares the current tree with
 that inventory, so deleted files, extra files, and size changes trigger repair.
 The inventory is limited to 100,000 entries and 16 MiB of JSON; exceeding either
-limit fails explicitly. These are independent cache metadata limits.
+limit fails explicitly. Traversal charges encoded path and symlink-target bytes before retaining entries,
+including the directory queue's path copies, against a separate 16 MiB accounting
+budget. Serialization streams directly through a writer that rejects bytes beyond
+the JSON limit. These are metadata accounting limits, not process RSS guarantees.
 
 This is metadata completeness checking, not a full-content integrity proof against
 a process able to modify the cache. Retained compressed archive bytes are checked
