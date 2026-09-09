@@ -15,8 +15,7 @@ jobs:
       - name: Install dependencies
         uses: ./.github/actions/better
         with:
-          command: install
-          frozen: true
+          command: install --experimental --engine better --pm npm --frozen
           cache: true
 
       - name: Security audit
@@ -25,6 +24,11 @@ jobs:
           command: audit
           prod-only: true
           min-score: '5'
+
+      - name: Generate better lock metadata
+        uses: ./.github/actions/better
+        with:
+          command: lock generate
 
       - name: Verify lockfile
         uses: ./.github/actions/better
