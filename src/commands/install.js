@@ -1,3 +1,4 @@
+import { validateFetchOptions } from "../lib/core.js";
 import { parseArgs } from "node:util";
 import { prepareLazyInstall } from "../lib/lazyPrepare.js";
 import path from "node:path";
@@ -281,6 +282,18 @@ function normalizeCacheScripts(value) {
   return "rebuild";
 }
 
+export function nativeInstallRuntime(requested, corePath) {
+  const fallbackUsed = requested !== "auto" && requested !== "rust";
+  return {
+    requested,
+    selected: "rust",
+    backend: "native-binary",
+    fallbackUsed,
+    fallbackReason: fallbackUsed ? "native_install_requires_binary" : null,
+    corePath
+  };
+}
+
 async function resolveReplayRuntime(coreMode) {
   const runtime = {
     requested: coreMode,
@@ -481,7 +494,11 @@ export async function cmdInstall(argv) {
                  [--global-cache] [--cache-mode strict|relaxed] [--cache-scripts rebuild|off]
                  [--cache-read-only] [--cache-key-salt STRING]
                  [--measure-cache auto|on|off]
-                 [--core-mode auto|js|rust|napi] [--fs-concurrency N] [--no-incremental]
+                 [--core-mode auto|js|rust|napi] [--fs-concurrency N] [--jobs N] [--extract-jobs N] [--no-incremental]
+                 [--max-tarball-bytes N] [--max-expanded-bytes N]
+                 [--max-archive-entries N] [--max-archive-metadata-bytes N]
+                 Fetch options require --engine better; jobs/extract-jobs: 1..256.
+                 Archive limits are positive safe integers, applied per artifact.
                  [--parity-check auto|off|warn|strict]
                  [--strict] [--hoist] [--node-layout strict|hoist]
                  [--workspace PKG | -w PKG] [--workspace-concurrency N] [--workspace-topo]
@@ -539,6 +556,12 @@ Workspace options:
       "cache-read-only": { type: "boolean", default: false },
       "cache-key-salt": { type: "string" },
       "core-mode": { type: "string", default: runtime.coreMode ?? "auto" }, // auto|js|rust
+      "jobs": { type: "string" },
+      "extract-jobs": { type: "string" },
+      "max-tarball-bytes": { type: "string" },
+      "max-expanded-bytes": { type: "string" },
+      "max-archive-entries": { type: "string" },
+      "max-archive-metadata-bytes": { type: "string" },
       "fs-concurrency": { type: "string", default: String(runtime.fsConcurrency ?? 16) },
       incremental: { type: "boolean", default: true },
       "no-incremental": { type: "boolean", default: false },
@@ -624,6 +647,13 @@ Workspace options:
     "cache-key-salt",
     "core-mode",
     "fs-concurrency",
+    "jobs",
+    "extract-jobs",
+    "max-tarball-bytes",
+    "max-expanded-bytes",
+    "max-archive-entries",
+    "max-archive-metadata-bytes",
+
     "incremental",
     "no-incremental",
     "verify",
@@ -644,6 +674,18 @@ Workspace options:
   const passthroughPositionals = passIndex >= 0 ? positionals.slice(passIndex + 1) : positionals;
   const passthroughUnknown = collectUnknownFlagArgs(values, knownOptionKeys);
   const passthrough = [...passthroughUnknown, ...passthroughPositionals];
+
+  const fetchOptions = validateFetchOptions({
+    jobs: values["jobs"] == null ? undefined : Number(values["jobs"]),
+    extractJobs: values["extract-jobs"] == null ? undefined : Number(values["extract-jobs"]),
+    maxTarballBytes: values["max-tarball-bytes"] == null ? undefined : Number(values["max-tarball-bytes"]),
+    maxExpandedBytes: values["max-expanded-bytes"] == null ? undefined : Number(values["max-expanded-bytes"]),
+    maxArchiveEntries: values["max-archive-entries"] == null ? undefined : Number(values["max-archive-entries"]),
+    maxArchiveMetadataBytes: values["max-archive-metadata-bytes"] == null ? undefined : Number(values["max-archive-metadata-bytes"]),
+  });
+  if (values.engine !== "better" && Object.values(fetchOptions).some(value => value != null)) {
+    throw new Error("Fetch concurrency and archive limits require --engine better");
+  }
 
   const invocationCwd = process.cwd();
 
@@ -942,7 +984,7 @@ Workspace options:
     mode: cacheMode,
     readOnly: cacheReadOnly
   };
-  const engineRuntime = engine === "better"
+  let engineRuntime = engine === "better"
     ? await resolveReplayRuntime(coreMode)
     : {
         requested: "n/a",
@@ -1011,7 +1053,7 @@ Workspace options:
     }
     const lockfilePath = path.join(projectRoot, "package-lock.json");
     // Resolve and fetch must both succeed before publishing a manifest.
-    const { packages: resolved, fetchedCount } = await prepareLazyInstall(addon, lockfilePath, cacheRoot);
+    const { packages: resolved, fetchedCount } = await prepareLazyInstall(addon, lockfilePath, cacheRoot, fetchOptions);
     // 3. Write .better-lazy.json manifest
     const manifestPath = path.join(projectRoot, ".better-lazy.json");
     const isoNow = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -1275,13 +1317,14 @@ Workspace options:
         cacheRoot: layout.root,
         storeRoot: layout.store?.root,
         linkStrategy: values["link-strategy"] ?? "auto",
-        jobs: fsConcurrency,
+        ...fetchOptions,
         scripts: values.scripts !== "off",
         dedup: false,
         nodeLayout,
         production,
         offline,
       });
+      engineRuntime = nativeInstallRuntime(coreMode, corePath);
       const ended = Date.now();
       cmd = "better";
       args = ["install", "--engine", "better"];
@@ -1498,6 +1541,7 @@ Workspace options:
     cacheRoot: layout.root,
     command: { cmd, args },
     install: {
+      backend: betterEngine ? "native-binary" : noopReuseInstall ? "none" : globalMaterialize?.ok ? "cache-materialize" : "package-manager",
       wallTimeMs: install.wallTimeMs,
       metrics: installMetrics
     },

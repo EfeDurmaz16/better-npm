@@ -131,8 +131,17 @@ pub fn fetch_packages(
     cache_dir: &Path,
     npmrc: Option<&NpmrcConfig>,
 ) -> Result<FetchResult, String> {
-    use rayon::prelude::*;
+    fetch_packages_with_options(packages, cache_dir, npmrc, &crate::fetch_pipeline::FetchOptions::default())
+}
+
+pub fn fetch_packages_with_options(
+    packages: &[ResolvedPackage], cache_dir: &Path, npmrc: Option<&NpmrcConfig>,
+    options: &crate::fetch_pipeline::FetchOptions,
+) -> Result<FetchResult, String> {
+    options.validate()?;
     use crate::integrity::Integrity;
+    use crate::fetch_pipeline::{stream_to_staging, extract_verified_tarball};
+    let limits = options.limits;
 
     let layout = CasLayout::new(cache_dir);
 
@@ -146,8 +155,7 @@ pub fn fetch_packages(
     let packages_cached = AtomicU64::new(0);
     let bytes_downloaded = AtomicU64::new(0);
 
-    // Shared HTTP/2 client — reuses connections and multiplexes requests
-    let http_client = crate::transport::client()?;
+    let http_client = std::sync::OnceLock::new();
 
     // Validate identities before work and coalesce duplicate installation paths.
     let mut unique = std::collections::BTreeMap::new();
@@ -158,7 +166,8 @@ pub fn fetch_packages(
         entry.1 += 1;
     }
     let unique: Vec<_> = unique.into_values().collect();
-    unique.par_iter().try_for_each(|(pkg, multiplicity)| -> Result<(), String> {
+    let metrics = crate::fetch_scheduler::run_pipeline(&unique, options.network_jobs, options.extract_jobs,
+      |(pkg, multiplicity)| {
         let integrity = Integrity::parse(&pkg.integrity)?;
         let algo = integrity.algorithm();
         let hex = integrity.hex_digest();
@@ -170,39 +179,42 @@ pub fn fetch_packages(
         if artifact.ready() {
             artifact.retained_tarball(verify)?;
             packages_cached.fetch_add(*multiplicity, Ordering::Relaxed);
-            return Ok(());
+            return Ok(None);
         }
         let retained = artifact.retained_tarball(verify)?;
         if !retained {
-            let response = crate::transport::download(&http_client, pkg, npmrc)?;
+            let client = http_client.get_or_init(crate::transport::client).as_ref().map_err(Clone::clone)?;
+            let response = crate::transport::download(client, pkg, npmrc)?;
 
-            // Read full response bytes (needed for both hashing and extraction)
-            let bytes = response.bytes()
-                .map_err(|_| format!("Failed to read download for {}", pkg.name))?;
-            let byte_count = bytes.len() as u64;
-
-            integrity.verify(&bytes)?;
-
+            if response.content_length().is_some_and(|size| size > limits.compressed_bytes) {
+                return Err("Tarball exceeds compressed byte limit; increase --max-tarball-bytes".into());
+            }
             let stage = artifact.create_download()?;
             let source = stage.path().join("archive.tgz");
-            fs::write(&source, &bytes).map_err(|e| e.to_string())?;
-            artifact.publish_tarball(&source, verify)?;
+            let file = fs::File::create(&source).map_err(|e| e.to_string())?;
+            let mut verifier = integrity.verifier();
+            let byte_count = stream_to_staging(response, file, limits.compressed_bytes,
+                |chunk| verifier.update(chunk))?;
+            verifier.finish()?;
+            // The private staged file was verified incrementally before publication.
+            artifact.publish_tarball(&source, |_| Ok(()))?;
             bytes_downloaded.fetch_add(byte_count, Ordering::Relaxed);
             packages_fetched.fetch_add(1, Ordering::Relaxed);
         } else {
             packages_cached.fetch_add(1, Ordering::Relaxed);
         }
         packages_cached.fetch_add(multiplicity - 1, Ordering::Relaxed);
+        // Keep the producer lock alive through handoff and final publication.
+        Ok(Some((artifact, _content_lock)))
+      },
+      |(artifact, _content_lock)| {
         artifact.extract_and_publish(|source, destination| {
-            let file = fs::File::open(source).map_err(|e| e.to_string())?;
-            let gz = flate2::read::GzDecoder::new(file);
-            tar::Archive::new(gz).unpack(destination).map_err(|e| format!("Failed to extract tarball: {e}"))
-        })?;
-
-        Ok(())
-    })?;
+            extract_verified_tarball(source, destination, limits)
+        })
+      })?;
 
     Ok(FetchResult {
+        metrics,
         packages_fetched: packages_fetched.load(Ordering::Relaxed),
         packages_cached: packages_cached.load(Ordering::Relaxed),
         bytes_downloaded: bytes_downloaded.load(Ordering::Relaxed),

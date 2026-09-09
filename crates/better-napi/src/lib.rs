@@ -1,3 +1,4 @@
+use better_core::fetch_pipeline::FetchOptions;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -5,7 +6,7 @@ use napi_derive::napi;
 use rayon::prelude::*;
 
 use better_core::{
-    analyze, materialize_tree, scan_tree, resolve_from_lockfile, fetch_packages,
+    analyze, materialize_tree, scan_tree, resolve_from_lockfile, fetch_packages_with_options,
     LinkStrategy, MaterializeProfile,
     run_audit, scan_licenses, check_outdated, run_doctor,
     trace_dependency, check_dedupe, detect_workspaces, workspace_graph,
@@ -375,10 +376,58 @@ pub fn resolve(lockfile_path: String) -> NapiResolveResult {
 #[napi(object)]
 pub struct NapiFetchOpts {
     pub jobs: Option<f64>,
+    pub extract_jobs: Option<f64>,
+    pub max_tarball_bytes: Option<f64>,
+    pub max_expanded_bytes: Option<f64>,
+    pub max_archive_entries: Option<f64>,
+    pub max_archive_metadata_bytes: Option<f64>,
+}
+
+fn fetch_option_number(value: Option<f64>, name: &str, max: u64) -> Result<Option<u64>, String> {
+    value.map(|n| {
+        if !n.is_finite() || n < 1.0 || n.fract() != 0.0 || n > max as f64 {
+            Err(format!("invalid {}: expected a positive safe integer in 1..{}", name, max))
+        } else { Ok(n as u64) }
+    }).transpose()
+}
+
+fn napi_fetch_options(opts: Option<NapiFetchOpts>) -> Result<FetchOptions, String> {
+    let mut options = FetchOptions::default();
+    if let Some(opts) = opts {
+        if let Some(n) = fetch_option_number(opts.jobs, "jobs", 256)? { options.network_jobs = n as usize; options.extract_jobs = n as usize; }
+        if let Some(n) = fetch_option_number(opts.extract_jobs, "extractJobs", 256)? { options.extract_jobs = n as usize; }
+        const SAFE: u64 = 9_007_199_254_740_991;
+        if let Some(n) = fetch_option_number(opts.max_tarball_bytes, "maxTarballBytes", SAFE)? { options.limits.compressed_bytes = n; }
+        if let Some(n) = fetch_option_number(opts.max_expanded_bytes, "maxExpandedBytes", SAFE)? { options.limits.expanded_bytes = n; }
+        if let Some(n) = fetch_option_number(opts.max_archive_entries, "maxArchiveEntries", SAFE)? { options.limits.entries = n; }
+        if let Some(n) = fetch_option_number(opts.max_archive_metadata_bytes, "maxArchiveMetadataBytes", SAFE)? { options.limits.metadata_bytes = n; }
+    }
+    Ok(options)
+}
+
+#[napi(object)]
+pub struct NapiFetchMetrics {
+    #[napi(js_name = "networkJobs")]
+    pub network_jobs: f64,
+    #[napi(js_name = "extractJobs")]
+    pub extract_jobs: f64,
+    #[napi(js_name = "queueCapacity")]
+    pub queue_capacity: f64,
+    #[napi(js_name = "peakPreparing")]
+    pub peak_preparing: f64,
+    #[napi(js_name = "peakExtracting")]
+    pub peak_extracting: f64,
+    #[napi(js_name = "prepareMicros")]
+    pub prepare_micros: f64,
+    #[napi(js_name = "extractMicros")]
+    pub extract_micros: f64,
+    #[napi(js_name = "backpressureMicros")]
+    pub backpressure_micros: f64,
 }
 
 #[napi(object)]
 pub struct NapiFetchResult {
+    pub metrics: Option<NapiFetchMetrics>,
     pub ok: bool,
     pub reason: Option<String>,
     #[napi(js_name = "packagesFetched")]
@@ -393,8 +442,12 @@ pub struct NapiFetchResult {
 pub fn fetch_and_extract(
     lockfile_path: String,
     cache_dir: String,
-    _opts: Option<NapiFetchOpts>,
+    opts: Option<NapiFetchOpts>,
 ) -> NapiFetchResult {
+    let options = match napi_fetch_options(opts) {
+        Ok(options) => options,
+        Err(reason) => return NapiFetchResult { metrics: None, ok: false, reason: Some(reason), packages_fetched: 0.0, packages_cached: 0.0, bytes_downloaded: 0.0 },
+    };
     let lockfile = Path::new(&lockfile_path);
     let cache = Path::new(&cache_dir);
 
@@ -403,6 +456,7 @@ pub fn fetch_and_extract(
         Ok(result) => result.packages,
         Err(reason) => {
             return NapiFetchResult {
+                metrics: None,
                 ok: false,
                 reason: Some(reason),
                 packages_fetched: 0.0,
@@ -413,8 +467,18 @@ pub fn fetch_and_extract(
     };
 
     // Fetch packages
-    match fetch_packages(&packages, cache, None) {
+    match fetch_packages_with_options(&packages, cache, None, &options) {
         Ok(fetch_result) => NapiFetchResult {
+            metrics: Some(NapiFetchMetrics {
+                network_jobs: fetch_result.metrics.network_jobs as f64,
+                extract_jobs: fetch_result.metrics.extract_jobs as f64,
+                queue_capacity: fetch_result.metrics.queue_capacity as f64,
+                peak_preparing: fetch_result.metrics.peak_preparing as f64,
+                peak_extracting: fetch_result.metrics.peak_extracting as f64,
+                prepare_micros: fetch_result.metrics.prepare_micros as f64,
+                extract_micros: fetch_result.metrics.extract_micros as f64,
+                backpressure_micros: fetch_result.metrics.backpressure_micros as f64,
+            }),
             ok: true,
             reason: None,
             packages_fetched: fetch_result.packages_fetched as f64,
@@ -422,6 +486,7 @@ pub fn fetch_and_extract(
             bytes_downloaded: fetch_result.bytes_downloaded as f64,
         },
         Err(reason) => NapiFetchResult {
+            metrics: None,
             ok: false,
             reason: Some(reason),
             packages_fetched: 0.0,
@@ -2610,5 +2675,19 @@ pub fn napi_verify_lock_metadata(project_root: String) -> String {
             }
         }).to_string(),
         Err(e) => serde_json::json!({ "ok": false, "error": e }).to_string(),
+    }
+}
+
+#[cfg(test)]
+mod fetch_option_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_lossy_or_non_positive_napi_numbers() {
+        for value in [f64::NAN, f64::INFINITY, -1.0, 0.0, 1.5, 9_007_199_254_740_992.0] {
+            assert!(fetch_option_number(Some(value), "limit", 9_007_199_254_740_991).is_err());
+        }
+        assert!(fetch_option_number(Some(257.0), "jobs", 256).is_err());
+        assert_eq!(fetch_option_number(Some(256.0), "jobs", 256).unwrap(), Some(256));
     }
 }
