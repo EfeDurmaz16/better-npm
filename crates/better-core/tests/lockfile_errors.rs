@@ -108,3 +108,19 @@ fn install_rejects_bad_lockfile_before_creating_install_or_cache_output() {
         assert!(!dir.path().join("better.lock").exists());
     }
 }
+
+#[test]
+fn bundled_descriptors_report_unsupported_in_v2_and_v3_lockfiles() {
+    for version in [2, 3] {
+        let error = resolve(&json!({"lockfileVersion": version, "packages": {
+            "node_modules/parent/node_modules/bundled": {"version": "1.0.0", "inBundle": true}
+        }}))
+        .err()
+        .expect("bundled packages are unsupported");
+        assert!(
+            error.contains("bundled lockfile entry 'node_modules/parent/node_modules/bundled'"),
+            "{error}"
+        );
+        assert!(error.contains("use npm install"), "{error}");
+    }
+}
