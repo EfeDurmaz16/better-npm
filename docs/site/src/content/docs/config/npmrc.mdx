@@ -42,6 +42,10 @@ lockfile-version=3
 
 ## Private Registries
 
+Native npm downloads send bearer tokens only over HTTPS. HTTP registries remain
+available for anonymous downloads, but configuring an HTTP registry never enables
+plaintext token authentication. Use HTTPS for private registries that require tokens.
+
 ```ini
 # Scope-specific private registry
 @myorg:registry=https://npm.myorg.com

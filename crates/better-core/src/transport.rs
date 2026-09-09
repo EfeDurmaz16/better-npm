@@ -232,7 +232,7 @@ mod tests {
         assert_eq!(seen.lock().unwrap().len(), 1);
     }
     #[test]
-    fn credentials_are_selected_for_each_destination() {
+    fn http_requests_and_same_origin_redirects_remain_anonymous() {
         let (url, seen, thread) = server(vec![
             response(302, "Location: /outside/pkg.tgz\r\n"),
             response(200, ""),
@@ -246,7 +246,7 @@ mod tests {
         .unwrap();
         thread.join().unwrap();
         let requests = seen.lock().unwrap();
-        assert!(requests[0].contains("authorization: bearer fake_test_token"));
+        assert!(!requests[0].contains("authorization:"));
         assert!(!requests[1].contains("authorization:"));
         drop(requests);
         let (other, seen, thread) = server(vec![response(200, "")]);
@@ -255,7 +255,7 @@ mod tests {
         assert!(!seen.lock().unwrap()[0].contains("authorization:"));
     }
     #[test]
-    fn redirects_do_not_forward_auth_to_another_origin() {
+    fn http_cross_origin_redirects_remain_anonymous() {
         let (other, seen_other, other_thread) = server(vec![response(200, "")]);
         let (url, seen, thread) = server(vec![response(
             302,
@@ -270,7 +270,7 @@ mod tests {
         .unwrap();
         thread.join().unwrap();
         other_thread.join().unwrap();
-        assert!(seen.lock().unwrap()[0].contains("authorization:"));
+        assert!(!seen.lock().unwrap()[0].contains("authorization:"));
         assert!(!seen_other.lock().unwrap()[0].contains("authorization:"));
     }
 
