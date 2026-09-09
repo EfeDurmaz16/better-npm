@@ -27,6 +27,7 @@ import { resolveWorkspacePackages, workspaceSummary } from "../lib/workspaces.js
 import { executionPlan, affectedPackages } from "../lib/topoSort.js";
 import { loadOverrides, validateOverrides } from "../lib/overrides.js";
 import { verifyFrozenLockfile } from "../lib/frozenLockfile.js";
+import { assertInstallOptionSupport } from "../lib/installOptions.js";
 import { createInstallProgress } from "../tui/installProgress.js";
 import { parseLockfilePackages, saveSnapshot } from "../lib/deltaUpdate.js";
 
@@ -484,8 +485,13 @@ export async function cmdInstall(argv) {
                  [--strict] [--hoist] [--node-layout strict|hoist]
                  [--workspace PKG | -w PKG] [--workspace-concurrency N] [--workspace-topo]
                  [--lazy] [--approved-only]
-                 [--sandbox] [--verify-provenance] [--require-provenance]
                  [-- --<pm-specific flags>]
+
+Option support:
+  --production           Omit dependencies used exclusively for development
+  --frozen               Checks the package-manager lockfile before install, including reuse
+  --sandbox, --verify-provenance, --require-provenance
+                         Rejected: installation cannot yet enforce these guarantees
 
 Offline options:
   --offline              Install from cache only — skip all network requests (fails if package not in CAS)
@@ -553,9 +559,8 @@ Workspace options:
       lazy: { type: "boolean", default: false },
       // Approval gate: abort if any resolved package is not in .better-approved.json
       "approved-only": { type: "boolean", default: false },
-      // Script sandboxing: run postinstall scripts in sandbox (requires better-core)
+      // Recognized so unsupported guarantees receive explicit errors.
       sandbox: { type: "boolean", default: false },
-      // Provenance verification
       "verify-provenance": { type: "boolean", default: false },
       "require-provenance": { type: "boolean", default: false }
     },
@@ -583,6 +588,12 @@ Workspace options:
   const frozen = values.frozen === true;
   const offline = values.offline === true;
   const production = values.production === true;
+  assertInstallOptionSupport(values.engine, {
+    production,
+    sandbox: values.sandbox,
+    verifyProvenance: values["verify-provenance"],
+    requireProvenance: values["require-provenance"]
+  });
 
   const knownOptionKeys = new Set([
     "json",
@@ -657,6 +668,9 @@ Workspace options:
   const workspaceConcurrency = Math.max(1, Number.parseInt(values["workspace-concurrency"], 10) || 4);
   const workspaceTopo = values["workspace-topo"] !== false;
   let workspaceResolved = await resolveWorkspacePackages(projectRoot);
+  if (values.engine === "better" && (workspaceResolved.ok || workspaceFilter.length > 0)) {
+    throw new Error("Native install does not support workspaces or workspace selection; use npm install for this project.");
+  }
 
   if (workspaceResolved.ok && workspaceFilter.length > 0) {
     // Filter to specific workspaces + their dependencies
@@ -863,25 +877,6 @@ Workspace options:
       err.unapprovedPackages = unapproved;
       throw err;
     }
-  }
-
-  // Provenance: warn or abort if --require-provenance used without better-core
-  if (values["require-provenance"] || values["verify-provenance"]) {
-    const provenanceMode = values["require-provenance"] ? "require" : "verify";
-    progress(`provenance: mode=${provenanceMode} (requires better-core for Sigstore verification)`);
-    // Pass flag through to better-core when engine=better handles install
-    // For pm engine installs, we note provenance in the report but can't enforce without Rust
-    if (provenanceMode === "require" && engine !== "better") {
-      const err = new Error("--require-provenance requires --engine better (Sigstore verification is Rust-only)");
-      err.exitCode = 1;
-      throw err;
-    }
-  }
-
-  // Sandbox: warn if --sandbox used without better-core engine
-  if (values.sandbox && engine !== "better") {
-    progress("warning: --sandbox requires --engine better; sandbox will not be enforced with pm engine");
-    if (!values.json) printText("warning: --sandbox is only enforced with --engine better");
   }
 
   const runId = `${Date.now()}-${shortHash(`${projectRoot}:${pm}:${mode}`)}`;
@@ -1232,7 +1227,7 @@ Workspace options:
 
   let workspaceInstallResult = null;
   if (!skippedPmInstall && workspaceResolved.ok && engine !== "better") {
-    // Workspace install path (not used for better engine, which handles workspace links natively)
+    // Workspace installs use the selected package manager; native workspace requests are rejected above.
     progress(`workspace detected: ${workspaceResolved.type}, ${workspaceResolved.packages.length} package(s)`);
     const wsStartMs = Date.now();
     workspaceInstallResult = await workspaceInstall(workspaceResolved, {
@@ -1298,6 +1293,7 @@ Workspace options:
         scripts: values.scripts !== "off",
         dedup: false,
         nodeLayout,
+        production,
         offline,
       });
       const ended = Date.now();
