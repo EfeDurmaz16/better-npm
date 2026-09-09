@@ -22,7 +22,7 @@ import time
 
 def archive(name, version, size):
     # Deterministic incompressible payload avoids measuring only zero compression.
-    payload = b''.join(hashlib.sha256(str(i).encode()).digest() for i in range((size + 31) // 32))[:size]
+    payload = b''.join(hashlib.sha256(f'{name}@{version}:{i}'.encode()).digest() for i in range((size + 31) // 32))[:size]
     files = {'package.json': json.dumps({'name': name, 'version': version, 'main': 'index.js'}).encode(),
              'index.js': f'module.exports = "{name}@{version}";\n'.encode(), 'payload.bin': payload}
     buf = io.BytesIO()
@@ -99,22 +99,27 @@ def install(binary, project, cache, env, jobs, timeout):
     start = time.monotonic()
     with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
         process = subprocess.Popen(command, env=env, stdout=stdout, stderr=stderr, start_new_session=True)
-        timed_out = False
-        while True:
-            pid, status, usage = os.wait4(process.pid, os.WNOHANG)
-            if pid:
-                break
-            if time.monotonic() - start > timeout:
-                timed_out = True
+        timed_out = threading.Event()
+        def expire():
+            try:
                 os.killpg(process.pid, signal.SIGKILL)
-                _, status, usage = os.wait4(process.pid, 0)
-                break
-            time.sleep(0.01)
+                timed_out.set()
+            except ProcessLookupError:
+                pass
+        timer = threading.Timer(timeout, expire)
+        timer.daemon = True
+        timer.start()
+        try:
+            _, status, usage = os.wait4(process.pid, 0)
+            elapsed_ms = (time.monotonic() - start) * 1000
+        finally:
+            timer.cancel()
+            timer.join()
         process.returncode = os.waitstatus_to_exitcode(status)
         stdout.seek(0)
         stderr.seek(0)
-        return {'exit_code': process.returncode, 'timed_out': timed_out,
-                'wall_ms': round((time.monotonic() - start) * 1000, 3),
+        return {'exit_code': process.returncode, 'timed_out': timed_out.is_set(),
+                'wall_ms': round(elapsed_ms, 3),
                 'user_cpu_seconds': usage.ru_utime, 'system_cpu_seconds': usage.ru_stime,
                 'child_max_rss_bytes': usage.ru_maxrss * (1 if platform.system() == 'Darwin' else 1024),
                 'stdout_tail': stdout.read()[-4096:].decode(errors='replace'),

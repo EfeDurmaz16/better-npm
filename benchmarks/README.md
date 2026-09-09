@@ -91,3 +91,69 @@ are retained instead of summarizing a single run into a performance claim:
 Cold/warm/change/recovery are sequential within a cohort. Rounds are independent;
 worker-count order is explicit and not randomized. Compare repeated samples on the
 same machine and filesystem before attributing differences to a code change.
+
+### Paired native worktree diagnostic
+
+Run `paired_worktrees.py` with independently built baseline and candidate binaries:
+
+```sh
+python3 benchmarks/paired_worktrees.py \
+  --baseline /absolute/path/to/baseline-better-core \
+  --candidate /absolute/path/to/candidate-better-core \
+  --workers 1,4,20 --rounds 3 --mode all \
+  --output /absolute/path/to/raw-results.json
+```
+
+The paired `diagnostic` mode disables the firewall only in temporary synthetic
+projects. It measures installation mechanics and must not be presented as a
+production default-policy speedup. The separate `candidate-default` mode keeps
+default policy enabled and points `NPM_CONFIG_REGISTRY` to an ephemeral localhost
+registry. It requires a candidate that honors this setting for security metadata.
+The historical baseline hardcodes the public security metadata endpoint, so the
+harness deliberately does not run that baseline in default-policy mode.
+
+Each cohort has isolated HOME/cache state and deterministic payloads unique to
+package name and version. Cold starts with an empty installer cache; warm removes
+`node_modules`; noop retains the installed tree and lockfiles. OS page caches are
+not flushed. All installed file contents are checked after each scenario, followed
+by an in-place mutation probe against other worktrees and a fresh cache consumer.
+Metadata and tarball requests are counted by route; unexpected routes fail the
+run. Local counters do not enforce network isolation, so OS-level outbound
+restrictions are needed to prove no external requests were made.
+
+Raw JSON records binary hashes, per-child blocking-wait timings, CPU, largest
+child RSS, route counts, disk observations and validation failures. Largest child
+RSS is not aggregate peak RAM, and inode-deduplicated `stat` blocks cannot measure
+unique physical CoW extents. Timing includes fresh native CLI startup; resident
+session latency must be measured separately. No synthetic scripts run.
+
+Do not run performance cohorts concurrently with builds or other benchmarks.
+Compare matching scenarios and round pairs; do not combine candidate-default
+results with diagnostic baseline results to calculate a speedup.
+
+Harness validation (no native benchmark):
+
+```sh
+python3 -m unittest discover -s benchmarks -p 'test*worktrees.py'
+```
+
+### Resident ready-time comparison
+
+```sh
+node benchmarks/resident_installs.mjs \
+  --binary /absolute/path/to/candidate-better-core \
+  --workers 1,4 --rounds 3 \
+  --output /absolute/path/to/resident-results.json
+```
+
+Build the matching release addon first. This script calls the real
+`runResidentInstall` API without subprocess fallback, comparing full ready time
+against fresh native CLI processes. First resident use includes lazy addon and
+pool startup and is flagged separately. Both paths keep default policy enabled
+and use a local registry. Warm removes the destination; noop retains it. A new
+artifact cache does not reset process-global resident plans or metadata, so the
+first scenario is named `cold-artifact`, not universally cold. Twenty-project
+cohorts are supported with eight outstanding requests maximum. Queue wait and
+ready fields are retained alongside external wall timers. Results validate every
+installed file and report loaded addon hashes. This is not a queue admission,
+prepared-tree activation, aggregate memory, or kernel filesystem benchmark.
