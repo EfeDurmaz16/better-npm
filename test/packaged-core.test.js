@@ -33,7 +33,7 @@ test("packed npm artifact discovers its bundled core and installs in a clean pro
   // Reproduce the layout created by postinstall, using a local native artifact.
   await fs.copyFile(core, path.join(staging, "bin", executable));
   await fs.chmod(path.join(staging, "bin", executable), 0o755);
-  const env = { ...process.env, HOME: tmp, npm_config_cache: path.join(tmp, "npm-cache") };
+  const env = { ...process.env, npm_config_cache: path.join(tmp, "npm-cache") };
   delete env.BETTER_CORE_PATH;
   const options = { env, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 };
   const packed = await exec("npm", ["pack", "--json", "--ignore-scripts", "--offline"], { ...options, cwd: staging });
