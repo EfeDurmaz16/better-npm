@@ -83,7 +83,7 @@ fn cas_missing_object_and_malformed_manifest_fail() {
     )
     .is_err());
     let manifest = store
-        .join("packages/sha256/01/23")
+        .join("packages-sri-v2/sha256/01/23")
         .join(KEY)
         .join("manifest.json");
     for malformed in [

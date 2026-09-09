@@ -40,3 +40,14 @@ fn offline_rejects_corrupt_archive_and_preflights_all_identities() {
     fs::write(&artifact.tarball, "corrupted").unwrap();
     assert!(prepare_offline_packages(&[package], dir.path(), Default::default()).is_err()); assert!(!artifact.unpacked.exists());
 }
+
+#[test]
+fn offline_honors_archive_limits_before_publishing_repair() {
+    let dir = tempfile::tempdir().unwrap(); let (package, artifact) = fixture(dir.path());
+    let limits = better_core::fetch_pipeline::ArtifactLimits { expanded_bytes: 1, ..Default::default() };
+    assert!(prepare_offline_packages(&[package.clone()], dir.path(), limits).is_err());
+    assert!(!artifact.unpacked.exists());
+    let limits = better_core::fetch_pipeline::ArtifactLimits { compressed_bytes: 1, ..Default::default() };
+    assert!(prepare_offline_packages(&[package], dir.path(), limits).is_err());
+    assert!(!artifact.unpacked.exists());
+}
