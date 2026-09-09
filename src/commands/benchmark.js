@@ -569,6 +569,9 @@ export async function cmdBenchmark(argv) {
   if (!["cold_miss", "warm_hit", "reuse_noop", "all"].includes(scenario)) {
     throw new Error(`Unknown --scenario '${scenario}'. Expected cold_miss|warm_hit|reuse_noop|all.`);
   }
+  if (scenario === "reuse_noop" && values.frozen) {
+    throw new Error("--frozen cannot be combined with --scenario reuse_noop: npm ci recreates node_modules. Use warm_hit for frozen comparisons.");
+  }
   if (engine === "better" && pm !== "npm") {
     throw new Error("engine=better benchmark requires --pm npm.");
   }

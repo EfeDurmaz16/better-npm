@@ -107,3 +107,24 @@ if (process.argv.includes('--package-lock-only')) fs.writeFileSync('package-lock
   assert.equal(npm.median_ms, null);
   assert.equal(npm.failures.length, 1);
 });
+
+test("frozen reuse_noop rejects before installing or changing inputs/cache", { skip: process.platform === "win32" }, async t => {
+  const { dir, env } = await fixture(t, install);
+  const lockPath = path.join(dir, "package-lock.json");
+  const pkgPath = path.join(dir, "package.json");
+  const originalLock = await fs.readFile(lockPath, "utf8");
+  const originalPkg = await fs.readFile(pkgPath, "utf8");
+  const marker = path.join(dir, "node_modules", "retained-marker");
+  await writeFile(marker, "keep");
+  const cacheRoot = path.join(dir, "untouched-cache");
+  await assert.rejects(run(dir, env, ["--scenario", "reuse_noop", "--frozen", "--warm-rounds", "1", "--cache-root", cacheRoot]), error => {
+    assert.match(error.stderr, /--frozen cannot be combined with --scenario reuse_noop/);
+    assert.equal(JSON.parse(error.stdout).comparison, undefined);
+    return true;
+  });
+  assert.equal(await fs.readFile(marker, "utf8"), "keep");
+  assert.equal(await fs.readFile(lockPath, "utf8"), originalLock);
+  assert.equal(await fs.readFile(pkgPath, "utf8"), originalPkg);
+  await assert.rejects(fs.access(cacheRoot), { code: "ENOENT" });
+  await assert.rejects(fs.access(path.join(dir, "calls.jsonl")), { code: "ENOENT" });
+});

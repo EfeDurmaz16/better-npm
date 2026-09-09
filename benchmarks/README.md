@@ -11,6 +11,9 @@ native engine with npm). All contenders disable lifecycle scripts. Each invocati
 uses a unique cache namespace, restores the original manifest/lock inputs before
 and after each install, and passes the cache root explicitly to better. Warm-cache
 runs prime each contender separately; `reuse_noop` also retains node_modules.
+`--frozen --scenario reuse_noop` is rejected before any install or cache writes:
+`npm ci` recreates node_modules, so it cannot represent a retained-tree no-op.
+Use `warm_hit` for frozen comparisons.
 A warm better cache includes materialization reuse, while a raw manager retains
 its own native caches. These are product-level scenarios, not equal-work engine
 microbenchmarks. OS filesystem caches and network conditions are uncontrolled.
