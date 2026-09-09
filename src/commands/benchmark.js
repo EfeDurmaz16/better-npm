@@ -49,6 +49,7 @@ function stddev(values) {
 
 function computeStats(samples, key = "wallTimeMs") {
   const values = samples
+    .filter((sample) => sample.ok === true)
     .map((sample) => sample?.[key])
     .filter((value) => typeof value === "number" && Number.isFinite(value) && value >= 0);
   if (values.length === 0) {
@@ -79,7 +80,7 @@ function computeStats(samples, key = "wallTimeMs") {
 
 function variantPmEnv(pm, layout, engine) {
   const tmp = layout.tmpDir;
-  const base = { TMPDIR: tmp, TEMP: tmp, TMP: tmp };
+  const base = { TMPDIR: tmp, TEMP: tmp, TMP: tmp, npm_config_ignore_scripts: "true", npm_config_audit: "false", npm_config_fund: "false", YARN_ENABLE_SCRIPTS: "false" };
   if (engine === "bun") {
     return {
       ...base,
@@ -108,7 +109,7 @@ function variantPmEnv(pm, layout, engine) {
 function rawInstallCommand(pm, engine, opts = {}) {
   const { frozen = false, production = false } = opts;
   if (engine === "bun") {
-    const args = ["install"];
+    const args = ["install", "--ignore-scripts"];
     if (frozen) args.push("--frozen-lockfile");
     if (production) args.push("--production");
     return { cmd: "bun", args };
@@ -117,23 +118,23 @@ function rawInstallCommand(pm, engine, opts = {}) {
   // engine=better compares against npm raw behavior by design.
   const resolvedPm = engine === "better" ? "npm" : pm;
   if (resolvedPm === "pnpm") {
-    const args = ["install"];
+    const args = ["install", "--ignore-scripts"];
     if (frozen) args.push("--frozen-lockfile");
     if (production) args.push("--prod");
     return { cmd: "pnpm", args };
   }
   if (resolvedPm === "yarn") {
-    const args = ["install"];
+    const args = ["install", "--ignore-scripts"];
     if (frozen) args.push("--frozen-lockfile");
     if (production) args.push("--production");
     return { cmd: "yarn", args };
   }
   if (frozen) {
-    const args = ["ci"];
+    const args = ["ci", "--ignore-scripts"];
     if (production) args.push("--omit=dev");
     return { cmd: "npm", args };
   }
-  const args = ["install"];
+  const args = ["install", "--ignore-scripts"];
   if (production) args.push("--omit=dev");
   return { cmd: "npm", args };
 }
@@ -182,7 +183,9 @@ function betterInstallArgs(projectRoot, pm, engine, opts = {}) {
     pm,
     "--engine",
     engine,
-    "--json"
+    "--json",
+    "--scripts", "off",
+    "--cache-scripts", "off"
   ];
   if (opts.frozen) args.push("--frozen");
   if (opts.production) args.push("--production");
@@ -193,13 +196,10 @@ function betterInstallArgs(projectRoot, pm, engine, opts = {}) {
   if (opts.profile === "minimal") {
     args.push("--measure", "off", "--parity-check", "off");
   }
-  if (engine === "better") {
-    args.push("--scripts", "off");
-  }
   return args;
 }
 
-async function runVariant(variant, ctx, roundMeta, skipCleanup = false) {
+async function runVariantUnchecked(variant, ctx, roundMeta, skipCleanup = false) {
   const { projectRoot, pm, engine, frozen, production, timeoutMs } = ctx;
   const env = { ...process.env, ...variant.env };
   const nodeModulesPath = path.join(projectRoot, "node_modules");
@@ -239,7 +239,7 @@ async function runVariant(variant, ctx, roundMeta, skipCleanup = false) {
     roundMeta.cacheRoot ?? os.tmpdir(),
     `.better-benchmark-${variant.name}-${roundMeta.phase}-${roundMeta.round}.json`
   );
-  const args = [...variant.args, "--report", reportPath];
+  const args = [...variant.args, "--cache-root", roundMeta.cacheRoot, "--report", reportPath];
   const processStartedAt = Date.now();
   const res = await runCommand(process.execPath, args, {
     cwd: projectRoot,
@@ -275,6 +275,82 @@ async function runVariant(variant, ctx, roundMeta, skipCleanup = false) {
     reportParseSource: parsedFromReport ? "report_file" : parsed ? "stdout_fallback" : "none",
     stderrTail: res.stderrTail
   };
+}
+
+async function runVariant(variant, ctx, roundMeta, skipCleanup = false) {
+  const { inputs, verification } = ctx;
+  for (const [name, content] of inputs) {
+    const target = path.join(ctx.projectRoot, name);
+    if (content === null) await fs.rm(target, { force: true });
+    else await fs.writeFile(target, content);
+  }
+  let sample;
+  try {
+    sample = await runVariantUnchecked(variant, ctx, roundMeta, skipCleanup);
+  } finally {
+    for (const [name, content] of inputs) {
+      const target = path.join(ctx.projectRoot, name);
+      if (content === null) await fs.rm(target, { force: true });
+      else await fs.writeFile(target, content);
+    }
+  }
+  if (!sample.ok) return sample;
+  try {
+    const inventory = await installedInventory(ctx.projectRoot, ctx.production);
+    const serialized = JSON.stringify(inventory);
+    if (verification.inventory != null && verification.inventory !== serialized) {
+      throw new Error("Installed package inventory differs from the raw baseline");
+    }
+    verification.inventory = serialized;
+    sample.outputVerified = true;
+    sample.installedPackages = inventory.length;
+  } catch (error) {
+    sample.ok = false;
+    sample.outputVerified = false;
+    sample.stderrTail = error.message;
+  }
+  return sample;
+}
+
+// Check required roots and every materialized package manifest. This is an
+// inventory equivalence check, not a claim about application runtime behavior.
+export async function installedInventory(projectRoot, production = false) {
+  const pkg = JSON.parse(await fs.readFile(path.join(projectRoot, "package.json"), "utf8"));
+  const required = { ...pkg.dependencies, ...(production ? {} : pkg.devDependencies) };
+  for (const name of Object.keys(pkg.optionalDependencies ?? {})) delete required[name];
+  for (const name of Object.keys(required)) {
+    const manifest = JSON.parse(await fs.readFile(path.join(projectRoot, "node_modules", name, "package.json"), "utf8"));
+    if (!manifest.name || !manifest.version) throw new Error(`Invalid installed manifest: ${name}`);
+  }
+  const lock = await tryReadJsonFile(path.join(projectRoot, "package-lock.json"));
+  for (const [location, entry] of Object.entries(lock?.packages ?? {})) {
+    if (!location.startsWith("node_modules/") || entry.optional || entry.link || (production && entry.dev)) continue;
+    const target = path.resolve(projectRoot, location, "package.json");
+    if (!target.startsWith(path.resolve(projectRoot, "node_modules") + path.sep)) throw new Error("Invalid lockfile package path");
+    const manifest = JSON.parse(await fs.readFile(target, "utf8"));
+    if (manifest.version !== entry.version) throw new Error(`Installed version differs from lockfile: ${location}`);
+  }
+  const inventory = [];
+  const visited = new Set();
+  async function walkModules(dir) {
+    let entries;
+    try { entries = await fs.readdir(dir, { withFileTypes: true }); }
+    catch (error) { if (error.code === "ENOENT") return; throw error; }
+    for (const entry of entries) {
+      if (entry.name.startsWith(".")) continue;
+      const target = path.join(dir, entry.name);
+      if (entry.name.startsWith("@")) { await walkModules(target); continue; }
+      const real = await fs.realpath(target);
+      if (visited.has(real)) continue;
+      visited.add(real);
+      const manifest = JSON.parse(await fs.readFile(path.join(target, "package.json"), "utf8"));
+      if (!manifest.name || !manifest.version) throw new Error(`Invalid installed manifest: ${target}`);
+      inventory.push(`${manifest.name}@${manifest.version}`);
+      await walkModules(path.join(target, "node_modules"));
+    }
+  }
+  await walkModules(path.join(projectRoot, "node_modules"));
+  return inventory.sort();
 }
 
 function buildVariants(projectRoot, pm, engine, opts = {}) {
@@ -318,6 +394,7 @@ function buildVariants(projectRoot, pm, engine, opts = {}) {
 function classifyError(sample) {
   if (sample.timedOut) return "timeout";
   if (sample.exitCode !== 0) return "nonzero_exit";
+  if (sample.outputVerified === false) return "invalid_installed_output";
   if (!sample.reportFound) return "missing_report";
   if (sample.reportKind !== "better.install.report") return "invalid_report_kind";
   if (sample.ok === false) return "report_not_ok";
@@ -492,6 +569,9 @@ export async function cmdBenchmark(argv) {
   if (!["cold_miss", "warm_hit", "reuse_noop", "all"].includes(scenario)) {
     throw new Error(`Unknown --scenario '${scenario}'. Expected cold_miss|warm_hit|reuse_noop|all.`);
   }
+  if (scenario === "reuse_noop" && values.frozen) {
+    throw new Error("--frozen cannot be combined with --scenario reuse_noop: npm ci recreates node_modules. Use warm_hit for frozen comparisons.");
+  }
   if (engine === "better" && pm !== "npm") {
     throw new Error("engine=better benchmark requires --pm npm.");
   }
@@ -512,10 +592,21 @@ export async function cmdBenchmark(argv) {
   const runCold = scenario === "cold_miss" || scenario === "all";
   const runWarm = scenario === "warm_hit" || scenario === "reuse_noop" || scenario === "all";
   const isReuseNoop = scenario === "reuse_noop";
+  if (!(runCold && coldRounds > 0) && !(runWarm && warmRounds > 0)) {
+    throw new Error("The selected scenario must have at least one measured round.");
+  }
 
-  const cacheBase = values["cache-root"]
+  const cacheParent = values["cache-root"]
     ? getCacheRoot(values["cache-root"])
     : path.join(os.tmpdir(), `better-benchmark-${Date.now()}-${shortHash(projectRoot)}`);
+
+  await fs.mkdir(cacheParent, { recursive: true });
+  const cacheBase = await fs.mkdtemp(path.join(cacheParent, "run-"));
+  const inputs = await Promise.all(["package.json", "package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb"].map(async (name) => {
+    try { return [name, await fs.readFile(path.join(projectRoot, name))]; }
+    catch (error) { if (error.code === "ENOENT") return [name, null]; throw error; }
+  }));
+  const verification = {};
 
   const variants = buildVariants(projectRoot, pm, engine, {
     frozen: values.frozen === true,
@@ -526,7 +617,7 @@ export async function cmdBenchmark(argv) {
     incremental
   });
 
-  // Lockfile parity
+  // Record input hashes; presence alone does not establish parity.
   let parity = null;
   try {
     const pkgLockPath = path.join(projectRoot, "package-lock.json");
@@ -540,7 +631,7 @@ export async function cmdBenchmark(argv) {
         lockHashes[path.basename(lp)] = crypto.createHash("sha256").update(raw).digest("hex");
       } catch { /* file doesn't exist */ }
     }
-    parity = { lockfiles: lockHashes, verified: Object.keys(lockHashes).length > 0 };
+    parity = { lockfiles: lockHashes, verified: false };
   } catch { parity = null; }
 
   const perVariantSamples = {};
@@ -572,7 +663,7 @@ export async function cmdBenchmark(argv) {
             runVariant(
               variant,
               {
-                projectRoot,
+                projectRoot, inputs, verification,
                 pm,
                 engine,
                 frozen: values.frozen === true,
@@ -613,7 +704,7 @@ export async function cmdBenchmark(argv) {
           runVariant(
             variant,
             {
-              projectRoot,
+              projectRoot, inputs, verification,
               pm,
               engine,
               frozen: values.frozen === true,
@@ -645,7 +736,7 @@ export async function cmdBenchmark(argv) {
             runVariant(
               variant,
               {
-                projectRoot,
+                projectRoot, inputs, verification,
                 pm,
                 engine,
                 frozen: values.frozen === true,
@@ -712,7 +803,7 @@ export async function cmdBenchmark(argv) {
     engine,
     scenario,
     env: collectEnvironment(),
-    parity,
+    parity: { ...parity, verified: true, verification: "installed-package-inventory", inputsRestoredPerRun: true },
     config: {
       coldRounds,
       warmRounds,
@@ -723,6 +814,7 @@ export async function cmdBenchmark(argv) {
       coreMode,
       fsConcurrency,
       incremental,
+      scripts: "off",
       cacheRootBase: cacheBase
     },
     variants: variantsSummary,
