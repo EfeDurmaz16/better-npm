@@ -488,7 +488,7 @@ export async function cmdInstall(argv) {
                  [-- --<pm-specific flags>]
 
 Option support:
-  --production           Supported by pm/bun engines; rejected by the better engine
+  --production           Omit dependencies used exclusively for development
   --frozen               Checks the package-manager lockfile before install, including reuse
   --sandbox, --verify-provenance, --require-provenance
                          Rejected: installation cannot yet enforce these guarantees
@@ -1290,6 +1290,7 @@ Workspace options:
         scripts: values.scripts !== "off",
         dedup: false,
         nodeLayout,
+        production,
         offline,
       });
       const ended = Date.now();

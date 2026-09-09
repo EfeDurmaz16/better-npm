@@ -331,6 +331,14 @@ pub fn run_lifecycle_scripts(
     project_root: &Path,
     detection: &LifecycleDetectionResult,
 ) -> LifecycleRunResult {
+    run_lifecycle_scripts_for_install(project_root, detection, false)
+}
+
+pub fn run_lifecycle_scripts_for_install(
+    project_root: &Path,
+    detection: &LifecycleDetectionResult,
+    production: bool,
+) -> LifecycleRunResult {
     if !detection.has_native_addons {
         return LifecycleRunResult {
             skipped_reason: Some("no_native_addons".to_string()),
@@ -339,7 +347,9 @@ pub fn run_lifecycle_scripts(
     }
 
     // Delegate to npm rebuild for maximum compatibility
-    let output = std::process::Command::new("npm")
+    let mut command = std::process::Command::new("npm");
+    if production { command.env("NODE_ENV", "production"); }
+    let output = command
         .args(["rebuild", "--no-audit", "--no-fund"])
         .current_dir(project_root)
         .stdout(std::process::Stdio::inherit())

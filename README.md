@@ -74,9 +74,11 @@ Files share the same inode — editing one won't affect others (copy-on-write at
 ### Experimental native install option support
 
 `better install --engine better --experimental` forwards cache/store paths, link strategy,
-jobs, script disabling, offline mode, and node layout to the Rust installer.
-`--production` is rejected because native dependency filtering is not implemented;
-use `--engine pm --production` instead.
+jobs, script disabling, offline mode, production selection, and node layout to the Rust installer.
+`--production` omits packages marked dev-only in the npm lockfile and retains shared and
+devOptional packages. It refreshes node_modules after fetch succeeds, removing stale dev
+packages and bins while keeping the complete better.lock for frozen checks. Lifecycle
+children receive NODE_ENV=production.
 
 Install rejects `--sandbox`, `--verify-provenance`, and `--require-provenance` on every
 engine, before cache reuse or installation. Script isolation and cryptographic provenance

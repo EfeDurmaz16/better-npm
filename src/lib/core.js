@@ -747,6 +747,7 @@ export async function runBetterCoreInstall(corePath, projectRoot, opts = {}) {
   if (opts.jobs != null) args.push("--jobs", String(opts.jobs));
   if (opts.scripts === false) args.push("--no-scripts");
   if (opts.dedup) args.push("--dedup");
+  if (opts.production) args.push("--production");
   if (opts.offline) args.push("--offline");
   if (opts.nodeLayout === "strict") args.push("--strict");
   else if (opts.nodeLayout === "hoist") args.push("--hoist");
