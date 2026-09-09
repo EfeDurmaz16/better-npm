@@ -2490,7 +2490,7 @@ fn main() {
             let t_fetch = Instant::now();
             progress.set_fetch_total(selected_packages.len() as u64);
             let fetch_result = if offline {
-                let result = better_core::artifact_cache::prepare_offline_packages(&selected_packages, &cache_root);
+                let result = better_core::artifact_cache::prepare_offline_packages(&selected_packages, &cache_root, artifact_limits);
                 if let Err(reason) = result {
                     let mut w = JsonWriter::new();
                     w.begin_object();

@@ -116,7 +116,7 @@ impl ArtifactCache {
 
 /// Prepare selected packages without any network access. Missing or incomplete
 /// extraction is rebuilt from a verified retained archive under the content lock.
-pub fn prepare_offline_packages(packages: &[crate::ResolvedPackage], cache_dir: &Path) -> Result<crate::FetchResult, String> {
+pub fn prepare_offline_packages(packages: &[crate::ResolvedPackage], cache_dir: &Path, limits: crate::fetch_pipeline::ArtifactLimits) -> Result<crate::FetchResult, String> {
     let mut identities = std::collections::BTreeMap::new();
     for package in packages {
         let identity = crate::integrity::Integrity::parse(&package.integrity)
@@ -126,19 +126,22 @@ pub fn prepare_offline_packages(packages: &[crate::ResolvedPackage], cache_dir: 
     for (_, (package, identity)) in identities {
         let artifact = ArtifactCache::new(cache_dir, identity.algorithm(), &identity.hex_digest());
         let _lock = artifact.lock()?;
-        let verify = |path: &Path| identity.verify_reader(File::open(path).map_err(|e| e.to_string())?);
+        let verify = |path: &Path| {
+            if fs::metadata(path).map_err(|e| e.to_string())?.len() > limits.compressed_bytes {
+                return Err("Cached archive exceeds compressed byte limit".to_string());
+            }
+            identity.verify_reader(File::open(path).map_err(|e| e.to_string())?)
+        };
         if !artifact.retained_tarball(verify).map_err(|e| format!("Invalid cached archive for {}: {e}", package.name))? {
             return Err(format!("package not in cache: {}@{} - run without --offline to fetch", package.name, package.version));
         }
         if !artifact.ready() {
             artifact.extract_and_publish(|source, destination| {
-                let file = File::open(source).map_err(|e| e.to_string())?;
-                tar::Archive::new(flate2::read::GzDecoder::new(file)).unpack(destination)
-                    .map_err(|e| format!("Cannot repair cached extraction: {e}"))
+                crate::fetch_pipeline::extract_verified_tarball(source, destination, limits)
             })?;
         }
     }
-    Ok(crate::FetchResult { packages_fetched: 0, packages_cached: packages.len() as u64, bytes_downloaded: 0 })
+    Ok(crate::FetchResult { packages_fetched: 0, packages_cached: packages.len() as u64, bytes_downloaded: 0, metrics: Default::default() })
 }
 
 #[cfg(test)]

@@ -22,11 +22,11 @@ fn fixture(root: &std::path::Path) -> (ResolvedPackage, ArtifactCache) {
 #[test]
 fn offline_migrates_and_repairs_without_any_download() {
     let dir = tempfile::tempdir().unwrap(); let (package, artifact) = fixture(dir.path());
-    let result = prepare_offline_packages(&[package.clone()], dir.path()).unwrap();
+    let result = prepare_offline_packages(&[package.clone()], dir.path(), Default::default()).unwrap();
     assert_eq!(result.bytes_downloaded, 0); assert_eq!(result.packages_fetched, 0); assert!(artifact.ready());
     fs::remove_file(artifact.unpacked.join("package/index.js")).unwrap(); assert!(!artifact.ready());
     fs::write(artifact.unpacked.join("package/extra.js"), "unexpected").unwrap();
-    prepare_offline_packages(&[package], dir.path()).unwrap();
+    prepare_offline_packages(&[package], dir.path(), Default::default()).unwrap();
     assert!(artifact.ready()); assert!(!artifact.unpacked.join("package/extra.js").exists());
     assert_eq!(fs::read(artifact.unpacked.join("package/index.js")).unwrap(), b"module.exports = 42;");
 }
@@ -35,8 +35,8 @@ fn offline_migrates_and_repairs_without_any_download() {
 fn offline_rejects_corrupt_archive_and_preflights_all_identities() {
     let dir = tempfile::tempdir().unwrap(); let (package, artifact) = fixture(dir.path());
     let mut invalid = package.clone(); invalid.integrity = "sha512-".into();
-    assert!(prepare_offline_packages(&[package.clone(), invalid], dir.path()).is_err());
+    assert!(prepare_offline_packages(&[package.clone(), invalid], dir.path(), Default::default()).is_err());
     assert!(!artifact.unpacked.exists());
     fs::write(&artifact.tarball, "corrupted").unwrap();
-    assert!(prepare_offline_packages(&[package], dir.path()).is_err()); assert!(!artifact.unpacked.exists());
+    assert!(prepare_offline_packages(&[package], dir.path(), Default::default()).is_err()); assert!(!artifact.unpacked.exists());
 }
