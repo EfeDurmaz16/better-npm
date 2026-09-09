@@ -132,6 +132,7 @@ pub fn fetch_packages(
     npmrc: Option<&NpmrcConfig>,
 ) -> Result<FetchResult, String> {
     use rayon::prelude::*;
+    use crate::integrity::Integrity;
 
     let layout = CasLayout::new(cache_dir);
 
@@ -150,33 +151,20 @@ pub fn fetch_packages(
 
     // Process packages in parallel
     packages.par_iter().try_for_each(|pkg| -> Result<(), String> {
-        // Parse integrity
-        let integrity = crate::integrity::Integrity::parse(&pkg.integrity)
-            .map_err(|e| format!("Invalid integrity for {}: {}", pkg.name, e))?;
+        let integrity = Integrity::parse(&pkg.integrity)?;
         let algo = integrity.algorithm();
         let hex = integrity.hex_digest();
-
-        let tarball = tarball_path(&layout, &algo, &hex);
-        let unpacked = unpacked_path(&layout, &algo, &hex);
-        let verified_marker = tarball.with_extension("tgz.verified");
-        let extracted_marker = unpacked.join(".better_extracted");
-
-        // Check if already cached and verified
-        let verified = cached_tarball_is_verified(&layout, &pkg.integrity);
-        if verified && extracted_marker.exists() {
+        let artifact = crate::artifact_cache::ArtifactCache::new(cache_dir, algo, &hex);
+        let verify = |path: &Path| -> Result<(), String> {
+            integrity.verify_reader(fs::File::open(path).map_err(|e| e.to_string())?)
+        };
+        if artifact.ready() {
+            artifact.retained_tarball(verify)?;
             packages_cached.fetch_add(1, Ordering::Relaxed);
             return Ok(());
         }
-
-        // Stream: download → hash → save tarball → decompress → extract (single pass)
-        if !verified || !extracted_marker.exists() {
-            // Ensure parent directories exist
-            if let Some(parent) = tarball.parent() {
-                fs::create_dir_all(parent).map_err(|e| format!("Failed to create tarball parent dir: {}", e))?;
-            }
-            fs::create_dir_all(&unpacked)
-                .map_err(|e| format!("Failed to create unpacked dir: {}", e))?;
-
+        let retained = artifact.retained_tarball(verify)?;
+        if !retained {
             let response = crate::transport::download(&http_client, pkg, npmrc)?;
 
             // Read full response bytes (needed for both hashing and extraction)
@@ -184,42 +172,22 @@ pub fn fetch_packages(
                 .map_err(|_| format!("Failed to read download for {}", pkg.name))?;
             let byte_count = bytes.len() as u64;
 
-            integrity.verify(&bytes)
-                .map_err(|e| format!("{} for {}", e, pkg.name))?;
+            integrity.verify(&bytes)?;
 
-            // A previously accepted archive may have populated this directory.
-            // Never overlay verified bytes on untrusted leftover files.
-            if unpacked.exists() {
-                fs::remove_dir_all(&unpacked)
-                    .map_err(|e| format!("Failed to discard stale extraction: {}", e))?;
-            }
-            fs::create_dir_all(&unpacked)
-                .map_err(|e| format!("Failed to create unpacked dir: {}", e))?;
-
-            // Stream: decompress → extract directly from memory (no temp file round-trip)
-            let gz = flate2::read::GzDecoder::new(std::io::Cursor::new(&bytes));
-            let mut archive = tar::Archive::new(gz);
-            archive.unpack(&unpacked)
-                .map_err(|e| format!("Failed to extract tarball: {}", e))?;
-
-            // Persist tarball to CAS for future cache hits
-            let tmp_file = layout.tmp_dir.join(format!("{}.tgz.tmp", hex));
-            fs::write(&tmp_file, &bytes)
-                .map_err(|e| format!("Failed to write tarball: {}", e))?;
-            fs::rename(&tmp_file, &tarball)
-                .map_err(|e| format!("Failed to move tarball to CAS: {}", e))?;
-
-            // Write markers
-            fs::write(&verified_marker, crate::integrity::VERIFIED_MARKER)
-                .map_err(|e| format!("Failed to write verified marker: {}", e))?;
-            fs::write(&extracted_marker, "")
-                .map_err(|e| format!("Failed to write extracted marker: {}", e))?;
-
+            let stage = artifact.create_download()?;
+            let source = stage.path().join("archive.tgz");
+            fs::write(&source, &bytes).map_err(|e| e.to_string())?;
+            artifact.publish_tarball(&source, verify)?;
             bytes_downloaded.fetch_add(byte_count, Ordering::Relaxed);
             packages_fetched.fetch_add(1, Ordering::Relaxed);
         } else {
             packages_cached.fetch_add(1, Ordering::Relaxed);
         }
+        artifact.extract_and_publish(|source, destination| {
+            let file = fs::File::open(source).map_err(|e| e.to_string())?;
+            let gz = flate2::read::GzDecoder::new(file);
+            tar::Archive::new(gz).unpack(destination).map_err(|e| format!("Failed to extract tarball: {e}"))
+        })?;
 
         Ok(())
     })?;
