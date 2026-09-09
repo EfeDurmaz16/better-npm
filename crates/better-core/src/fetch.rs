@@ -174,7 +174,11 @@ pub fn fetch_packages_with_options(
         let artifact = crate::artifact_cache::ArtifactCache::new(cache_dir, algo, &hex);
         let _content_lock = artifact.lock()?;
         let verify = |path: &Path| -> Result<(), String> {
-            integrity.verify_reader(fs::File::open(path).map_err(|e| e.to_string())?)
+            let file = fs::File::open(path).map_err(|e| e.to_string())?;
+            if file.metadata().map_err(|e| e.to_string())?.len() > limits.compressed_bytes {
+                return Err("Cached archive exceeds compressed byte limit; increase --max-tarball-bytes".into());
+            }
+            integrity.verify_reader(file)
         };
         if artifact.ready() {
             artifact.retained_tarball(verify)?;
