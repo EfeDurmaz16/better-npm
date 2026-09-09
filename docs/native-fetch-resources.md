@@ -8,14 +8,14 @@ better install --engine better --experimental --jobs 8 --extract-jobs 2
 
 | CLI flag | JS bridge / NAPI option | Default |
 | --- | --- | --- |
-| `--jobs` | `jobs` | Available parallelism, clamped to 1..64. `--fs-concurrency` remains a separate materialization setting. |
+| `--jobs` | `jobs` | `std::thread::available_parallelism()`, clamped to 1..64; independent of `RAYON_NUM_THREADS`. |
 | `--extract-jobs` | `extractJobs` | Effective `jobs` value |
 | `--max-tarball-bytes` | `maxTarballBytes` | 536870912 bytes (512 MiB) |
 | `--max-expanded-bytes` | `maxExpandedBytes` | 2147483648 bytes (2 GiB) |
 | `--max-archive-entries` | `maxArchiveEntries` | 100000 raw archive entries |
 | `--max-archive-metadata-bytes` | `maxArchiveMetadataBytes` | 1048576 bytes (1 MiB) |
 
-JS install requires `--engine better` for these flags. JS bridges and NAPI require worker counts in 1..256 and positive safe integer artifact limits. Direct native CLI accepts positive integers and caps worker counts at 256, preserving its existing `--jobs` behavior. Invalid values fail before fetch work; JS install validates them before creating project/cache directories. These options control fetch operations, not package lifecycle-script concurrency.
+JS install requires `--engine better` for these flags. JS bridges and NAPI require worker counts in 1..256 and positive safe integer artifact limits. Direct native CLI accepts positive integers and caps worker counts at 256, preserving its existing `--jobs` behavior. Invalid values fail before fetch work; JS install validates them before creating project/cache directories. These options control fetch operations, not package lifecycle-script concurrency. `--fs-concurrency` controls global-cache restore/capture materialization only; it does not bound the native install materialization scheduler. Native materialization retains its existing fixed/per-Rayon scheduling.
 
 Artifact budgets apply independently to each artifact when its download or extraction executes. A complete cached artifact skips extraction, so lowering extraction limits does not re-run or retroactively reject prior extraction work. Compressed bytes bound the downloaded archive. Expanded bytes bound the decompressed archive stream, including archive overhead, rather than only the final package payload. Raw entry accounting includes extension headers. Metadata limits constrain archive extension metadata before it can cause large allocations. Raising limits increases the resources an artifact may consume.
 
@@ -23,7 +23,7 @@ Streaming uses a 64 KiB application copy buffer. This is not a process RSS bound
 
 Extraction deliberately decompresses twice: a bounded preflight validates the archive before the extraction pass writes its entries. This trades decompression CPU for predictable validation before writes. Sparse archives and PAX entries whose declared size differs from the underlying header are unsupported and fail explicitly.
 
-Native reports expose `stats.fetchMetrics`; NAPI returns `metrics`. Fields record configured worker counts, queue capacity, observed peak workers, and summed preparation/extraction/backpressure microseconds. Stage duration totals sum elapsed time across concurrent work. They are neither end-to-end wall time nor CPU time and must not be added together to claim install latency. Measure wall time, CPU time and peak RSS independently when comparing worker settings. More workers can increase memory pressure and disk contention; choose settings from representative measurements.
+Native reports expose `stats.fetchMetrics`; NAPI returns `metrics`. Fields record configured worker counts, queue capacity, observed peak workers, and summed preparation/extraction/backpressure microseconds. Stage duration totals sum elapsed time across concurrent work. They are neither end-to-end wall time nor CPU time and must not be added together to claim install latency. Measure wall time, CPU time and peak RSS independently when comparing worker settings. The fetch worker defaults deliberately use OS-reported available parallelism rather than the global Rayon pool: setting `RAYON_NUM_THREADS` alone does not cap fetch workers. Set `--jobs` and `--extract-jobs` explicitly for reproducible resource budgets. More workers can increase memory pressure and disk contention; choose settings from representative measurements.
 
 ## Runtime reporting
 
