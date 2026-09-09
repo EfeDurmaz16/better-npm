@@ -6,7 +6,7 @@ use std::time::Instant;
 use better_core::{
     analyze, cas_key_from_integrity, create_bin_links, detect_lifecycle_scripts, fetch_packages, tarball_path, FetchResult,
     ingest_to_file_cas, materialize_from_file_cas, materialize_tree, resolve_from_lockfile,
-    run_lifecycle_scripts, scan_tree, try_clonefile_dir, unpacked_path, write_analyze_json,
+    run_lifecycle_scripts_for_install, scan_tree, try_clonefile_dir, unpacked_path, write_analyze_json,
     write_materialize_json, write_scan_json, CasLayout, JsonWriter, LifecycleRunResult,
     InstallProgress, LinkStrategy, MaterializeProfile, MaterializeStats, NodeLayout, PhaseDurations, ScanAgg,
     StrictMaterializeStats, VERSION, materialize_strict,
@@ -74,6 +74,7 @@ enum Command {
         dedup: bool,
         frozen: bool,
         offline: bool,
+        production: bool,
         json_progress: bool,
         node_layout: NodeLayout,
         sandbox: bool,
@@ -447,6 +448,7 @@ fn parse_args() -> (Command, GlobalFlags) {
     let mut scope_opt: Option<String> = None;
     let mut token_env_opt: Option<String> = None;
     let mut priority_opt: Option<u64> = None;
+    let mut production = false;
     let mut sandbox_flag = false;
     let mut vex_flag = false;
     let mut verify_provenance_flag = false;
@@ -547,6 +549,7 @@ fn parse_args() -> (Command, GlobalFlags) {
             }
             "--no-scripts" => { scripts_flag = false; i += 1; }
             "--scripts" => { scripts_flag = true; i += 1; }
+            "--production" => { production = true; i += 1; }
             "--sandbox" => { sandbox_flag = true; i += 1; }
             "--no-sandbox" => { sandbox_flag = false; i += 1; }
             "--vex" => { vex_flag = true; i += 1; }
@@ -769,7 +772,7 @@ fn parse_args() -> (Command, GlobalFlags) {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
             let lf = lockfile.unwrap_or_else(|| pr.join("package-lock.json"));
             let cr = cache_root.unwrap_or_else(default_cache_root);
-            Command::Install { lockfile: lf, project_root: pr, cache_root: cr, store_root, link_strategy, jobs, scripts: scripts_flag, dedup, frozen, offline: offline_flag, json_progress, node_layout, sandbox: sandbox_flag, verify_provenance: verify_provenance_flag, require_provenance: require_provenance_flag, registry_failover: registry_failover_flag }
+            Command::Install { lockfile: lf, project_root: pr, cache_root: cr, store_root, link_strategy, jobs, scripts: scripts_flag, dedup, frozen, production, offline: offline_flag, json_progress, node_layout, sandbox: sandbox_flag, verify_provenance: verify_provenance_flag, require_provenance: require_provenance_flag, registry_failover: registry_failover_flag }
         },
         "run" => {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
@@ -1106,7 +1109,7 @@ fn print_help(error: Option<String>) {
         "better-core {VERSION}
 
 Usage:
-  better-core install [--lockfile <path>] [--project-root <path>] [--cache-root <path>] [--dedup] [--frozen] [--offline]
+  better-core install [--lockfile <path>] [--project-root <path>] [--cache-root <path>] [--dedup] [--frozen] [--offline] [--production]
   better-core run <script> [--watch] [-- extra args...]
   better-core test|lint|build|start [--watch] [args...]
   better-core dev [args...]  (watch mode by default)
@@ -2376,7 +2379,7 @@ fn main() {
                 std::process::exit(1);
             }
         },
-        Command::Install { lockfile, project_root, cache_root, store_root, link_strategy, jobs: _, scripts, dedup, frozen, offline, json_progress, node_layout, sandbox, verify_provenance: vp, require_provenance: rp, registry_failover } => {
+        Command::Install { lockfile, project_root, cache_root, store_root, link_strategy, jobs: _, scripts, dedup, frozen, offline, production, json_progress, node_layout, sandbox, verify_provenance: vp, require_provenance: rp, registry_failover } => {
             let started = Instant::now();
 
             // Engine detection: identify which ecosystem this project uses
@@ -2436,14 +2439,16 @@ fn main() {
                 }
             }
 
+            let selected_packages = better_core::select_production_packages(&resolve_result.packages, production);
+
             // Step 2: Fetch (skip network in --offline mode, only use CAS)
             let t_fetch = Instant::now();
-            progress.set_fetch_total(resolve_result.packages.len() as u64);
+            progress.set_fetch_total(selected_packages.len() as u64);
             let fetch_result = if offline {
                 // Offline mode: verify all packages are already in CAS; fail fast if any are missing
                 let layout = CasLayout::new(&cache_root);
                 let mut missing: Option<String> = None;
-                for pkg in &resolve_result.packages {
+                for pkg in &selected_packages {
                     if let Some((algo, hex)) = cas_key_from_integrity(&pkg.integrity) {
                         let verified_marker = tarball_path(&layout, &algo, &hex).with_extension("tgz.verified");
                         let extracted_marker = unpacked_path(&layout, &algo, &hex).join(".better_extracted");
@@ -2469,7 +2474,7 @@ fn main() {
                 progress.finish_fetch();
                 FetchResult {
                     packages_fetched: 0,
-                    packages_cached: resolve_result.packages.len() as u64,
+                    packages_cached: selected_packages.len() as u64,
                     bytes_downloaded: 0,
                 }
             } else {
@@ -2482,7 +2487,7 @@ fn main() {
                 };
                 let _ = registry_chain; // chain available for future fetch integration
 
-                match fetch_packages(&resolve_result.packages, &cache_root, Some(&npmrc)) {
+                match fetch_packages(&selected_packages, &cache_root, Some(&npmrc)) {
                     Ok(r) => {
                         progress.finish_fetch();
                         r
@@ -2506,6 +2511,34 @@ fn main() {
             let layout = CasLayout::new(&cache_root);
             let file_cas_root = store_root.unwrap_or_else(|| cache_root.join("file-store"));
             let node_modules = project_root.join("node_modules");
+            // Refresh only after every selected package has passed fetch/cache checks.
+            // This also removes stale dev bins and strict-layout store entries.
+            if production {
+                for pkg in &selected_packages {
+                    let source = cas_key_from_integrity(&pkg.integrity)
+                        .map(|(algo, hex)| unpacked_path(&layout, &algo, &hex).join("package"));
+                    if !source.is_some_and(|path| path.is_dir() && path.join("package.json").is_file()) {
+                        eprintln!("Production install requires a complete cached package: {}@{}", pkg.name, pkg.version);
+                        std::process::exit(1);
+                    }
+                }
+            }
+            if production && node_modules.exists() {
+                // A custom cache/store may live inside the tree being refreshed.
+                // Resolve symlinks too: never delete fetched inputs during cleanup.
+                if let Ok(tree) = node_modules.canonicalize() {
+                    for protected in [&cache_root, &file_cas_root] {
+                        if protected.canonicalize().is_ok_and(|path| path.starts_with(&tree)) {
+                            eprintln!("Production install requires cache and store roots outside node_modules: {}", protected.display());
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                if let Err(reason) = std::fs::remove_dir_all(&node_modules) {
+                    eprintln!("Failed to refresh node_modules for production: {reason}");
+                    std::process::exit(1);
+                }
+            }
             let _ = std::fs::create_dir_all(&node_modules);
 
             let total_files = std::sync::atomic::AtomicU64::new(0);
@@ -2519,9 +2552,9 @@ fn main() {
 
             if node_layout == NodeLayout::Strict {
                 // Strict mode: pnpm-style isolated node_modules with symlinks
-                progress.set_extract_total(resolve_result.packages.len() as u64);
+                progress.set_extract_total(selected_packages.len() as u64);
                 match materialize_strict(
-                    &resolve_result.packages,
+                    &selected_packages,
                     &project_root,
                     &layout,
                     &file_cas_root,
@@ -2547,7 +2580,7 @@ fn main() {
                 }
             } else {
                 // Hoist mode: traditional flat node_modules
-                for pkg in &resolve_result.packages {
+                for pkg in &selected_packages {
                     let dest_path = if pkg.rel_path.starts_with("node_modules/") {
                         node_modules.join(&pkg.rel_path[13..])
                     } else {
@@ -2560,12 +2593,12 @@ fn main() {
 
                 use rayon::prelude::*;
                 let materialize_error: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
-                progress.set_extract_total(resolve_result.packages.len() as u64);
+                progress.set_extract_total(selected_packages.len() as u64);
 
                 // Materializing a parent may replace its entire directory. Finish
                 // shallower packages before descendants; siblings remain parallel.
                 let mut layers = std::collections::BTreeMap::new();
-                for pkg in &resolve_result.packages {
+                for pkg in &selected_packages {
                     let depth = std::path::Path::new(&pkg.rel_path).components().count();
                     layers.entry(depth).or_insert_with(Vec::new).push(pkg);
                 }
@@ -2652,15 +2685,15 @@ fn main() {
 
             // Step 4: Bin links
             let t_bins = Instant::now();
-            progress.set_link_total(resolve_result.packages.len() as u64);
-            let bin_result = create_bin_links(&node_modules, &resolve_result.packages).unwrap_or_default();
+            progress.set_link_total(selected_packages.len() as u64);
+            let bin_result = create_bin_links(&node_modules, &selected_packages).unwrap_or_default();
             progress.finish_link();
             let phase_binlinks_ms = t_bins.elapsed().as_millis() as u64;
 
             // Step 5: Lifecycle scripts (with optional sandboxing)
             let t_scripts = Instant::now();
             let scripts_result = if scripts {
-                let detection = detect_lifecycle_scripts(&node_modules, &resolve_result.packages);
+                let detection = detect_lifecycle_scripts(&node_modules, &selected_packages);
                 if sandbox {
                     let sandbox_policy = load_sandbox_policy(&project_root);
                     let mut result = LifecycleRunResult::default();
@@ -2703,7 +2736,7 @@ fn main() {
                     }
                     result
                 } else {
-                    run_lifecycle_scripts(&project_root, &detection)
+                    run_lifecycle_scripts_for_install(&project_root, &detection, production)
                 }
             } else {
                 LifecycleRunResult { skipped_reason: Some("disabled".into()), ..Default::default() }
@@ -2727,7 +2760,7 @@ fn main() {
             let mut provenance_packages: Vec<String> = Vec::new();
             if vp || rp {
                 let mode = if rp { "require" } else { "verify" };
-                match verify_provenance(&resolve_result.packages, mode) {
+                match verify_provenance(&selected_packages, mode) {
                     Ok(report) => {
                         for att in &report.attestations {
                             if att.has_attestation && att.signature_valid {
@@ -2758,7 +2791,7 @@ fn main() {
             // Step 8: Dependency firewall
             let firewall_config = load_firewall_config(&project_root);
             let _firewall_report = if firewall_config.enabled {
-                let report = run_firewall(&resolve_result.packages, &project_root, &firewall_config);
+                let report = run_firewall(&selected_packages, &project_root, &firewall_config);
                 if report.blocked > 0 {
                     eprintln!("firewall: {} package(s) blocked, {} warning(s)", report.blocked, report.warnings);
                     for alert in &report.alerts {
@@ -2778,7 +2811,7 @@ fn main() {
             let lockfile_hash = lockfile_result.as_ref().map(|lr| lr.fingerprint.clone());
             let _ = write_install_receipt(
                 &project_root,
-                &resolve_result.packages,
+                &selected_packages,
                 None,
                 lockfile_hash.as_deref(),
                 &provenance_packages,
@@ -2804,7 +2837,7 @@ fn main() {
             w.key("durationMs"); w.value_u64(duration_ms);
             w.key("nodeLayout"); w.value_string(node_layout.as_str());
             w.key("stats"); w.begin_object();
-            w.key("packagesResolved"); w.value_u64(resolve_result.packages.len() as u64);
+            w.key("packagesResolved"); w.value_u64(selected_packages.len() as u64);
             w.key("packagesFetched"); w.value_u64(fetch_result.packages_fetched);
             w.key("packagesCached"); w.value_u64(fetch_result.packages_cached);
             w.key("bytesDownloaded"); w.value_u64(fetch_result.bytes_downloaded);

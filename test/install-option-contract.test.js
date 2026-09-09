@@ -13,7 +13,6 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 const cli = path.join(root, "bin/better.js");
 const native = path.join(root, "crates/target/debug", process.platform === "win32" ? "better-core.exe" : "better-core");
 const unsupported = [
-  ["production", "--production", /dependency filtering/],
   ["sandbox", "--sandbox", /script isolation/],
   ["verifyProvenance", "--verify-provenance", /cryptographic provenance/],
   ["requireProvenance", "--require-provenance", /cryptographic provenance/]
@@ -52,11 +51,11 @@ test("bridge forwards supported native install options", async () => {
     const report = await runBetterCoreInstall(stub, dir, {
       lockfile: "custom-lock.json", cacheRoot: "cache", storeRoot: "store",
       linkStrategy: "copy", jobs: 2, scripts: false, dedup: true,
-      offline: true, nodeLayout: "strict"
+      production: true, offline: true, nodeLayout: "strict"
     });
     assert.deepEqual(report.args, ["install", "--project-root", dir,
       "--lockfile", "custom-lock.json", "--cache-root", "cache", "--store-root", "store",
-      "--link-strategy", "copy", "--jobs", "2", "--no-scripts", "--dedup", "--offline", "--strict"]);
+      "--link-strategy", "copy", "--jobs", "2", "--no-scripts", "--dedup", "--production", "--offline", "--strict"]);
   } finally {
     await rmrf(dir);
   }
@@ -82,7 +81,7 @@ test("native install enforces the option contract before resolving packages", as
   try { await fs.access(native); } catch { t.skip("Build better-core debug binary to run native contract coverage"); return; }
   const dir = await makeTempDir("better-option-native-");
   try {
-    for (const [, flag, reason] of unsupported.slice(1)) {
+    for (const [, flag, reason] of unsupported) {
       await assert.rejects(exec(native, ["install", flag, "--project-root", dir], { cwd: dir }), error => {
         assert.match(error.stdout + error.stderr, reason);
         return true;
