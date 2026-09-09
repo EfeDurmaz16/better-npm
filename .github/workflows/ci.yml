@@ -68,3 +68,22 @@ jobs:
 
       - name: Run Node.js tests
         run: node --test test/*.test.js
+
+      - name: Test worktree evidence harness
+        if: matrix.os == 'ubuntu-latest' && matrix.node-version == 22
+        run: python3 benchmarks/test_worktrees.py
+
+      - name: Worktree evidence smoke
+        if: matrix.os == 'ubuntu-latest' && matrix.node-version == 22
+        run: |
+          python3 benchmarks/worktrees.py --binary crates/target/release/better-core \
+            --workers 1 --rounds 1 --packages 2 --payload-kib 1 \
+            --output /tmp/worktree-smoke.json
+
+      - name: Upload worktree evidence
+        if: always() && matrix.os == 'ubuntu-latest' && matrix.node-version == 22
+        uses: actions/upload-artifact@v4
+        with:
+          name: worktree-smoke
+          path: /tmp/worktree-smoke.json
+          if-no-files-found: ignore
