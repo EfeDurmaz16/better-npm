@@ -26,6 +26,10 @@ export async function findBetterCore() {
   const envPath = process.env.BETTER_CORE_PATH;
   if (envPath && (await exists(envPath))) return envPath;
 
+  // The npm postinstall script places the released binary here.
+  const packagedCore = path.join(betterInstallRoot(), "bin", platformExe("better-core"));
+  if (await exists(packagedCore)) return packagedCore;
+
   const preferredProfile = String(process.env.BETTER_CORE_PROFILE ?? "release").toLowerCase() === "debug"
     ? "debug"
     : "release";
