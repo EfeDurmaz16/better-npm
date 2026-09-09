@@ -36,6 +36,9 @@ function hashString(input) {
 }
 
 function runtimeLibc() {
+  // libc is only part of the Linux ABI. Avoid collecting a full diagnostic
+  // report, including unrelated process state, on other hosts.
+  if (process.platform !== "linux") return "n/a";
   try {
     const report = process.report?.getReport?.();
     const glibc = report?.header?.glibcVersionRuntime;
@@ -105,6 +108,7 @@ export function buildRuntimeFingerprint(opts = {}) {
     scriptsMode: opts.scriptsMode ?? "rebuild",
     nodeLayout: opts.engine === "better" ? (opts.nodeLayout ?? "hoist") : null,
     linkStrategy: opts.engine === "better" ? (opts.linkStrategy ?? "auto") : null,
+    ...(opts.engine === "better" ? { materializationPolicy: "isolated-auto-v2" } : {}),
     frozen: opts.frozen === true,
     production: opts.production === true,
     cacheKeySalt: opts.cacheKeySalt ?? null
@@ -118,6 +122,7 @@ export function buildRuntimeFingerprint(opts = {}) {
     scriptsMode: opts.scriptsMode ?? "rebuild",
     nodeLayout: opts.engine === "better" ? (opts.nodeLayout ?? "hoist") : null,
     linkStrategy: opts.engine === "better" ? (opts.linkStrategy ?? "auto") : null,
+    ...(opts.engine === "better" ? { materializationPolicy: "isolated-auto-v2" } : {}),
     cacheKeySalt: opts.cacheKeySalt ?? null
   };
   return {

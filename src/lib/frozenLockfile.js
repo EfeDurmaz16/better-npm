@@ -76,14 +76,25 @@ export async function verifyFrozenLockfile(projectRoot, options = {}) {
       }
     }
 
+    // Build the fallback index only if a direct entry is missing. Preserve all
+    // suffixes accepted by the previous endsWith check, including scoped names.
+    let nestedNames = null;
     for (const [name, range] of Object.entries(declaredDeps)) {
       const lockKey = `node_modules/${name}`;
       if (!packages[lockKey]) {
         // Check nested paths for scoped packages
-        const found = Object.keys(packages).some(
-          k => k === lockKey || k.endsWith(`/node_modules/${name}`)
-        );
-        if (!found) {
+        if (nestedNames === null) {
+          nestedNames = new Set();
+          const separator = "/node_modules/";
+          for (const key of Object.keys(packages)) {
+            let offset = key.indexOf(separator);
+            while (offset !== -1) {
+              nestedNames.add(key.slice(offset + separator.length));
+              offset = key.indexOf(separator, offset + separator.length);
+            }
+          }
+        }
+        if (!nestedNames.has(name) && !Object.hasOwn(packages, lockKey)) {
           errors.push(
             `Package '${name}@${range}' declared in package.json but missing from lockfile. Run 'npm install' to update.`
           );
