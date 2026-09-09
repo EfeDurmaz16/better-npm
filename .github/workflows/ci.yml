@@ -37,14 +37,34 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Build better-core
-        run: cargo build --manifest-path crates/Cargo.toml -p better-core --release
+      - name: Build native components from checkout
+        run: |
+          cargo build --locked --manifest-path crates/Cargo.toml -p better-core -p better-napi --release
+          case "$RUNNER_OS" in
+            Linux) cp crates/target/release/libbetter_napi.so crates/better-napi/better-core.node ;;
+            macOS) cp crates/target/release/libbetter_napi.dylib crates/better-napi/better-core.node ;;
+          esac
+
+      - name: Verify native components load
+        run: |
+          node --input-type=module -e '
+            import { findBetterCore, tryLoadNapiAddon } from "./src/lib/core.js";
+            import assert from "node:assert/strict";
+            import path from "node:path";
+            assert.equal(await findBetterCore(), path.resolve("crates/target/release/better-core"));
+            assert.ok(tryLoadNapiAddon(), "checkout N-API addon must load");
+          '
+
 
       - name: Test better-core
-        run: cargo test --manifest-path crates/Cargo.toml -p better-core
+        # Existing tests mutate process-wide API-key environment variables.
+        run: cargo test --locked --manifest-path crates/Cargo.toml -p better-core -- --test-threads=1
 
       - name: Install Node.js dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
+
+      - name: Lint and build checks
+        run: npm run lint && npm run build && npm run typecheck
 
       - name: Run Node.js tests
         run: node --test test/*.test.js
