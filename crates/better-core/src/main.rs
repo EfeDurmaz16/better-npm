@@ -1109,7 +1109,7 @@ fn print_help(error: Option<String>) {
         "better-core {VERSION}
 
 Usage:
-  better-core install [--lockfile <path>] [--project-root <path>] [--cache-root <path>] [--dedup] [--frozen] [--offline]
+  better-core install [--lockfile <path>] [--project-root <path>] [--cache-root <path>] [--dedup] [--frozen] [--offline] [--production]
   better-core run <script> [--watch] [-- extra args...]
   better-core test|lint|build|start [--watch] [args...]
   better-core dev [args...]  (watch mode by default)
