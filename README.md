@@ -71,6 +71,20 @@ Files share the same inode — editing one won't affect others (copy-on-write at
 
 ## Install
 
+### Experimental native install option support
+
+`better install --engine better --experimental` forwards cache/store paths, link strategy,
+jobs, script disabling, offline mode, and node layout to the Rust installer.
+`--production` is rejected because native dependency filtering is not implemented;
+use `--engine pm --production` instead.
+
+Install rejects `--sandbox`, `--verify-provenance`, and `--require-provenance` on every
+engine, before cache reuse or installation. Script isolation and cryptographic provenance
+verification are not fully implemented. Direct `better-core install` also rejects these flags.
+
+`better install --frozen` retains its JavaScript package-manager lockfile preflight,
+including on cache reuse. It does not request the separate native `better.lock` frozen check.
+
 ```bash
 # Quick install (recommended)
 curl -fsSL https://raw.githubusercontent.com/EfeDurmaz16/better-npm/main/scripts/install.sh | sh

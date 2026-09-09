@@ -756,6 +756,16 @@ fn parse_args() -> (Command, GlobalFlags) {
             _ => Command::Help { error: Some("materialize requires --src and --dest".into()) },
         },
         "install" | "i" => {
+            if sandbox_flag || verify_provenance_flag || require_provenance_flag {
+                let reason = if sandbox_flag {
+                    "--sandbox is not supported for install: required script isolation is not fully enforced."
+                } else if require_provenance_flag {
+                    "--require-provenance is not supported for install: cryptographic provenance verification is not implemented."
+                } else {
+                    "--verify-provenance is not supported for install: cryptographic provenance verification is not implemented."
+                };
+                return (Command::Help { error: Some(reason.into()) }, global_flags);
+            }
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
             let lf = lockfile.unwrap_or_else(|| pr.join("package-lock.json"));
             let cr = cache_root.unwrap_or_else(default_cache_root);
@@ -1096,7 +1106,7 @@ fn print_help(error: Option<String>) {
         "better-core {VERSION}
 
 Usage:
-  better-core install [--lockfile <path>] [--project-root <path>] [--cache-root <path>] [--dedup] [--frozen] [--offline] [--sandbox]
+  better-core install [--lockfile <path>] [--project-root <path>] [--cache-root <path>] [--dedup] [--frozen] [--offline]
   better-core run <script> [--watch] [-- extra args...]
   better-core test|lint|build|start [--watch] [args...]
   better-core dev [args...]  (watch mode by default)

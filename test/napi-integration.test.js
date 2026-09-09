@@ -2,35 +2,14 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import fs from "node:fs/promises";
-import { createRequire } from "node:module";
+import { tryLoadNapiAddon } from "../src/lib/core.js";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
 
-// Find the NAPI addon for the current platform
-const napiDir = path.join(repoRoot, "crates", "better-napi");
-const platformCandidates = [
-  "better-core.darwin-arm64.node",
-  "better-core.darwin-x64.node",
-  "better-core.linux-x64-gnu.node",
-  "better-core.linux-arm64-gnu.node",
-  "better-core.win32-x64-msvc.node",
-];
-
-let addon = null;
-
-const require = createRequire(import.meta.url);
-for (const candidate of platformCandidates) {
-  try {
-    const p = path.join(napiDir, candidate);
-    await fs.access(p);
-    addon = require(p);
-    break;
-  } catch {
-    // try next
-  }
-}
+// Exercise the same native discovery path as CLI commands, including generic builds.
+const addon = tryLoadNapiAddon();
 
 const shouldSkip = addon == null;
 

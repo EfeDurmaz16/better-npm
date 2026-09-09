@@ -3,6 +3,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { runCommand } from "./spawn.js";
+import { assertInstallOptionSupport } from "./installOptions.js";
 
 async function exists(p) {
   try {
@@ -25,6 +26,10 @@ function betterInstallRoot() {
 export async function findBetterCore() {
   const envPath = process.env.BETTER_CORE_PATH;
   if (envPath && (await exists(envPath))) return envPath;
+
+  // The npm postinstall script places the released binary here.
+  const packagedCore = path.join(betterInstallRoot(), "bin", platformExe("better-core"));
+  if (await exists(packagedCore)) return packagedCore;
 
   const preferredProfile = String(process.env.BETTER_CORE_PROFILE ?? "release").toLowerCase() === "debug"
     ? "debug"
@@ -737,6 +742,7 @@ export function runVerifyLockMetadataNapi(projectRoot) {
 }
 
 export async function runBetterCoreInstall(corePath, projectRoot, opts = {}) {
+  assertInstallOptionSupport("better", opts);
   const args = ["install", "--project-root", projectRoot];
   if (opts.lockfile) args.push("--lockfile", String(opts.lockfile));
   if (opts.cacheRoot) args.push("--cache-root", String(opts.cacheRoot));

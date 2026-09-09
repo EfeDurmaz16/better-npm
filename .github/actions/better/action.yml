@@ -1,5 +1,5 @@
 # .github/actions/better/action.yml
-name: 'better — fast package manager'
+name: 'better fast package manager'
 description: 'Install dependencies, run audit, and verify lockfile with better'
 author: 'Sardis'
 
@@ -61,9 +61,18 @@ runs:
         restore-keys: |
           better-${{ runner.os }}-
 
-    - name: Install better
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Build and install this action's better revision
       shell: bash
-      run: npm install -g better-npm
+      env:
+        BETTER_ACTION_PATH: ${{ github.action_path }}
+      run: |
+        BETTER_SOURCE=$(cd "$BETTER_ACTION_PATH/../../.." && pwd)
+        cargo build --locked --manifest-path "$BETTER_SOURCE/crates/Cargo.toml" -p better-core --release
+        npm install -g "$BETTER_SOURCE" --ignore-scripts
+        echo "BETTER_CORE_PATH=$BETTER_SOURCE/crates/target/release/better-core" >> "$GITHUB_ENV"
 
     - name: Run better ${{ inputs.command }}
       shell: bash
