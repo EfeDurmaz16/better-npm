@@ -9,16 +9,16 @@ use std::{
 };
 
 fn archive_for(index: u8) -> Vec<u8> {
-    let bytes = format!("fixture-{index}");
+    let name = ["prod", "transitive", "shared", "both", "dev"][index as usize - 1];
+    let mut manifest = json!({"name":name,"version":"1.0.0","bin":{format!("{name}-cmd"):"cli.js"}});
+    if index == 1 { manifest["scripts"] = json!({"install":"node-gyp rebuild"}); }
     let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     let mut archive = tar::Builder::new(encoder);
-    let mut header = tar::Header::new_gnu();
-    header.set_size(bytes.len() as u64);
-    header.set_mode(0o644);
-    header.set_cksum();
-    archive
-        .append_data(&mut header, "package/fixture", bytes.as_bytes())
-        .unwrap();
+    for (path, bytes) in [("package/package.json", manifest.to_string()), ("package/cli.js", "#!/usr/bin/env node\n".to_string())] {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64); header.set_mode(0o644); header.set_cksum();
+        archive.append_data(&mut header, path, bytes.as_bytes()).unwrap();
+    }
     archive.into_inner().unwrap().finish().unwrap()
 }
 
@@ -169,6 +169,7 @@ fn required_cache_miss_preserves_existing_install() {
         &hex,
     ))
     .unwrap();
+    fs::remove_file(tarball_path(&CasLayout::new(&root.join("cache")), &algo, &hex)).unwrap();
     let output = install(root, "--hoist", true, false);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stdout).contains("package not in cache"));
@@ -218,15 +219,6 @@ fn production_lifecycle_sets_child_environment_only() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     fixture(root);
-    let integrity = integrity_for(1);
-    let (algo, hex) = cas_key_from_integrity(&integrity).unwrap();
-    let pkg = unpacked_path(&CasLayout::new(&root.join("cache")), &algo, &hex).join("package");
-    fs::write(
-        pkg.join("package.json"),
-        json!({"name":"prod","version":"1.0.0","scripts":{"install":"node-gyp rebuild"}})
-            .to_string(),
-    )
-    .unwrap();
     fs::create_dir(root.join("tools")).unwrap();
     let npm = root.join("tools/npm");
     fs::write(
@@ -286,7 +278,7 @@ fn production_does_not_delete_a_custom_cache_inside_node_modules() {
 }
 
 #[test]
-fn corrupt_cache_markers_do_not_authorize_production_cleanup() {
+fn offline_repairs_missing_package_before_production_cleanup() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     fixture(root);
@@ -296,9 +288,8 @@ fn corrupt_cache_markers_do_not_authorize_production_cleanup() {
     let unpacked = unpacked_path(&CasLayout::new(&root.join("cache")), &algo, &hex);
     fs::remove_dir_all(unpacked.join("package")).unwrap();
     assert!(unpacked.join(".better_extracted").exists());
-    let output = install(root, "--hoist", true, false);
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("complete cached package"));
+    report(install(root, "--hoist", true, false));
+    assert!(unpacked.join("package/package.json").exists());
     assert!(root.join("node_modules/prod/package.json").exists());
-    assert!(root.join("node_modules/dev/package.json").exists());
+    assert!(!root.join("node_modules/dev").exists());
 }

@@ -80,36 +80,10 @@ fn epoch_days_to_date(mut days: u64) -> (u64, u64, u64) {
 }
 
 /// Derive the CAS unpacked path for a package given its integrity string.
-fn cas_path_for_pkg(integrity: &str, cache_root: &Path) -> PathBuf {
-    // Parse algo/hex from ssri format "sha512-<base64>"
-    let layout = CasLayout {
-        tarballs_dir: cache_root.join("tarballs"),
-        unpacked_dir: cache_root.join("unpacked"),
-        tmp_dir: cache_root.join("tmp"),
-    };
-    if let Some(rest) = integrity.strip_prefix("sha512-") {
-        // base64 → hex
-        use sha2::{Digest, Sha256};
-        // We use the integrity string itself as a stable key (sha256 of it)
-        let mut h = Sha256::new();
-        h.update(rest.as_bytes());
-        let hex = format!("{:x}", h.finalize());
-        unpacked_path(&layout, "sha512", &hex)
-    } else if let Some(rest) = integrity.strip_prefix("sha1-") {
-        let layout2 = CasLayout {
-            tarballs_dir: cache_root.join("tarballs"),
-            unpacked_dir: cache_root.join("unpacked"),
-            tmp_dir: cache_root.join("tmp"),
-        };
-        unpacked_path(&layout2, "sha1", rest)
-    } else {
-        // Fallback: derive from integrity string hash
-        use sha2::{Digest, Sha256};
-        let mut h = Sha256::new();
-        h.update(integrity.as_bytes());
-        let hex = format!("{:x}", h.finalize());
-        unpacked_path(&layout, "sha512", &hex)
-    }
+fn cas_path_for_pkg(integrity: &str, cache_root: &Path) -> Result<PathBuf, String> {
+    let identity = crate::integrity::Integrity::parse(integrity)?;
+    let layout = CasLayout::new(cache_root);
+    Ok(unpacked_path(&layout, identity.algorithm(), &identity.hex_digest()).join("package"))
 }
 
 // ---------------------------------------------------------------------------
@@ -129,8 +103,9 @@ pub fn write_lazy_manifest(
     let entries: Vec<LazyPackageEntry> = packages
         .iter()
         .map(|pkg| {
-            let cas_path = cas_path_for_pkg(&pkg.integrity, cache_root);
-            LazyPackageEntry {
+            let cas_path = cas_path_for_pkg(&pkg.integrity, cache_root)
+                .map_err(|e| format!("lazy: invalid integrity for {}: {}", pkg.name, e))?;
+            Ok(LazyPackageEntry {
                 name: pkg.name.clone(),
                 version: pkg.version.clone(),
                 rel_path: pkg.rel_path.clone(),
@@ -138,9 +113,9 @@ pub fn write_lazy_manifest(
                 integrity: pkg.integrity.clone(),
                 has_scripts: false, // detect from CAS package.json in a future pass
                 bin: HashMap::new(),
-            }
+            })
         })
-        .collect();
+        .collect::<Result<_, String>>()?;
 
     let manifest = LazyManifest {
         version: 1,
@@ -223,7 +198,7 @@ mod tests {
                 version: "4.17.21".into(),
                 rel_path: "node_modules/lodash".into(),
                 resolved_url: "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz".into(),
-                integrity: "sha512-abc123".into(),
+                integrity: format!("sha512-{}", "A".repeat(86) + "=="),
             },
         ];
 
@@ -283,7 +258,7 @@ mod tests {
             version: "4.17.21".into(),
             rel_path: "node_modules/lodash".into(),
             cas_path: "/cache/unpacked/sha512/abc123/package".into(),
-            integrity: "sha512-abc123".into(),
+            integrity: format!("sha512-{}", "A".repeat(86) + "=="),
             has_scripts: false,
             bin: HashMap::new(),
         };
@@ -297,8 +272,8 @@ mod tests {
     #[test]
     fn test_cas_path_for_pkg_sha512() {
         let cache = std::path::Path::new("/cache");
-        let path = cas_path_for_pkg("sha512-somebase64hash==", cache);
-        // Should be under /cache/unpacked/sha512/
+        let path = cas_path_for_pkg(&format!("sha512-{}==", "A".repeat(86)), cache).unwrap();
+        // Should be under /cache/store/unpacked/sha512/
         assert!(path.to_string_lossy().contains("unpacked"));
         assert!(path.to_string_lossy().contains("sha512"));
     }
@@ -306,7 +281,7 @@ mod tests {
     #[test]
     fn test_cas_path_for_pkg_sha1() {
         let cache = std::path::Path::new("/cache");
-        let path = cas_path_for_pkg("sha1-abc123", cache);
+        let path = cas_path_for_pkg("sha1-AAAAAAAAAAAAAAAAAAAAAAAAAAA=", cache).unwrap();
         assert!(path.to_string_lossy().contains("sha1"));
     }
 
