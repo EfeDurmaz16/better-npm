@@ -24,6 +24,31 @@ impl Default for ArtifactLimits {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct FetchOptions {
+    pub network_jobs: usize,
+    pub extract_jobs: usize,
+    pub limits: ArtifactLimits,
+}
+impl Default for FetchOptions {
+    fn default() -> Self {
+        let jobs = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 64);
+        Self { network_jobs: jobs, extract_jobs: jobs, limits: ArtifactLimits::default() }
+    }
+}
+impl FetchOptions {
+    pub fn validate(&self) -> Result<(), String> {
+        if !(1..=256).contains(&self.network_jobs) || !(1..=256).contains(&self.extract_jobs) {
+            return Err("Fetch worker counts must be between 1 and 256".into());
+        }
+        if self.limits.compressed_bytes == 0 || self.limits.expanded_bytes == 0
+            || self.limits.entries == 0 || self.limits.metadata_bytes == 0 {
+            return Err("Archive resource limits must be positive integers".into());
+        }
+        Ok(())
+    }
+}
+
 /// Copy to private staging with constant application buffer memory. Observe each
 /// chunk for incremental integrity verification; never publish before finalizing it.
 pub fn stream_to_staging<R: Read, W: Write>(

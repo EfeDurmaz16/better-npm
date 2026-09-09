@@ -226,6 +226,7 @@ pub struct ResolveResult {
 
 #[derive(Clone)]
 pub struct FetchResult {
+    pub metrics: crate::fetch_scheduler::FetchMetrics,
     pub packages_fetched: u64,
     pub packages_cached: u64,
     pub bytes_downloaded: u64,

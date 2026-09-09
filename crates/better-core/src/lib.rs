@@ -79,6 +79,7 @@ pub mod integrity;
 pub mod artifact_cache;
 pub mod fetch;
 pub mod fetch_pipeline;
+pub mod fetch_scheduler;
 mod transport;
 pub use fetch::*;
 
