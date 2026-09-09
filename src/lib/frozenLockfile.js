@@ -61,6 +61,20 @@ export async function verifyFrozenLockfile(projectRoot, options = {}) {
   if (lockfileInfo.type === "npm") {
     const lock = JSON.parse(lockfileInfo.raw);
     const packages = lock.packages ?? {};
+    // npm v2/v3 records the declared specs separately from resolved versions.
+    // Compare that snapshot directly; a package's presence cannot prove freshness.
+    const root = packages[""];
+    if (root && typeof root === "object") {
+      for (const group of ["dependencies", "devDependencies", "optionalDependencies"]) {
+        const declared = pkg[group] ?? {};
+        const locked = root[group] ?? {};
+        for (const name of new Set([...Object.keys(declared), ...Object.keys(locked)])) {
+          if (declared[name] !== locked[name]) {
+            errors.push(`Package '${name}' ${group} spec differs from the lockfile root snapshot. Run 'npm install' to update.`);
+          }
+        }
+      }
+    }
 
     for (const [name, range] of Object.entries(declaredDeps)) {
       const lockKey = `node_modules/${name}`;

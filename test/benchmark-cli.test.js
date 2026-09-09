@@ -79,6 +79,8 @@ test("benchmark command emits comparative JSON report", async (t) => {
     assert.equal(report.engine, "pm");
     assert.ok(report.variants.raw);
     assert.ok(report.variants.betterMinimal);
+    assert.equal(report.variants.raw.cold[0].outputVerified, true);
+    assert.equal(report.variants.betterMinimal.cold[0].outputVerified, true);
     assert.equal(report.variants.raw.cold.length, 1);
     assert.equal(report.variants.raw.warm.length, 1);
     assert.equal(report.variants.betterMinimal.cold.length, 1);
@@ -152,6 +154,8 @@ test("benchmark command works with engine=better on npm lockfile project", async
     assert.equal(report.pm.selected, "npm");
     assert.ok(report.variants.raw);
     assert.ok(report.variants.betterMinimal);
+    assert.equal(report.variants.raw.cold[0].outputVerified, true);
+    assert.equal(report.variants.betterMinimal.cold[0].outputVerified, true);
   } finally {
     await rmrf(dir);
   }

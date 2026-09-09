@@ -709,6 +709,11 @@ Workspace options:
   if (engine === "better" && !values.experimental) {
     throw new Error("Engine 'better' is experimental. Re-run with --experimental.");
   }
+  // Use the same effective layout for cache identity and native execution.
+  const nodeLayout = values.strict ? "strict" : values.hoist ? "hoist" : values["node-layout"] ?? "hoist";
+  if (engine === "better" && nodeLayout !== "strict" && nodeLayout !== "hoist") {
+    throw new Error(`Unknown --node-layout '${nodeLayout}'. Expected hoist|strict.`);
+  }
   const yarnBerry = pm === "yarn" && (await exists(path.join(projectRoot, ".yarnrc.yml")));
 
   if (engine === "better") {
@@ -962,14 +967,16 @@ Workspace options:
       scriptsMode: engine === "better" ? (values.scripts ?? "rebuild") : cacheScripts,
       frozen,
       production,
+      nodeLayout,
+      linkStrategy: values["link-strategy"] ?? "auto",
       cacheKeySalt
     });
     if (engine === "better") {
       reuseContext = derivedContext;
       reuseDecision = {
-        eligible: derivedContext?.decision?.eligible === true,
+        eligible: Boolean(derivedContext?.key),
         hit: false,
-        reason: derivedContext?.decision?.eligible === true ? "marker_check_pending" : (derivedContext?.decision?.reason ?? "ineligible"),
+        reason: derivedContext?.key ? "marker_check_pending" : (derivedContext?.decision?.reason ?? "ineligible"),
         key: derivedContext?.key ?? null,
         lockHash: derivedContext?.lockHash ?? null
       };
@@ -1277,13 +1284,6 @@ Workspace options:
         );
       }
       const started = Date.now();
-      // Determine node layout: --strict > --hoist > --node-layout > default (hoist)
-      const nodeLayout = values.strict
-        ? "strict"
-        : values.hoist
-          ? "hoist"
-          : values["node-layout"] ?? "hoist";
-
       betterEngine = await runBetterCoreInstall(corePath, projectRoot, {
         lockfile: path.join(projectRoot, "package-lock.json"),
         cacheRoot: layout.root,
@@ -1750,7 +1750,7 @@ Workspace options:
   if (engine === "better" && reuseContext?.key) {
     try {
       const markerPayload = {
-        version: 1,
+        version: 2,
         engine: "better",
         globalKey: reuseContext.key,
         lockHash: reuseContext.lockHash ?? null,

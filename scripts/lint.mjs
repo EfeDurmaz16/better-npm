@@ -44,11 +44,7 @@ function checkSyntax(filePath) {
 }
 
 function hasMergeMarkers(content) {
-  return (
-    content.includes("<<<<<<< ") ||
-    content.includes("=======\n") ||
-    content.includes(">>>>>>> ")
-  );
+  return /^(?:<{7} .+|={7}|>{7} .+)\r?$/m.test(content);
 }
 
 async function run() {
