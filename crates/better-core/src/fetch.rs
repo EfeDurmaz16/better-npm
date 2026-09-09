@@ -53,6 +53,9 @@ fn parse_package_entry(rel_path: &str, entry: &serde_json::Value) -> Result<Reso
     {
         return Err(format!("Native install does not support local resolution for '{}'; use npm install for this project", rel_path));
     }
+    if entry.get("inBundle").and_then(serde_json::Value::as_bool) == Some(true) {
+        return Err(format!("Native install does not support bundled lockfile entry '{}'; use npm install for this project", rel_path));
+    }
     let required_string = |field: &str| -> Result<String, String> {
         entry.get(field).and_then(serde_json::Value::as_str)
             .filter(|value| !value.is_empty())
