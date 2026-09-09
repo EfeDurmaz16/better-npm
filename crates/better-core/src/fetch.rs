@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::types::*;
-use crate::{extract_json_field, package_name_from_path, registry_for_package};
+use crate::{package_name_from_path, registry_for_package};
 
 // --- Install engine: resolve and fetch ---
 
@@ -11,7 +11,6 @@ use crate::{extract_json_field, package_name_from_path, registry_for_package};
 pub fn resolve_from_lockfile(lockfile_path: &Path) -> Result<ResolveResult, String> {
     let content = fs::read_to_string(lockfile_path).map_err(|e| e.to_string())?;
 
-    // Simple JSON parsing without serde
     let packages = parse_npm_lockfile(&content)?;
 
     Ok(ResolveResult {
@@ -21,142 +20,39 @@ pub fn resolve_from_lockfile(lockfile_path: &Path) -> Result<ResolveResult, Stri
 }
 
 fn parse_npm_lockfile(json: &str) -> Result<Vec<ResolvedPackage>, String> {
+    let lockfile: serde_json::Value = serde_json::from_str(json)
+        .map_err(|e| format!("Invalid package-lock.json: {}", e))?;
+    let entries = lockfile.get("packages").and_then(serde_json::Value::as_object)
+        .ok_or_else(|| "Lockfile 'packages' must be an object".to_string())?;
+
     let mut packages = Vec::new();
-
-    // Find the "packages" object
-    let packages_start = json
-        .find(r#""packages""#)
-        .ok_or_else(|| "Missing 'packages' field in lockfile".to_string())?;
-
-    let after_packages = &json[packages_start..];
-    let obj_start = after_packages
-        .find('{')
-        .ok_or_else(|| "Malformed packages object".to_string())?;
-
-    // Simple state machine to parse package entries
-    let packages_str = &after_packages[obj_start..];
-    let mut current_key = String::new();
-    let mut in_string = false;
-    let mut escape_next = false;
-    let mut brace_depth = 0i32;
-    let mut collecting_entry = false;
-    let mut entry_data = String::new();
-    // State for key tracking at depth 1:
-    // 0 = waiting for opening quote, 1 = reading key, 2 = key done (waiting for ':' then value)
-    let mut key_state = 0u8;
-
-    for ch in packages_str.chars() {
-        if escape_next {
-            if key_state == 1 {
-                current_key.push(ch);
-            } else if collecting_entry {
-                entry_data.push(ch);
-            }
-            escape_next = false;
-            continue;
-        }
-
-        if ch == '\\' && in_string {
-            escape_next = true;
-            if key_state == 1 {
-                current_key.push(ch);
-            } else if collecting_entry {
-                entry_data.push(ch);
-            }
-            continue;
-        }
-
-        if ch == '"' {
-            in_string = !in_string;
-
-            if brace_depth == 1 && !collecting_entry {
-                // Key tracking at depth 1
-                if key_state == 0 && in_string {
-                    // Opening quote of a key
-                    key_state = 1;
-                    current_key.clear();
-                } else if key_state == 1 && !in_string {
-                    // Closing quote of a key
-                    key_state = 2;
-                } else if key_state == 2 && in_string {
-                    // Opening quote of a string value at depth 1 — skip
-                } else if key_state == 2 && !in_string {
-                    // Closing quote of a string value at depth 1
-                }
-            } else if collecting_entry {
-                entry_data.push(ch);
-            }
-            continue;
-        }
-
-        if in_string {
-            if key_state == 1 {
-                current_key.push(ch);
-            } else if collecting_entry {
-                entry_data.push(ch);
-            }
-            continue;
-        }
-
-        // Not in string
-        if ch == '{' {
-            brace_depth += 1;
-            if brace_depth == 2 {
-                if !current_key.is_empty()
-                    && current_key.starts_with("node_modules/")
-                {
-                    collecting_entry = true;
-                    entry_data.clear();
-                }
-                key_state = 0;
-            }
-            if collecting_entry && brace_depth > 2 {
-                entry_data.push(ch);
-            }
-        } else if ch == '}' {
-            if collecting_entry && brace_depth == 2 {
-                // Parse this entry
-                if let Ok(pkg) = parse_package_entry(&current_key, &entry_data) {
-                    packages.push(pkg);
-                }
-                collecting_entry = false;
-                entry_data.clear();
-            } else if collecting_entry {
-                entry_data.push(ch);
-            }
-            brace_depth -= 1;
-            if brace_depth == 0 {
-                break;
-            }
-            if brace_depth == 1 {
-                key_state = 0; // Ready for next key
-            }
-        } else if ch == ',' && brace_depth == 1 && !collecting_entry {
-            key_state = 0; // Ready for next key after comma
-        } else if collecting_entry {
-            entry_data.push(ch);
+    for (rel_path, entry) in entries {
+        if rel_path.starts_with("node_modules/") {
+            packages.push(parse_package_entry(rel_path, entry)?);
         }
     }
-
     Ok(packages)
 }
 
-fn parse_package_entry(rel_path: &str, entry_json: &str) -> Result<ResolvedPackage, String> {
-    let name = extract_json_field(entry_json, "name")
-        .unwrap_or_else(|| package_name_from_path(rel_path));
-    let version = extract_json_field(entry_json, "version")
-        .ok_or_else(|| format!("Missing version for {}", rel_path))?;
-    let resolved = extract_json_field(entry_json, "resolved")
-        .ok_or_else(|| format!("Missing resolved URL for {}", rel_path))?;
-    let integrity = extract_json_field(entry_json, "integrity")
-        .ok_or_else(|| format!("Missing integrity for {}", rel_path))?;
-
+fn parse_package_entry(rel_path: &str, entry: &serde_json::Value) -> Result<ResolvedPackage, String> {
+    let entry = entry.as_object()
+        .ok_or_else(|| format!("Lockfile entry '{}' must be an object", rel_path))?;
+    let required_string = |field: &str| -> Result<String, String> {
+        entry.get(field).and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| format!("Lockfile entry '{}' requires a non-empty string '{}'", rel_path, field))
+    };
+    let name = match entry.get("name") {
+        None => package_name_from_path(rel_path),
+        Some(_) => required_string("name")?,
+    };
     Ok(ResolvedPackage {
         name,
-        version,
+        version: required_string("version")?,
         rel_path: rel_path.to_string(),
-        resolved_url: resolved,
-        integrity,
+        resolved_url: required_string("resolved")?,
+        integrity: required_string("integrity")?,
     })
 }
 
