@@ -2,6 +2,11 @@
 
 Date: 2026-02-06
 
+Historical measurements, not current performance evidence. These runs used different
+cache/script conditions and did not establish installed-output equivalence. The
+percentages below must not be presented as a fair cross-tool speed comparison.
+See [the current benchmark methodology](../benchmarks/README.md).
+
 ## Summary
 
 | Project | Comparison | Baseline | Better | Delta |
