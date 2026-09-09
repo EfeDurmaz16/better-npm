@@ -1,11 +1,33 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use better_core::{cas_key_from_integrity, tarball_path, unpacked_path, CasLayout};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha512};
 use std::{
     fs,
     path::Path,
     process::{Command, Output},
 };
+
+fn archive_for(index: u8) -> Vec<u8> {
+    let bytes = format!("fixture-{index}");
+    let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    let mut archive = tar::Builder::new(encoder);
+    let mut header = tar::Header::new_gnu();
+    header.set_size(bytes.len() as u64);
+    header.set_mode(0o644);
+    header.set_cksum();
+    archive
+        .append_data(&mut header, "package/fixture", bytes.as_bytes())
+        .unwrap();
+    archive.into_inner().unwrap().finish().unwrap()
+}
+
+fn integrity_for(index: u8) -> String {
+    format!(
+        "sha512-{}",
+        STANDARD.encode(Sha512::digest(archive_for(index)))
+    )
+}
 
 fn fixture(root: &Path) {
     let mut packages = serde_json::Map::new();
@@ -19,7 +41,7 @@ fn fixture(root: &Path) {
         .iter()
         .enumerate()
     {
-        let integrity = format!("sha512-{}", STANDARD.encode([i as u8 + 1; 64]));
+        let integrity = integrity_for(i as u8 + 1);
         let mut entry = json!({"version":"1.0.0", "resolved":format!("https://registry.npmjs.org/{name}/-/{name}-1.0.0.tgz"),"integrity":integrity});
         if *name == "dev" {
             entry["dev"] = json!(true);
@@ -45,7 +67,8 @@ fn fixture(root: &Path) {
         fs::write(unpacked.join(".better_extracted"), "").unwrap();
         let marker = tarball_path(&layout, &algo, &hex).with_extension("tgz.verified");
         fs::create_dir_all(marker.parent().unwrap()).unwrap();
-        fs::write(marker, "").unwrap();
+        fs::write(marker, better_core::integrity::VERIFIED_MARKER).unwrap();
+        fs::write(tarball_path(&layout, &algo, &hex), archive_for(i as u8 + 1)).unwrap();
     }
     fs::write(root.join("package.json"), packages[""].to_string()).unwrap();
     fs::write(
@@ -100,7 +123,7 @@ fn production_refreshes_both_layouts_and_preserves_full_lock() {
         assert!(root.join("node_modules/.bin/dev-cmd").exists());
         let lock = fs::read(root.join("better.lock")).unwrap();
         // Dev cache is unnecessary in production, including frozen installs.
-        let integrity = format!("sha512-{}", STANDARD.encode([5u8; 64]));
+        let integrity = integrity_for(5);
         let (algo, hex) = cas_key_from_integrity(&integrity).unwrap();
         fs::remove_dir_all(unpacked_path(
             &CasLayout::new(&root.join("cache")),
@@ -138,7 +161,7 @@ fn required_cache_miss_preserves_existing_install() {
     let root = dir.path();
     fixture(root);
     report(install(root, "--hoist", false, false));
-    let integrity = format!("sha512-{}", STANDARD.encode([1u8; 64]));
+    let integrity = integrity_for(1);
     let (algo, hex) = cas_key_from_integrity(&integrity).unwrap();
     fs::remove_dir_all(unpacked_path(
         &CasLayout::new(&root.join("cache")),
@@ -195,7 +218,7 @@ fn production_lifecycle_sets_child_environment_only() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     fixture(root);
-    let integrity = format!("sha512-{}", STANDARD.encode([1u8; 64]));
+    let integrity = integrity_for(1);
     let (algo, hex) = cas_key_from_integrity(&integrity).unwrap();
     let pkg = unpacked_path(&CasLayout::new(&root.join("cache")), &algo, &hex).join("package");
     fs::write(
@@ -268,7 +291,7 @@ fn corrupt_cache_markers_do_not_authorize_production_cleanup() {
     let root = dir.path();
     fixture(root);
     report(install(root, "--hoist", false, false));
-    let integrity = format!("sha512-{}", STANDARD.encode([1u8; 64]));
+    let integrity = integrity_for(1);
     let (algo, hex) = cas_key_from_integrity(&integrity).unwrap();
     let unpacked = unpacked_path(&CasLayout::new(&root.join("cache")), &algo, &hex);
     fs::remove_dir_all(unpacked.join("package")).unwrap();
