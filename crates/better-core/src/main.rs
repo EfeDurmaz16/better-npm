@@ -1,10 +1,11 @@
+use better_core::fetch_pipeline::{FetchOptions, ArtifactLimits};
 use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::time::Instant;
 
 use better_core::{
-    analyze, cas_key_from_integrity, create_bin_links, detect_lifecycle_scripts, fetch_packages, tarball_path, FetchResult,
+    analyze, cas_key_from_integrity, create_bin_links, detect_lifecycle_scripts, fetch_packages_with_options, tarball_path, FetchResult,
     ingest_to_file_cas, materialize_from_file_cas, materialize_tree, resolve_from_lockfile,
     run_lifecycle_scripts_for_install, scan_tree, try_clonefile_dir, unpacked_path, write_analyze_json,
     write_materialize_json, write_scan_json, CasLayout, JsonWriter, LifecycleRunResult,
@@ -70,6 +71,8 @@ enum Command {
         store_root: Option<PathBuf>,
         link_strategy: LinkStrategy,
         jobs: usize,
+        extraction_jobs: Option<usize>,
+        artifact_limits: ArtifactLimits,
         scripts: bool,
         dedup: bool,
         frozen: bool,
@@ -414,6 +417,8 @@ fn parse_args() -> (Command, GlobalFlags) {
         .map(|n| n.get().saturating_mul(2))
         .unwrap_or(8);
     jobs = jobs.clamp(1, 64);
+    let mut extraction_jobs = None;
+    let mut artifact_limits = ArtifactLimits::default();
     let mut profile = MaterializeProfile::Auto;
     let mut lockfile: Option<PathBuf> = None;
     let mut project_root: Option<PathBuf> = None;
@@ -513,6 +518,22 @@ fn parse_args() -> (Command, GlobalFlags) {
                 match LinkStrategy::from_arg(&args[i + 1]) {
                     Some(s) => link_strategy = s,
                     None => return (Command::Help { error: Some(format!("unknown --link-strategy '{}'", args[i + 1])) }, global_flags),
+                }
+                i += 2;
+            }
+            "--extract-jobs" | "--max-tarball-bytes" | "--max-expanded-bytes" | "--max-archive-entries" | "--max-archive-metadata-bytes" => {
+                let flag = args[i].as_str();
+                let value = args.get(i + 1).and_then(|v| v.parse::<u64>().ok());
+                let n = match value {
+                    Some(n) if n > 0 => n,
+                    _ => return (Command::Help { error: Some(format!("invalid {}: expected a positive integer", flag)) }, global_flags),
+                };
+                match flag {
+                    "--extract-jobs" => extraction_jobs = Some(n.min(256) as usize),
+                    "--max-tarball-bytes" => artifact_limits.compressed_bytes = n,
+                    "--max-expanded-bytes" => artifact_limits.expanded_bytes = n,
+                    "--max-archive-entries" => artifact_limits.entries = n,
+                    _ => artifact_limits.metadata_bytes = n,
                 }
                 i += 2;
             }
@@ -782,7 +803,7 @@ fn parse_args() -> (Command, GlobalFlags) {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
             let lf = lockfile.unwrap_or_else(|| pr.join("package-lock.json"));
             let cr = cache_root.unwrap_or_else(default_cache_root);
-            Command::Install { lockfile: lf, project_root: pr, cache_root: cr, store_root, link_strategy, jobs, scripts: scripts_flag, dedup, frozen, production, target_os, target_cpu, offline: offline_flag, json_progress, node_layout, sandbox: sandbox_flag, verify_provenance: verify_provenance_flag, require_provenance: require_provenance_flag, registry_failover: registry_failover_flag }
+            Command::Install { lockfile: lf, project_root: pr, cache_root: cr, store_root, link_strategy, jobs, extraction_jobs, artifact_limits, scripts: scripts_flag, dedup, frozen, production, target_os, target_cpu, offline: offline_flag, json_progress, node_layout, sandbox: sandbox_flag, verify_provenance: verify_provenance_flag, require_provenance: require_provenance_flag, registry_failover: registry_failover_flag }
         },
         "run" => {
             let pr = project_root.unwrap_or_else(|| PathBuf::from("."));
@@ -1120,6 +1141,9 @@ fn print_help(error: Option<String>) {
 
 Usage:
   better-core install [--lockfile <path>] [--project-root <path>] [--cache-root <path>] [--dedup] [--frozen] [--offline] [--production] [--os <os>] [--cpu <cpu>]
+  Install limits: --jobs N (network), --extract-jobs N (extraction, defaults to jobs)
+  Archive limits: --max-tarball-bytes N --max-expanded-bytes N --max-archive-entries N --max-archive-metadata-bytes N
+  Limits must be positive integers; native worker counts are capped at 256.
   better-core run <script> [--watch] [-- extra args...]
   better-core test|lint|build|start [--watch] [args...]
   better-core dev [args...]  (watch mode by default)
@@ -2389,7 +2413,7 @@ fn main() {
                 std::process::exit(1);
             }
         },
-        Command::Install { lockfile, project_root, cache_root, store_root, link_strategy, jobs: _, scripts, dedup, frozen, offline, production, target_os, target_cpu, json_progress, node_layout, sandbox, verify_provenance: vp, require_provenance: rp, registry_failover } => {
+        Command::Install { lockfile, project_root, cache_root, store_root, link_strategy, jobs, extraction_jobs, artifact_limits, scripts, dedup, frozen, offline, production, target_os, target_cpu, json_progress, node_layout, sandbox, verify_provenance: vp, require_provenance: rp, registry_failover } => {
             let started = Instant::now();
 
             // Engine detection: identify which ecosystem this project uses
@@ -2501,6 +2525,7 @@ fn main() {
                     packages_fetched: 0,
                     packages_cached: selected_packages.len() as u64,
                     bytes_downloaded: 0,
+                    metrics: Default::default(),
                 }
             } else {
                 // Build registry chain for failover if requested
@@ -2512,7 +2537,7 @@ fn main() {
                 };
                 let _ = registry_chain; // chain available for future fetch integration
 
-                match fetch_packages(&selected_packages, &cache_root, Some(&npmrc)) {
+                match fetch_packages_with_options(&selected_packages, &cache_root, Some(&npmrc), &FetchOptions { network_jobs: jobs, extract_jobs: extraction_jobs.unwrap_or(jobs), limits: artifact_limits }) {
                     Ok(r) => {
                         progress.finish_fetch();
                         r
@@ -2890,6 +2915,16 @@ fn main() {
             w.key("packagesFetched"); w.value_u64(fetch_result.packages_fetched);
             w.key("packagesCached"); w.value_u64(fetch_result.packages_cached);
             w.key("bytesDownloaded"); w.value_u64(fetch_result.bytes_downloaded);
+            w.key("fetchMetrics"); w.begin_object();
+            w.key("networkJobs"); w.value_u64(fetch_result.metrics.network_jobs as u64);
+            w.key("extractJobs"); w.value_u64(fetch_result.metrics.extract_jobs as u64);
+            w.key("queueCapacity"); w.value_u64(fetch_result.metrics.queue_capacity as u64);
+            w.key("peakPreparing"); w.value_u64(fetch_result.metrics.peak_preparing as u64);
+            w.key("peakExtracting"); w.value_u64(fetch_result.metrics.peak_extracting as u64);
+            w.key("prepareMicros"); w.value_u64(fetch_result.metrics.prepare_micros as u64);
+            w.key("extractMicros"); w.value_u64(fetch_result.metrics.extract_micros as u64);
+            w.key("backpressureMicros"); w.value_u64(fetch_result.metrics.backpressure_micros as u64);
+            w.end_object();
             w.key("files"); w.value_u64(total_files);
             w.key("directories"); w.value_u64(total_dirs);
             w.key("symlinks"); w.value_u64(total_symlinks);
