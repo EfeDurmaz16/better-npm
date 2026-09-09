@@ -11,23 +11,20 @@ use crate::{package_name_from_path, registry_for_package};
 pub fn resolve_from_lockfile(lockfile_path: &Path) -> Result<ResolveResult, String> {
     let content = fs::read_to_string(lockfile_path).map_err(|e| e.to_string())?;
 
-    let packages = parse_npm_lockfile(&content)?;
-
-    Ok(ResolveResult {
-        packages,
-        lockfile_version: 3,
-    })
+    parse_npm_lockfile(&content)
 }
 
-fn parse_npm_lockfile(json: &str) -> Result<Vec<ResolvedPackage>, String> {
+fn parse_npm_lockfile(json: &str) -> Result<ResolveResult, String> {
     let lockfile: serde_json::Value = serde_json::from_str(json)
         .map_err(|e| format!("Invalid package-lock.json: {}", e))?;
     let entries = lockfile.get("packages").and_then(serde_json::Value::as_object)
         .ok_or_else(|| "Lockfile 'packages' must be an object".to_string())?;
 
     let mut packages = Vec::new();
+    let mut root_selection = None;
     for (rel_path, entry) in entries {
         if rel_path.is_empty() {
+            root_selection = Some(parse_selection(rel_path, entry)?);
             if entry.get("workspaces").is_some_and(|value| value != &serde_json::json!([])) {
                 return Err("Native install does not support root workspaces; use npm install for this project".to_string());
             }
@@ -38,7 +35,7 @@ fn parse_npm_lockfile(json: &str) -> Result<Vec<ResolvedPackage>, String> {
         }
         packages.push(parse_package_entry(rel_path, entry)?);
     }
-    Ok(packages)
+    Ok(ResolveResult { packages, root_selection, lockfile_version: 3 })
 }
 
 fn parse_package_entry(rel_path: &str, entry: &serde_json::Value) -> Result<ResolvedPackage, String> {
@@ -70,12 +67,31 @@ fn parse_package_entry(rel_path: &str, entry: &serde_json::Value) -> Result<Reso
         Some(_) => required_string("name")?,
     };
     Ok(ResolvedPackage {
+        selection: parse_selection(rel_path, &serde_json::Value::Object(entry.clone()))?,
         name,
         version: required_string("version")?,
         rel_path: rel_path.to_string(),
         resolved_url: required_string("resolved")?,
         integrity: required_string("integrity")?,
     })
+}
+
+
+fn parse_selection(rel_path: &str, entry: &serde_json::Value) -> Result<PackageSelection, String> {
+    let mut fields = entry.as_object().cloned()
+        .ok_or_else(|| format!("Lockfile entry '{}' must be an object", rel_path))?;
+    // npm accepts a single platform string as well as an array. Preserve an
+    // explicit empty array separately from an absent restriction.
+    for key in ["os", "cpu", "libc"] {
+        if let Some(serde_json::Value::String(value)) = fields.get(key) {
+            fields.insert(key.to_owned(), serde_json::json!([value]));
+        }
+        if fields.get(key).is_some_and(serde_json::Value::is_null) {
+            return Err(format!("Lockfile entry '{}' has invalid '{}' selection metadata", rel_path, key));
+        }
+    }
+    serde_json::from_value(serde_json::Value::Object(fields))
+        .map_err(|e| format!("Lockfile entry '{}' has invalid selection metadata: {}", rel_path, e))
 }
 
 

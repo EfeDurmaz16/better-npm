@@ -236,6 +236,7 @@ mod tests {
 
         let pkgs = vec![
             crate::types::ResolvedPackage {
+                selection: Default::default(),
                 name: "lodash".into(),
                 version: "4.17.21".into(),
                 rel_path: "node_modules/lodash".into(),

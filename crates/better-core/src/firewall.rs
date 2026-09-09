@@ -452,6 +452,7 @@ mod tests {
 
     fn pkg(name: &str) -> ResolvedPackage {
         ResolvedPackage {
+            selection: Default::default(),
             name: name.to_string(),
             version: "1.0.0".to_string(),
             rel_path: format!("node_modules/{}", name),

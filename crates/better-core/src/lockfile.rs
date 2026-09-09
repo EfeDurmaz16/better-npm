@@ -1123,6 +1123,7 @@ mod tests {
     #[test]
     fn test_lock_package_from_resolved() {
         let rp = crate::types::ResolvedPackage {
+            selection: Default::default(),
             name: "chalk".into(),
             version: "5.0.0".into(),
             integrity: "sha512-test".into(),
@@ -1173,6 +1174,7 @@ mod tests {
     fn test_writer_from_resolved_packages_builds_writer() {
         let pkgs = vec![
             crate::types::ResolvedPackage {
+                selection: Default::default(),
                 name: "react".into(),
                 version: "18.2.0".into(),
                 integrity: "sha512-react".into(),
