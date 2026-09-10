@@ -47,6 +47,32 @@ pub fn acquire_resource_permit(cache_dir: &Path) -> Result<ResourcePermit, Strin
     }
 }
 
+/// Pushes a file's data to the device. On Apple platforms fsync(2) does not drain the
+/// drive cache (F_FULLFSYNC costs milliseconds and the drive serializes it); ordering
+/// comes from `barrier`. Elsewhere this is a full fsync.
+pub(crate) fn push(file: &File) -> std::io::Result<()> {
+    #[cfg(target_vendor = "apple")]
+    {
+        use std::os::fd::AsRawFd;
+        if unsafe { libc::fsync(file.as_raw_fd()) } == -1 { return Err(std::io::Error::last_os_error()); }
+        Ok(())
+    }
+    #[cfg(not(target_vendor = "apple"))]
+    { file.sync_all() }
+}
+
+/// Every write pushed before this call reaches stable storage before any later write.
+pub(crate) fn barrier(file: &File) -> std::io::Result<()> {
+    #[cfg(target_vendor = "apple")]
+    {
+        use std::os::fd::AsRawFd;
+        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_BARRIERFSYNC) } == -1 { return Err(std::io::Error::last_os_error()); }
+        Ok(())
+    }
+    #[cfg(not(target_vendor = "apple"))]
+    { file.sync_all() }
+}
+
 /// Small retained archives still undergo full SRI verification. Their bounded
 /// hash work avoids additional slot-file operations; worker counts bound their
 /// concurrency. Reserve the shared budget for larger hashes/extraction.
@@ -152,7 +178,8 @@ impl ArtifactCache {
     /// The source must be in a private sibling staging directory on this volume.
     pub fn publish_tarball(&self, source: &Path, verify: impl FnOnce(&Path) -> Result<(), String>) -> Result<(), String> {
         verify(source)?;
-        File::open(source).and_then(|f| f.sync_all()).map_err(|e| e.to_string())?;
+        // Every use re-verifies SRI, so a torn tarball is refetched, never trusted.
+        File::open(source).and_then(|f| push(&f)).map_err(|e| e.to_string())?;
         fs::rename(source, &self.tarball).map_err(|e| format!("Cannot publish tarball: {e}"))?;
         fs::write(self.tarball.with_extension("tgz.verified"), MARKER_VERSION).map_err(|e| e.to_string())
     }
@@ -169,7 +196,9 @@ impl ArtifactCache {
         crate::artifact_inventory::write(&candidate)?;
         use std::io::Write;
         let mut file = File::create_new(&marker).map_err(|e| e.to_string())?;
-        file.write_all(MARKER_VERSION.as_bytes()).and_then(|_| file.sync_all()).map_err(|e| e.to_string())?;
+        // The inventory barrier already ordered content ahead of this marker; a lost or
+        // empty marker only makes the entry look incomplete.
+        file.write_all(MARKER_VERSION.as_bytes()).and_then(|_| push(&file)).map_err(|e| e.to_string())?;
         // Only replacing an existing tree needs lifecycle exclusion. New
         // content can publish while unrelated materializers retain read leases.
         let _lifecycle = if self.unpacked.exists() { Some(lifecycle_lock(&self.cache_dir, false)?) } else { None };
