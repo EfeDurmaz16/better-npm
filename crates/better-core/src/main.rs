@@ -1581,6 +1581,9 @@ fn main() {
         if let Err(error) = result { eprintln!("state-lock: {error}"); std::process::exit(1); }
         return;
     }
+    if helper_args.first().is_some_and(|arg| arg == "substrate") {
+        std::process::exit(better_core::substrate::cli(&helper_args[1..]));
+    }
     let (command, global_flags) = parse_args();
     let json_mode = global_flags.json || global_flags.agent_mode;
     let agent_mode = global_flags.agent_mode;

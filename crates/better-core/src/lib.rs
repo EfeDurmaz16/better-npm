@@ -71,6 +71,8 @@ pub use dedupe::*;
 pub mod env;
 pub use env::*;
 
+pub mod substrate;
+
 pub mod cas;
 pub use cas::*;
 
