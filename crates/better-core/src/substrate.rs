@@ -39,7 +39,15 @@ impl Store {
 }
 
 #[cfg(target_os = "linux")]
-pub use linux::{attach, detach, seal};
+pub use linux::{attach, detach, seal, serve};
+
+pub const DEFAULT_SOCKET: &str = "/run/better/substrate.sock";
+
+/// One daemon request line. Unknown fields are rejected so the root protocol cannot grow silently.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+struct Request { op: String, project: PathBuf }
 
 #[cfg(target_os = "linux")]
 mod linux {
@@ -50,7 +58,8 @@ mod linux {
     use std::io::{Read, Write};
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::{Path, PathBuf};
 
     const OVERLAYFS_SUPER_MAGIC: i64 = 0x794c_7630;
@@ -69,14 +78,17 @@ mod linux {
     fn fd_path(fd: &OwnedFd) -> String { format!("/proc/self/fd/{}", fd.as_raw_fd()) }
     fn project_key(project: &Path) -> String { hex(&Sha256::digest(project.as_os_str().as_bytes())) }
 
-    /// Project files are user-controlled: never follow a symlink, never block on a FIFO.
-    fn read_user_file(path: &Path) -> Result<Option<Vec<u8>>, String> {
-        let file = match OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path) {
-            Ok(file) => file,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(format!("Cannot open {}: {e}", path.display())),
-        };
-        if !io(file.metadata(), "Cannot stat project file")?.is_file() { return Err(format!("{} is not a regular file", path.display())); }
+    /// Project files are user-controlled: opened relative to the verified project handle, never
+    /// through a symlink, never blocking on a FIFO.
+    fn read_user_file(dir: &OwnedFd, name: &str) -> Result<Option<Vec<u8>>, String> {
+        let c = cstr(name.as_bytes())?;
+        let fd = unsafe { libc::openat(dir.as_raw_fd(), c.as_ptr(), libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC) };
+        if fd == -1 {
+            let error = std::io::Error::last_os_error();
+            return if error.kind() == std::io::ErrorKind::NotFound { Ok(None) } else { Err(format!("Cannot open {name}: {error}")) };
+        }
+        let file = unsafe { File::from_raw_fd(fd) };
+        if !io(file.metadata(), "Cannot stat project file")?.is_file() { return Err(format!("{name} is not a regular file")); }
         let mut bytes = Vec::new();
         io(file.take(MAX_PROJECT_FILE).read_to_end(&mut bytes), "Cannot read project file")?;
         Ok(Some(bytes))
@@ -140,9 +152,18 @@ mod linux {
         if unsafe { libc::mount(s.as_ptr(), t.as_ptr(), f.as_ptr(), flags, d.as_ptr().cast()) } == -1 { Err(std::io::Error::last_os_error()) } else { Ok(()) }
     }
 
-    fn owner_of(path: &Path) -> Result<(u32, u32), String> {
-        let meta = io(fs::symlink_metadata(path), "Cannot stat project")?;
-        Ok((meta.uid(), meta.gid()))
+    /// A project directory opened without symlinks; its owner comes from that same handle.
+    struct Project { path: PathBuf, fd: OwnedFd, owner: (u32, u32) }
+
+    /// `caller` is the peer uid of a daemon request. Checking ownership on the handle that every
+    /// later step uses means a path swapped after the check cannot point root at another user.
+    fn open_project(project: &Path, caller: Option<u32>) -> Result<Project, String> {
+        let path = io(project.canonicalize(), "Cannot resolve project")?;
+        let fd = open_no_symlinks(&path)?;
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        check(unsafe { libc::fstat(fd.as_raw_fd(), &mut st) }, "Cannot stat project")?;
+        if caller.is_some_and(|uid| uid != 0 && uid != st.st_uid) { return Err("Project is not owned by the caller".into()); }
+        Ok(Project { path, fd, owner: (st.st_uid, st.st_gid) })
     }
 
     fn require_root() -> Result<(), String> {
@@ -152,9 +173,13 @@ mod linux {
 
     /// Builds the environment for `project`'s lockfile once. The erofs image is the single durable
     /// commit for everything it contains: one fsync, then an atomic rename into the store.
-    pub fn seal(store: &Store, project: &Path, cache_root: &Path) -> Result<Sealed, String> {
-        let owner = owner_of(project)?;
-        let lockfile = read_user_file(&project.join("package-lock.json"))?.ok_or("package-lock.json is required")?;
+    pub fn seal(store: &Store, project: &Path, cache_root: &Path, caller: Option<u32>) -> Result<Sealed, String> {
+        seal_project(store, &open_project(project, caller)?, cache_root)
+    }
+
+    fn seal_project(store: &Store, project: &Project, cache_root: &Path) -> Result<Sealed, String> {
+        let owner = project.owner;
+        let lockfile = read_user_file(&project.fd, "package-lock.json")?.ok_or("package-lock.json is required")?;
         let id = env_id(&lockfile, owner);
         let _lock = lock(store, &id)?;
         let image = store.image(&id);
@@ -167,10 +192,10 @@ mod linux {
         built.map(|()| Sealed { id, image, reused: false })
     }
 
-    fn build(project: &Path, lockfile: &[u8], staging: &Path, cache_root: &Path, owner: (u32, u32), image: &Path) -> Result<(), String> {
+    fn build(project: &Project, lockfile: &[u8], staging: &Path, cache_root: &Path, owner: (u32, u32), image: &Path) -> Result<(), String> {
         io(fs::write(staging.join("package-lock.json"), lockfile), "Cannot stage lockfile")?;
         for name in ["package.json", ".npmrc"] {
-            if let Some(bytes) = read_user_file(&project.join(name))? { io(fs::write(staging.join(name), bytes), "Cannot stage project file")?; }
+            if let Some(bytes) = read_user_file(&project.fd, name)? { io(fs::write(staging.join(name), bytes), "Cannot stage project file")?; }
         }
         let (os, cpu) = crate::native_install_target();
         let jobs = std::thread::available_parallelism().map(|n| n.get().saturating_mul(2)).unwrap_or(8).clamp(1, 64);
@@ -198,18 +223,17 @@ mod linux {
     /// Mounts the sealed environment at `project/node_modules` with a private writable upper.
     /// Every user-owned path is opened O_NOFOLLOW and mounted through /proc/self/fd, so swapping
     /// a directory for a symlink cannot make root mount or write anywhere else.
-    pub fn attach(store: &Store, project: &Path, cache_root: &Path) -> Result<Attached, String> {
+    pub fn attach(store: &Store, project: &Path, cache_root: &Path, caller: Option<u32>) -> Result<Attached, String> {
         require_root()?;
-        let project = io(project.canonicalize(), "Cannot resolve project")?;
-        let sealed = seal(store, &project, cache_root)?;
-        let owner = owner_of(&project)?;
-        let root = open_no_symlinks(&project)?;
-        let target = dir_at(&root, "node_modules", owner)?;
+        let project = open_project(project, caller)?;
+        let sealed = seal_project(store, &project, cache_root)?;
+        let (root, owner) = (&project.fd, project.owner);
+        let target = dir_at(root, "node_modules", owner)?;
         if fs_type(&target)? == OVERLAYFS_SUPER_MAGIC { return Err("node_modules is already attached".into()); }
         if io(fs::read_dir(fd_path(&target)), "Cannot list node_modules")?.next().is_some() {
             return Err("node_modules is not empty; remove it before attaching".into());
         }
-        let state = dir_at(&root, STATE_DIR, owner)?;
+        let state = dir_at(root, STATE_DIR, owner)?;
         let (upper, work) = (dir_at(&state, "upper", owner)?, dir_at(&state, "work", owner)?);
         let _guard = lock(store, &sealed.id)?;
         let lower = store.lower(&sealed.id);
@@ -227,8 +251,8 @@ mod linux {
         io(fs::create_dir_all(&refs), "Cannot create refs")?;
         // Record before mounting, so a mounted overlay always has a record detach can find.
         io(state_file(&state, "id", true).and_then(|mut f| f.write_all(sealed.id.as_bytes())), "Cannot record environment")?;
-        let reference = refs.join(project_key(&project));
-        io(fs::write(&reference, project.as_os_str().as_bytes()), "Cannot record attachment")?;
+        let reference = refs.join(project_key(&project.path));
+        io(fs::write(&reference, project.path.as_os_str().as_bytes()), "Cannot record attachment")?;
         // The overlay mount stays inside the lock: the kernel serializes mounts per namespace anyway,
         // and queueing on the lock measured faster at width 100 than contending for that rwsem.
         // The upper belongs to one agent and is discarded at detach, so skipping its syncs loses nothing.
@@ -241,20 +265,19 @@ mod linux {
             let _ = fs::remove_file(format!("{}/id", fd_path(&state)));
             return Err(format!("Cannot mount overlay: {e}"));
         }
-        Ok(Attached { id: sealed.id, target: project.join("node_modules"), sealed_now: !sealed.reused })
+        Ok(Attached { id: sealed.id, target: project.path.join("node_modules"), sealed_now: !sealed.reused })
     }
 
     /// Unmounts the overlay, discards the private upper, and releases the shared lower when unused.
-    pub fn detach(store: &Store, project: &Path) -> Result<String, String> {
+    pub fn detach(store: &Store, project: &Path, caller: Option<u32>) -> Result<String, String> {
         require_root()?;
-        let project = io(project.canonicalize(), "Cannot resolve project")?;
-        let root = open_no_symlinks(&project)?;
-        let owner = owner_of(&project)?;
-        let state = dir_at(&root, STATE_DIR, owner)?;
+        let project = open_project(project, caller)?;
+        let (root, owner) = (&project.fd, project.owner);
+        let state = dir_at(root, STATE_DIR, owner)?;
         let mut id = String::new();
         io(state_file(&state, "id", false).and_then(|f| f.take(64).read_to_string(&mut id)), "Not attached")?;
         if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) { return Err("Corrupt attachment record".into()); }
-        let target = dir_at(&root, "node_modules", owner)?;
+        let target = dir_at(root, "node_modules", owner)?;
         if fs_type(&target)? == OVERLAYFS_SUPER_MAGIC {
             let path = cstr(fd_path(&target).as_bytes())?;
             check(unsafe { libc::umount2(path.as_ptr(), libc::MNT_DETACH) }, "Cannot unmount overlay")?;
@@ -267,7 +290,7 @@ mod linux {
             io(removed, "Cannot discard upper")?;
         }
         let _lock = lock(store, &id)?;
-        let _ = fs::remove_file(store.refs(&id).join(project_key(&project)));
+        let _ = fs::remove_file(store.refs(&id).join(project_key(&project.path)));
         if fs::read_dir(store.refs(&id)).map(|mut d| d.next().is_none()).unwrap_or(true) {
             let lower = cstr(store.lower(&id).as_os_str().as_bytes())?;
             unsafe { libc::umount2(lower.as_ptr(), 0) }; // EBUSY means another attach raced in; keep it.
@@ -275,11 +298,75 @@ mod linux {
         Ok(id)
     }
 
+    const MAX_CLIENTS: usize = 512;
+    const MAX_REQUEST: u64 = 4096;
+
+    /// Root daemon: agents attach without sudo and without a process per mount. Each request is
+    /// authorized by the peer uid (SO_PEERCRED) against the handle the work then uses.
+    pub fn serve(store: Store, socket: &Path, cache_root: PathBuf) -> Result<(), String> {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::{atomic::{AtomicUsize, Ordering}, Arc};
+        require_root()?;
+        io(fs::create_dir_all(socket.parent().ok_or("Invalid socket path")?), "Cannot create socket dir")?;
+        let _ = fs::remove_file(socket);
+        let listener = io(UnixListener::bind(socket), "Cannot bind socket")?;
+        // Any local user may connect; authorization is per request, by project ownership.
+        io(fs::set_permissions(socket, fs::Permissions::from_mode(0o666)), "Cannot open socket to users")?;
+        let shared = Arc::new((store, cache_root, AtomicUsize::new(0)));
+        for stream in listener.incoming().flatten() {
+            let shared = Arc::clone(&shared);
+            std::thread::spawn(move || {
+                let (store, cache, active) = &*shared;
+                // Bounded, so a flood of idle connections cannot exhaust root's threads.
+                if active.fetch_add(1, Ordering::SeqCst) < MAX_CLIENTS { let _ = handle(&stream, store, cache); } else {
+                    let mut out = &stream;
+                    let _ = writeln!(out, "{}", super::reply("request", Err("Daemon busy".into()), std::time::Instant::now()));
+                }
+                active.fetch_sub(1, Ordering::SeqCst);
+            });
+        }
+        Ok(())
+    }
+
+    fn handle(stream: &UnixStream, store: &Store, cache: &Path) -> std::io::Result<()> {
+        use std::io::BufRead;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+        stream.set_write_timeout(Some(std::time::Duration::from_secs(10)))?;
+        let caller = peer_uid(stream)?;
+        let mut line = String::new();
+        std::io::BufReader::new(stream.take(MAX_REQUEST)).read_line(&mut line)?;
+        let started = std::time::Instant::now();
+        let reply = match serde_json::from_str::<super::Request>(&line) {
+            Ok(request) => super::reply(&request.op, super::dispatch(&request.op, store, &request.project, cache, Some(caller)), started),
+            Err(e) => super::reply("request", Err(format!("Bad request: {e}")), started),
+        };
+        let mut out = stream;
+        writeln!(out, "{reply}")
+    }
+
+    fn peer_uid(stream: &UnixStream) -> std::io::Result<u32> {
+        let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
+        let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        let r = unsafe { libc::getsockopt(stream.as_raw_fd(), libc::SOL_SOCKET, libc::SO_PEERCRED, (&mut cred as *mut libc::ucred).cast(), &mut len) };
+        if r == -1 { Err(std::io::Error::last_os_error()) } else { Ok(cred.uid) }
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
 
         fn me() -> (u32, u32) { unsafe { (libc::geteuid(), libc::getegid()) } }
+
+        #[test]
+        fn daemon_callers_only_reach_their_own_projects() {
+            let temp = tempfile::tempdir().unwrap();
+            let (uid, _) = me();
+            assert!(open_project(temp.path(), None).is_ok());
+            assert!(open_project(temp.path(), Some(uid)).is_ok());
+            assert!(open_project(temp.path(), Some(0)).is_ok(), "root may act for anyone");
+            let err = open_project(temp.path(), Some(uid.wrapping_add(1))).err().unwrap();
+            assert!(err.contains("not owned by the caller"), "{err}");
+        }
 
         #[test]
         fn attach_state_never_follows_symlinks() {
@@ -294,16 +381,19 @@ mod linux {
             std::os::unix::fs::symlink(elsewhere.join("victim"), temp.path().join("state/id")).unwrap();
             assert!(state_file(&state, "id", true).is_err(), "a planted id symlink must not be written through");
             assert!(!elsewhere.join("victim").exists());
-            assert!(read_user_file(&temp.path().join("state/id")).is_err());
-            assert!(read_user_file(&temp.path().join("absent")).unwrap().is_none());
+            assert!(read_user_file(&state, "id").is_err());
+            assert!(read_user_file(&root, "absent").unwrap().is_none());
         }
     }
 }
 
-/// `better-core substrate <seal|attach|detach> --project-root P [--store S] [--cache-root C]`, one JSON line.
+/// `better-core substrate <seal|attach|detach> --project-root P` prints one JSON line; as root it
+/// acts directly, otherwise it asks the daemon. `better-core substrate serve` runs the daemon.
+/// Flags: --store S, --cache-root C, --socket PATH.
 pub fn cli(args: &[std::ffi::OsString]) -> i32 {
+    let started = std::time::Instant::now();
     let action = args.first().and_then(|a| a.to_str()).unwrap_or("").to_string();
-    let (mut project, mut store, mut cache) = (None, PathBuf::from(DEFAULT_STORE), None);
+    let (mut project, mut store, mut cache, mut socket) = (None, PathBuf::from(DEFAULT_STORE), None, PathBuf::from(DEFAULT_SOCKET));
     let mut rest = args.iter().skip(1);
     while let Some(flag) = rest.next() {
         let value = rest.next().map(PathBuf::from);
@@ -311,45 +401,67 @@ pub fn cli(args: &[std::ffi::OsString]) -> i32 {
             (Some("--project-root"), Some(v)) => project = Some(v),
             (Some("--store"), Some(v)) => store = v,
             (Some("--cache-root"), Some(v)) => cache = Some(v),
-            _ => return fail(&action, "usage: substrate <seal|attach|detach> --project-root P [--store S] [--cache-root C]", 0.0, 2),
+            (Some("--socket"), Some(v)) => socket = v,
+            _ => return emit(reply(&action, Err("usage: substrate <seal|attach|detach|serve> [--project-root P] [--store S] [--cache-root C] [--socket PATH]".into()), started), 2),
         }
     }
-    let Some(project) = project else { return fail(&action, "--project-root is required", 0.0, 2) };
     let cache = cache.unwrap_or_else(|| store.join("cache"));
-    let started = std::time::Instant::now();
-    let result = Store::new(store).and_then(|store| run(&action, &store, &project, &cache));
-    let ms = started.elapsed().as_secs_f64() * 1000.0;
+    if action == "serve" {
+        return match Store::new(store).and_then(|store| serve_on(store, &socket, cache)) { Ok(()) => 0, Err(e) => emit(reply(&action, Err(e), started), 1) };
+    }
+    let Some(project) = project else { return emit(reply(&action, Err("--project-root is required".into()), started), 2) };
+    let value = if unsafe { libc::geteuid() } == 0 {
+        reply(&action, Store::new(store).and_then(|store| dispatch(&action, &store, &project, &cache, None)), started)
+    } else {
+        forward(&socket, &action, &project).unwrap_or_else(|e| reply(&action, Err(e), started))
+    };
+    let code = if value["ok"] == true { 0 } else { 1 };
+    emit(value, code)
+}
+
+fn emit(value: serde_json::Value, code: i32) -> i32 { println!("{value}"); code }
+
+/// The one JSON shape shared by the CLI and the daemon.
+fn reply(action: &str, result: Result<serde_json::Value, String>, started: std::time::Instant) -> serde_json::Value {
+    let (kind, ms) = (format!("better.substrate.{action}"), started.elapsed().as_secs_f64() * 1000.0);
     match result {
-        Ok(mut value) => {
-            value["ok"] = true.into();
-            value["kind"] = format!("better.substrate.{action}").into();
-            value["ms"] = ms.into();
-            println!("{value}");
-            0
-        }
-        Err(reason) => fail(&action, &reason, ms, 1),
+        Ok(mut value) => { value["ok"] = true.into(); value["kind"] = kind.into(); value["ms"] = ms.into(); value }
+        Err(reason) => serde_json::json!({"ok": false, "kind": kind, "reason": reason, "ms": ms}),
     }
 }
 
-fn fail(action: &str, reason: &str, ms: f64, code: i32) -> i32 {
-    println!("{}", serde_json::json!({"ok": false, "kind": format!("better.substrate.{action}"), "reason": reason, "ms": ms}));
-    code
+/// Sends one request to the daemon; its reply already carries ok, kind and ms.
+fn forward(socket: &Path, action: &str, project: &Path) -> Result<serde_json::Value, String> {
+    use std::io::{BufRead, Write};
+    let project = project.canonicalize().map_err(|e| format!("Cannot resolve project: {e}"))?;
+    let stream = std::os::unix::net::UnixStream::connect(socket).map_err(|e| format!("Cannot reach the substrate daemon at {}: {e}", socket.display()))?;
+    let mut out = &stream;
+    writeln!(out, "{}", serde_json::json!({"op": action, "project": project})).map_err(|e| format!("Cannot send request: {e}"))?;
+    let mut line = String::new();
+    std::io::BufReader::new(&stream).read_line(&mut line).map_err(|e| format!("No reply from daemon: {e}"))?;
+    serde_json::from_str(&line).map_err(|e| format!("Bad daemon reply: {e}"))
 }
 
 #[cfg(target_os = "linux")]
-fn run(action: &str, store: &Store, project: &Path, cache: &Path) -> Result<serde_json::Value, String> {
+fn dispatch(action: &str, store: &Store, project: &Path, cache: &Path, caller: Option<u32>) -> Result<serde_json::Value, String> {
     match action {
-        "seal" => seal(store, project, cache).map(|s| serde_json::json!({"id": s.id, "image": s.image, "reused": s.reused})),
-        "attach" => attach(store, project, cache).map(|a| serde_json::json!({"id": a.id, "target": a.target, "sealedNow": a.sealed_now})),
-        "detach" => detach(store, project).map(|id| serde_json::json!({"id": id})),
+        "seal" => seal(store, project, cache, caller).map(|s| serde_json::json!({"id": s.id, "image": s.image, "reused": s.reused})),
+        "attach" => attach(store, project, cache, caller).map(|a| serde_json::json!({"id": a.id, "target": a.target, "sealedNow": a.sealed_now})),
+        "detach" => detach(store, project, caller).map(|id| serde_json::json!({"id": id})),
         _ => Err("expected seal, attach or detach".into()),
     }
 }
 
+#[cfg(target_os = "linux")]
+fn serve_on(store: Store, socket: &Path, cache: PathBuf) -> Result<(), String> { serve(store, socket, cache) }
+
 #[cfg(not(target_os = "linux"))]
-fn run(_: &str, _: &Store, _: &Path, _: &Path) -> Result<serde_json::Value, String> {
+fn dispatch(_: &str, _: &Store, _: &Path, _: &Path, _: Option<u32>) -> Result<serde_json::Value, String> {
     Err("Sealed environments need Linux (erofs and overlayfs)".into())
 }
+
+#[cfg(not(target_os = "linux"))]
+fn serve_on(_: Store, _: &Path, _: PathBuf) -> Result<(), String> { Err("Sealed environments need Linux (erofs and overlayfs)".into()) }
 
 #[cfg(test)]
 mod tests {
@@ -362,6 +474,13 @@ mod tests {
         assert_eq!(a.len(), 64);
         assert_ne!(a, env_id(b"{\"lockfileVersion\":3} ", (1000, 1000)));
         assert_ne!(a, env_id(b"{\"lockfileVersion\":3}", (1001, 1000)));
+    }
+
+    #[test]
+    fn daemon_requests_accept_only_op_and_project() {
+        assert!(serde_json::from_str::<Request>(r#"{"op":"attach","project":"/p"}"#).is_ok());
+        assert!(serde_json::from_str::<Request>(r#"{"op":"attach","project":"/p","caller":0}"#).is_err(), "no caller override");
+        assert!(serde_json::from_str::<Request>(r#"{"op":"attach"}"#).is_err());
     }
 
     #[test]
