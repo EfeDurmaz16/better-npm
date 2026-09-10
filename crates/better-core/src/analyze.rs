@@ -109,6 +109,7 @@ pub fn run_materialize_tasks_parallel(
     strategy: LinkStrategy,
     jobs: usize,
     counters: &MaterializeCounters,
+    fresh: bool,
 ) -> Result<(), String> {
     if tasks.is_empty() {
         return Ok(());
@@ -118,7 +119,11 @@ pub fn run_materialize_tasks_parallel(
     let chunk_size = tasks.len().div_ceil(workers);
     pool.install(|| {
         tasks.par_chunks(chunk_size).try_for_each(|chunk| {
-            let mut staging = crate::MaterializeStaging::default();
+            let mut staging = if fresh {
+                crate::MaterializeStaging::fresh()
+            } else {
+                crate::MaterializeStaging::default()
+            };
             chunk.iter().try_for_each(|task| match task {
                 MaterializeTask::File(task) => {
                     counters.files.fetch_add(1, Ordering::Relaxed);
@@ -181,6 +186,19 @@ pub fn materialize_tree(
     strategy: LinkStrategy,
     jobs: usize,
     profile: MaterializeProfile,
+) -> Result<MaterializeReport, String> {
+    materialize_tree_with(src_root, dst_root, strategy, jobs, profile, false)
+}
+
+/// `fresh`: `dst_root` lies in a private tree this invocation created and no
+/// other writer touches until it is published.
+pub(crate) fn materialize_tree_with(
+    src_root: &Path,
+    dst_root: &Path,
+    strategy: LinkStrategy,
+    jobs: usize,
+    profile: MaterializeProfile,
+    fresh: bool,
 ) -> Result<MaterializeReport, String> {
     let total_start = Instant::now();
     let mut phases = PhaseDurations::default();
@@ -250,7 +268,7 @@ pub fn materialize_tree(
     // Link/copy phase
     let link_start = Instant::now();
     let counters = MaterializeCounters::default();
-    run_materialize_tasks_parallel(tasks, strategy, effective_jobs, &counters)?;
+    run_materialize_tasks_parallel(tasks, strategy, effective_jobs, &counters, fresh)?;
     let link_copy_elapsed = link_start.elapsed();
     phases.link_copy_ms = link_copy_elapsed.as_millis() as u64;
     phases.link_copy_us = link_copy_elapsed.as_micros() as u64;

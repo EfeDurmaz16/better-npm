@@ -489,12 +489,13 @@ pub fn run_install(options: InstallOptions) -> Result<String, InstallError> {
                         // verified unpacked tree when deduplication was not requested.
                     }
 
-                    match materialize_tree(
+                    match crate::analyze::materialize_tree_with(
                         &src_dir,
                         &dest_path,
                         link_strategy,
                         4,
                         MaterializeProfile::Auto,
+                        fresh_tree.is_some(),
                     ) {
                         Ok(report) => {
                             materialize_scan_work_us.fetch_add(
