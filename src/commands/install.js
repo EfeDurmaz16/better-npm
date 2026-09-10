@@ -12,6 +12,7 @@ import { scanTreeWithBestEngine } from "../lib/scanFacade.js";
 import { runCommand } from "../lib/spawn.js";
 import { detectPackageManager } from "../pm/detect.js";
 import { printJson, printText } from "../lib/output.js";
+import { attachSealedEnvironment } from "../lib/substrate.js";
 import { createParityContext, runParityCheck } from "../parity/checker.js";
 import { resolveInstallProjectRoot } from "../lib/projectRoot.js";
 import { getRuntimeConfig } from "../lib/config.js";
@@ -526,6 +527,7 @@ Workspace options:
       "measure-mode": { type: "string", default: "auto" }, // auto|fast|precise
       "measure-cache": { type: "string", default: "auto" }, // auto|on|off
       "global-cache": { type: "boolean", default: false },
+      substrate: { type: "boolean", default: false }, // attach a sealed environment (Linux daemon)
       "cache-mode": { type: "string", default: "strict" }, // strict|relaxed
       "cache-scripts": { type: "string", default: "rebuild" }, // rebuild|off
       "cache-read-only": { type: "boolean", default: false },
@@ -616,6 +618,7 @@ Workspace options:
     "measure-mode",
     "measure-cache",
     "global-cache",
+    "substrate",
     "cache-mode",
     "cache-scripts",
     "cache-read-only",
@@ -702,6 +705,30 @@ Workspace options:
     };
   } else if (workspaceResolved.ok) {
     workspaceResolved = { ...workspaceResolved, filtered: false };
+  }
+
+  // A sealed environment replaces the install: one daemon round trip, no cache work.
+  let substrate = null;
+  if (values.substrate === true || process.env.BETTER_SUBSTRATE === "1") {
+    const substrateStartedMs = Date.now();
+    const attached = await attachSealedEnvironment(projectRoot, { workspaces: workspaceResolved.ok });
+    if (attached.ok) {
+      const wallTimeMs = Date.now() - substrateStartedMs;
+      const substrateReport = {
+        ok: true,
+        kind: "better.install.report",
+        schemaVersion: 2,
+        projectRoot,
+        install: { backend: "substrate", wallTimeMs },
+        execution: { mode: "substrate_attach" },
+        substrate: { id: attached.id, target: attached.target, sealedNow: attached.sealedNow, reused: attached.reused, daemonMs: attached.ms }
+      };
+      if (values.json) printJson(substrateReport);
+      else printText(`better install: attached sealed environment ${attached.id.slice(0, 12)} in ${wallTimeMs} ms`);
+      return;
+    }
+    substrate = { attached: false, reason: attached.reason };
+    progress(`substrate attach unavailable (${attached.reason}); installing instead`);
   }
 
   if (offline) {
@@ -1534,6 +1561,7 @@ Workspace options:
       fsConcurrency: engine === "better" ? fsConcurrency : null
     },
     phases: phaseDurations,
+    ...(substrate ? { substrate } : {}),
     tuning: suggestFsConcurrencyTuning({ engine, fsConcurrency, globalMaterialize }),
     reuseDecision,
     cacheDecision: globalCacheDecision,

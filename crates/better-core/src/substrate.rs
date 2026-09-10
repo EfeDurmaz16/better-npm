@@ -68,7 +68,7 @@ mod linux {
     const MAX_PROJECT_FILE: u64 = 64 * 1024 * 1024;
 
     pub struct Sealed { pub id: String, pub image: PathBuf, pub reused: bool }
-    pub struct Attached { pub id: String, pub target: PathBuf, pub sealed_now: bool }
+    pub struct Attached { pub id: String, pub target: PathBuf, pub sealed_now: bool, pub reused: bool }
 
     fn io<T>(result: std::io::Result<T>, what: &str) -> Result<T, String> { result.map_err(|e| format!("{what}: {e}")) }
     fn check(r: i32, what: &str) -> Result<(), String> {
@@ -228,8 +228,16 @@ mod linux {
         let project = open_project(project, caller)?;
         let sealed = seal_project(store, &project, cache_root)?;
         let (root, owner) = (&project.fd, project.owner);
-        let target = dir_at(root, "node_modules", owner)?;
-        if fs_type(&target)? == OVERLAYFS_SUPER_MAGIC { return Err("node_modules is already attached".into()); }
+        let mut target = dir_at(root, "node_modules", owner)?;
+        if fs_type(&target)? == OVERLAYFS_SUPER_MAGIC {
+            // Installs repeat: either this environment is already here, or the lockfile moved on.
+            if attached_id(&project)? == sealed.id {
+                return Ok(Attached { id: sealed.id, target: project.path.join("node_modules"), sealed_now: false, reused: true });
+            }
+            drop(target);
+            detach_project(store, &project)?;
+            target = dir_at(root, "node_modules", owner)?;
+        }
         if io(fs::read_dir(fd_path(&target)), "Cannot list node_modules")?.next().is_some() {
             return Err("node_modules is not empty; remove it before attaching".into());
         }
@@ -265,18 +273,27 @@ mod linux {
             let _ = fs::remove_file(format!("{}/id", fd_path(&state)));
             return Err(format!("Cannot mount overlay: {e}"));
         }
-        Ok(Attached { id: sealed.id, target: project.path.join("node_modules"), sealed_now: !sealed.reused })
+        Ok(Attached { id: sealed.id, target: project.path.join("node_modules"), sealed_now: !sealed.reused, reused: false })
+    }
+
+    fn attached_id(project: &Project) -> Result<String, String> {
+        let state = dir_at(&project.fd, STATE_DIR, project.owner)?;
+        let mut id = String::new();
+        io(state_file(&state, "id", false).and_then(|f| f.take(64).read_to_string(&mut id)), "Not attached")?;
+        if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) { return Err("Corrupt attachment record".into()); }
+        Ok(id)
     }
 
     /// Unmounts the overlay, discards the private upper, and releases the shared lower when unused.
     pub fn detach(store: &Store, project: &Path, caller: Option<u32>) -> Result<String, String> {
         require_root()?;
-        let project = open_project(project, caller)?;
+        detach_project(store, &open_project(project, caller)?)
+    }
+
+    fn detach_project(store: &Store, project: &Project) -> Result<String, String> {
         let (root, owner) = (&project.fd, project.owner);
+        let id = attached_id(project)?;
         let state = dir_at(root, STATE_DIR, owner)?;
-        let mut id = String::new();
-        io(state_file(&state, "id", false).and_then(|f| f.take(64).read_to_string(&mut id)), "Not attached")?;
-        if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) { return Err("Corrupt attachment record".into()); }
         let target = dir_at(root, "node_modules", owner)?;
         if fs_type(&target)? == OVERLAYFS_SUPER_MAGIC {
             let path = cstr(fd_path(&target).as_bytes())?;
@@ -446,7 +463,7 @@ fn forward(socket: &Path, action: &str, project: &Path) -> Result<serde_json::Va
 fn dispatch(action: &str, store: &Store, project: &Path, cache: &Path, caller: Option<u32>) -> Result<serde_json::Value, String> {
     match action {
         "seal" => seal(store, project, cache, caller).map(|s| serde_json::json!({"id": s.id, "image": s.image, "reused": s.reused})),
-        "attach" => attach(store, project, cache, caller).map(|a| serde_json::json!({"id": a.id, "target": a.target, "sealedNow": a.sealed_now})),
+        "attach" => attach(store, project, cache, caller).map(|a| serde_json::json!({"id": a.id, "target": a.target, "sealedNow": a.sealed_now, "reused": a.reused})),
         "detach" => detach(store, project, caller).map(|id| serde_json::json!({"id": id})),
         _ => Err("expected seal, attach or detach".into()),
     }
