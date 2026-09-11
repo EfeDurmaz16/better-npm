@@ -84,10 +84,21 @@ pub fn write(root: &Path) -> Result<(), String> {
     let target = root.join(INVENTORY_FILE);
     if fs::symlink_metadata(&target).is_ok() { return Err("Archive contains reserved inventory file".into()); }
     let entries = inventory(root)?;
+    // Apple: push content with cheap fsync(2) so the barrier below orders it ahead of the
+    // marker. Linux fsync is a full flush per file (4x slower cold), so content stays
+    // unflushed there, as before; environment sealing is where that durability belongs.
+    #[cfg(target_vendor = "apple")]
+    for (path, entry) in &entries {
+        if matches!(entry, Entry::File { .. }) {
+            fs::File::open(root.join(path)).and_then(|file| crate::artifact_cache::push(&file)).map_err(|e| e.to_string())?;
+        }
+    }
     let file = fs::File::create_new(target).map_err(|e| e.to_string())?;
-    let mut writer = LimitedWriter { inner: file, remaining: MAX_INVENTORY_BYTES as usize };
+    // Buffered: serde_json otherwise issues one write(2) per token.
+    let mut writer = LimitedWriter { inner: std::io::BufWriter::new(file), remaining: MAX_INVENTORY_BYTES as usize };
     serde_json::to_writer(&mut writer, &entries).map_err(|e| e.to_string())?;
-    writer.flush().and_then(|_| writer.inner.sync_all()).map_err(|e| e.to_string())
+    writer.flush().map_err(|e| e.to_string())?;
+    crate::artifact_cache::barrier(writer.inner.get_ref()).map_err(|e| e.to_string())
 }
 
 /// Index validated against the current filesystem, not a content digest proof.
