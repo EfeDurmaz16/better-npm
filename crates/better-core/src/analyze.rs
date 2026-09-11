@@ -2,14 +2,14 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
-use std::collections::VecDeque;
+use std::sync::OnceLock;
+use rayon::prelude::*;
 use std::time::Instant;
 
 use crate::types::*;
 use crate::{stable_list_dir, physical_len, identity_key, is_package_dir,
             read_package_identity, depth_from_path, percentile_p95,
-            copy_file_with_retry, hardlink_with_retry, create_symlink_with_retry,
+            hardlink_with_retry,
             JsonWriter, VERSION};
 
 // --- Core functions ---
@@ -80,110 +80,104 @@ pub fn scan_tree(
     Ok(agg)
 }
 
+pub(crate) fn materialize_worker_limit() -> usize {
+    static LIMIT: OnceLock<usize> = OnceLock::new();
+    *LIMIT.get_or_init(|| {
+        std::thread::available_parallelism()
+            .map_or(1, usize::from)
+            .min(4)
+    })
+}
+
+/// One process-wide filesystem executor. Nested package work shares these workers
+/// instead of creating a second set of threads for each package.
+pub(crate) fn materialize_pool() -> Result<&'static rayon::ThreadPool, String> {
+    static POOL: OnceLock<Result<rayon::ThreadPool, String>> = OnceLock::new();
+    POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(materialize_worker_limit())
+            .thread_name(|index| format!("better-materialize-{index}"))
+            .build()
+            .map_err(|error| format!("materialize executor: {error}"))
+    })
+    .as_ref()
+    .map_err(Clone::clone)
+}
+
 pub fn run_materialize_tasks_parallel(
     tasks: Vec<MaterializeTask>,
     strategy: LinkStrategy,
     jobs: usize,
     counters: &MaterializeCounters,
+    fresh: bool,
 ) -> Result<(), String> {
     if tasks.is_empty() {
         return Ok(());
     }
-    let queue = Arc::new(Mutex::new(VecDeque::from(tasks)));
-    let first_error = Arc::new(Mutex::new(None::<String>));
-    let worker_count = jobs.max(1).min(queue.lock().map(|g| g.len()).unwrap_or(1).max(1));
-
-    std::thread::scope(|scope| {
-        for _ in 0..worker_count {
-            let queue = Arc::clone(&queue);
-            let first_error = Arc::clone(&first_error);
-            scope.spawn(move || {
-                loop {
-                    if first_error
-                        .lock()
-                        .ok()
-                        .and_then(|g| g.as_ref().cloned())
-                        .is_some()
-                    {
-                        return;
-                    }
-
-                    let next_task = match queue.lock() {
-                        Ok(mut guard) => guard.pop_front(),
-                        Err(_) => return,
-                    };
-                    let Some(task) = next_task else { return };
-
-                    let task_result = match task {
-                        MaterializeTask::File(task) => {
-                            counters.files.fetch_add(1, Ordering::Relaxed);
-                            match strategy {
-                                LinkStrategy::Copy | LinkStrategy::Auto => {
-                                    if let Err(err) = copy_file_with_retry(&task.src, &task.dst) {
-                                        Err(err)
-                                    } else {
-                                        counters.files_copied.fetch_add(1, Ordering::Relaxed);
-                                        Ok(())
-                                    }
-                                }
-                                LinkStrategy::Hardlink => {
-                                    match hardlink_with_retry(&task.src, &task.dst) {
-                                        Ok(()) => {
-                                            counters.files_linked.fetch_add(1, Ordering::Relaxed);
-                                            Ok(())
-                                        }
-                                        Err(link_err) => {
-                                            if link_err.contains("EPERM") || link_err.contains("Operation not permitted") {
-                                                counters.fallback_eperm.fetch_add(1, Ordering::Relaxed);
-                                            } else if link_err.contains("EXDEV") || link_err.contains("cross-device") {
-                                                counters.fallback_exdev.fetch_add(1, Ordering::Relaxed);
-                                            } else {
-                                                counters.fallback_other.fetch_add(1, Ordering::Relaxed);
-                                            }
-                                            if let Err(err) = copy_file_with_retry(&task.src, &task.dst) {
-                                                Err(err)
-                                            } else {
-                                                counters.files_copied.fetch_add(1, Ordering::Relaxed);
-                                                counters
-                                                    .link_fallback_copies
-                                                    .fetch_add(1, Ordering::Relaxed);
-                                                Ok(())
-                                            }
-                                        }
-                                    }
-                                }
+    let pool = materialize_pool()?;
+    let workers = jobs.max(1).min(pool.current_num_threads());
+    let chunk_size = tasks.len().div_ceil(workers);
+    pool.install(|| {
+        tasks.par_chunks(chunk_size).try_for_each(|chunk| {
+            let mut staging = if fresh {
+                crate::MaterializeStaging::fresh()
+            } else {
+                crate::MaterializeStaging::default()
+            };
+            chunk.iter().try_for_each(|task| match task {
+                MaterializeTask::File(task) => {
+                    counters.files.fetch_add(1, Ordering::Relaxed);
+                    match strategy {
+                        LinkStrategy::Copy | LinkStrategy::Auto => {
+                            let reused = staging.copy_if_changed(&task.src, &task.dst, None)?;
+                            if reused {
+                                counters.files_reused.fetch_add(1, Ordering::Relaxed);
+                            } else {
+                                counters.files_copied.fetch_add(1, Ordering::Relaxed);
                             }
+                            Ok(())
                         }
-                        MaterializeTask::Symlink(task) => match create_symlink_with_retry(&task) {
+                        LinkStrategy::Hardlink => match hardlink_with_retry(&task.src, &task.dst) {
                             Ok(()) => {
-                                counters.symlinks.fetch_add(1, Ordering::Relaxed);
+                                counters.files_linked.fetch_add(1, Ordering::Relaxed);
                                 Ok(())
                             }
-                            Err(err) => Err(err),
-                        },
-                    };
-
-                    if let Err(err) = task_result {
-                        if let Ok(mut guard) = first_error.lock() {
-                            if guard.is_none() {
-                                *guard = Some(err);
+                            Err(link_err) => {
+                                if link_err.contains("EPERM")
+                                    || link_err.contains("Operation not permitted")
+                                {
+                                    counters.fallback_eperm.fetch_add(1, Ordering::Relaxed);
+                                } else if link_err.contains("EXDEV")
+                                    || link_err.contains("cross-device")
+                                {
+                                    counters.fallback_exdev.fetch_add(1, Ordering::Relaxed);
+                                } else {
+                                    counters.fallback_other.fetch_add(1, Ordering::Relaxed);
+                                }
+                                if let Err(err) = staging.copy(&task.src, &task.dst, None) {
+                                    Err(err)
+                                } else {
+                                    counters.files_copied.fetch_add(1, Ordering::Relaxed);
+                                    counters
+                                        .link_fallback_copies
+                                        .fetch_add(1, Ordering::Relaxed);
+                                    Ok(())
+                                }
                             }
-                        }
-                        return;
+                        },
                     }
                 }
-            });
-        }
-    });
-
-    let result = match first_error.lock() {
-        Ok(guard) => match guard.as_ref() {
-            Some(err) => Err(err.clone()),
-            None => Ok(()),
-        },
-        Err(_) => Err("materialize_worker_error_lock_poisoned".to_string()),
-    };
-    result
+                MaterializeTask::Symlink(task) => {
+                    let reused = staging.symlink_if_changed(task)?;
+                    counters.symlinks.fetch_add(1, Ordering::Relaxed);
+                    if reused {
+                        counters.symlinks_reused.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Ok(())
+                }
+            })
+        })
+    })
 }
 
 pub fn materialize_tree(
@@ -192,6 +186,19 @@ pub fn materialize_tree(
     strategy: LinkStrategy,
     jobs: usize,
     profile: MaterializeProfile,
+) -> Result<MaterializeReport, String> {
+    materialize_tree_with(src_root, dst_root, strategy, jobs, profile, false)
+}
+
+/// `fresh`: `dst_root` lies in a private tree this invocation created and no
+/// other writer touches until it is published.
+pub(crate) fn materialize_tree_with(
+    src_root: &Path,
+    dst_root: &Path,
+    strategy: LinkStrategy,
+    jobs: usize,
+    profile: MaterializeProfile,
+    fresh: bool,
 ) -> Result<MaterializeReport, String> {
     let total_start = Instant::now();
     let mut phases = PhaseDurations::default();
@@ -236,7 +243,9 @@ pub fn materialize_tree(
             }
         }
     }
-    phases.scan_ms = scan_start.elapsed().as_millis() as u64;
+    let scan_elapsed = scan_start.elapsed();
+    phases.scan_ms = scan_elapsed.as_millis() as u64;
+    phases.scan_us = scan_elapsed.as_micros() as u64;
 
     // Mkdir phase
     let mkdir_start = Instant::now();
@@ -245,22 +254,28 @@ pub fn materialize_tree(
     for dir in &directories {
         crate::create_materialize_dir(dst_root, dir)?;
     }
-    phases.mkdir_ms = mkdir_start.elapsed().as_millis() as u64;
+    let mkdir_elapsed = mkdir_start.elapsed();
+    phases.mkdir_ms = mkdir_elapsed.as_millis() as u64;
+    phases.mkdir_us = mkdir_elapsed.as_micros() as u64;
 
     // Adjust jobs based on profile
     let effective_jobs = match profile {
         MaterializeProfile::Auto => jobs,
-        MaterializeProfile::IoHeavy => (jobs * 2).max(4),
-        MaterializeProfile::SmallFiles => (jobs * 3).max(8),
+        MaterializeProfile::IoHeavy => jobs.saturating_mul(2).max(4),
+        MaterializeProfile::SmallFiles => jobs.saturating_mul(3).max(8),
     };
 
     // Link/copy phase
     let link_start = Instant::now();
     let counters = MaterializeCounters::default();
-    run_materialize_tasks_parallel(tasks, strategy, effective_jobs, &counters)?;
-    phases.link_copy_ms = link_start.elapsed().as_millis() as u64;
+    run_materialize_tasks_parallel(tasks, strategy, effective_jobs, &counters, fresh)?;
+    let link_copy_elapsed = link_start.elapsed();
+    phases.link_copy_ms = link_copy_elapsed.as_millis() as u64;
+    phases.link_copy_us = link_copy_elapsed.as_micros() as u64;
 
-    phases.total_ms = total_start.elapsed().as_millis() as u64;
+    let total_elapsed = total_start.elapsed();
+    phases.total_ms = total_elapsed.as_millis() as u64;
+    phases.total_us = total_elapsed.as_micros() as u64;
 
     let mut stats = counters.snapshot();
     stats.directories = directories.len().saturating_sub(1) as u64;
@@ -647,6 +662,7 @@ pub fn write_materialize_json(
     stats: &MaterializeStats,
     phases: &PhaseDurations,
 ) -> String {
+    let effective_jobs = effective_jobs.max(1).min(materialize_worker_limit());
     let mut w = JsonWriter::new();
     w.begin_object();
     w.key("ok");
@@ -677,6 +693,10 @@ pub fn write_materialize_json(
     w.value_u64(stats.files);
     w.key("filesLinked");
     w.value_u64(stats.files_linked);
+    w.key("filesReused");
+    w.value_u64(stats.files_reused);
+    w.key("symlinksReused");
+    w.value_u64(stats.symlinks_reused);
     w.key("filesCopied");
     w.value_u64(stats.files_copied);
     w.key("linkFallbackCopies");
@@ -692,6 +712,14 @@ pub fn write_materialize_json(
     w.value_u64(effective_jobs as u64);
     w.key("phaseDurations");
     w.begin_object();
+    w.key("scanUs");
+    w.value_u64(phases.scan_us);
+    w.key("mkdirUs");
+    w.value_u64(phases.mkdir_us);
+    w.key("linkCopyUs");
+    w.value_u64(phases.link_copy_us);
+    w.key("totalUs");
+    w.value_u64(phases.total_us);
     w.key("scanMs");
     w.value_u64(phases.scan_ms);
     w.key("mkdirMs");
@@ -721,6 +749,74 @@ pub fn write_materialize_json(
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn shared_executor_is_bounded_and_accepts_nested_work() {
+        let pool = materialize_pool().unwrap();
+        assert!((1..=4).contains(&pool.current_num_threads()));
+        let threads = std::sync::Mutex::new(HashSet::new());
+        std::thread::scope(|scope| {
+            for _ in 0..12 {
+                let threads = &threads;
+                scope.spawn(move || pool.install(|| {
+                    // Reentrant submissions must use the same executor without deadlock.
+                    materialize_pool().unwrap().install(|| {
+                        threads.lock().unwrap().insert(std::thread::current().id());
+                    });
+                }));
+            }
+        });
+        assert!(!threads.lock().unwrap().is_empty());
+        assert!(threads.lock().unwrap().len() <= pool.current_num_threads());
+    }
+
+    #[test]
+    fn concurrent_tree_batches_preserve_content_and_cleanup_staging() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        fs::create_dir(&source).unwrap();
+        for index in 0..32 { fs::write(source.join(format!("file-{index}")), format!("original-{index}")).unwrap(); }
+        std::thread::scope(|scope| {
+            for batch in 0..12 {
+                let source = &source;
+                let destination = root.path().join(format!("batch-{batch}"));
+                scope.spawn(move || {
+                    let result = materialize_tree(source, &destination, LinkStrategy::Auto, 32, MaterializeProfile::Auto).unwrap();
+                    assert_eq!(result.stats.files_copied, 32);
+                    assert_eq!(fs::read_dir(&destination).unwrap().count(), 32);
+                    for index in 0..32 {
+                        assert_eq!(fs::read_to_string(destination.join(format!("file-{index}"))).unwrap(), format!("original-{index}"));
+                    }
+                    fs::write(destination.join("file-0"), "worktree-local edit").unwrap();
+                    assert_eq!(fs::read_to_string(source.join("file-0")).unwrap(), "original-0");
+                    assert_eq!(result.phases.total_ms, result.phases.total_us / 1000);
+                });
+            }
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tree_reconciliation_reuses_only_verified_files_and_links() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let target = temp.path().join("target");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("one"), "original").unwrap();
+        fs::write(source.join("two"), "original").unwrap();
+        std::os::unix::fs::symlink("one", source.join("link")).unwrap();
+        let materialize = || materialize_tree(&source, &target, LinkStrategy::Auto, 4, MaterializeProfile::Auto).unwrap();
+        assert_eq!(materialize().stats.files_copied, 2);
+        let warm = materialize();
+        assert_eq!(warm.stats.files_reused, 2);
+        assert_eq!(warm.stats.files_copied, 0);
+        assert_eq!(warm.stats.symlinks_reused, 1);
+        fs::write(target.join("one"), "modified").unwrap();
+        let repaired = materialize();
+        assert_eq!(repaired.stats.files_reused, 1);
+        assert_eq!(repaired.stats.files_copied, 1);
+        assert_eq!(fs::read_to_string(target.join("one")).unwrap(), "original");
+    }
 
     fn write_pkg(nm: &Path, name: &str, content: &str) {
         let dir = nm.join(name);
@@ -806,6 +902,20 @@ mod tests {
         let json = write_scan_json(std::path::Path::new("/project"), &agg, false, Some("something went wrong".into()));
         assert!(json.contains("\"ok\":false"));
         assert!(json.contains("something went wrong"));
+    }
+
+    #[test]
+    fn materialize_json_reports_worker_ceiling_and_microseconds() {
+        let phases = PhaseDurations { scan_us: 125, total_us: 875, ..PhaseDurations::default() };
+        let json = write_materialize_json(Path::new("/src"), Path::new("/dst"),
+            LinkStrategy::Auto, 32, MaterializeProfile::SmallFiles, 96, true,
+            None, 0, &MaterializeStats::default(), &phases);
+        let report: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(report["jobs"], 32);
+        assert_eq!(report["effectiveJobs"], materialize_worker_limit());
+        assert_eq!(report["phaseDurations"]["scanUs"], 125);
+        assert_eq!(report["phaseDurations"]["scanMs"], 0);
+        assert_eq!(report["phaseDurations"]["totalUs"], 875);
     }
 
     #[test]

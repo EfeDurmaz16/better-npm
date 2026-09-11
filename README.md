@@ -7,8 +7,6 @@ better is a zero-runtime-dependency Node.js package manager built around a Rust 
 </p>
 
 <p align="center">
-  <a href="#performance"><img src="https://img.shields.io/badge/23x_faster-than_npm-00d4aa?style=flat-square&logo=npm" alt="23x faster"/></a>
-  <a href="#performance"><img src="https://img.shields.io/badge/2.6x_faster-than_bun-00b4d8?style=flat-square&logo=bun" alt="2.6x faster"/></a>
   <img src="https://img.shields.io/badge/pure-Rust-dea584?style=flat-square&logo=rust" alt="Pure Rust"/>
   <img src="https://img.shields.io/badge/commands-25-8b5cf6?style=flat-square" alt="25 commands"/>
   <a href="https://github.com/EfeDurmaz16/better-npm/actions"><img src="https://img.shields.io/github/actions/workflow/status/EfeDurmaz16/better-npm/ci.yml?style=flat-square&label=CI" alt="CI"/></a>
@@ -24,7 +22,9 @@ better is a zero-runtime-dependency Node.js package manager built around a Rust 
 
 ## Performance
 
-Benchmarked on a real local project with 15 direct dependencies and 145 resolved packages. Warm install means the package cache is already populated; cold install includes network fetch and cache population on the same machine.
+The [shared-install performance report](docs/performance-campaign.md) records the current worktree campaign, including paired baseline results, resident request timings, regressions and measurement limits. It makes no universal speedup claim over npm or bun.
+
+The following older project-specific snapshot has not been rerun for that campaign: 15 direct dependencies and 145 resolved packages. Warm install means the package cache is already populated; cold install includes network fetch and cache population on the same machine. These timings should not be generalized to other projects.
 
 <table>
 <tr><th>Tool</th><th align="right">Warm Install</th><th align="right">Cold Install</th><th align="right">vs better</th></tr>

@@ -182,9 +182,6 @@ pub fn create_bin_links(
             let bin_target = pkg_dir.join(bin_script);
             let bin_link = bin_dir.join(bin_name);
 
-            // Remove existing link/file
-            let _ = fs::remove_file(&bin_link);
-
             #[cfg(unix)]
             {
                 // Make the target executable
@@ -192,12 +189,19 @@ pub fn create_bin_links(
                     use std::os::unix::fs::PermissionsExt;
                     let mut perms = md.permissions();
                     let mode = perms.mode() | 0o111;
-                    perms.set_mode(mode);
-                    let _ = fs::set_permissions(&bin_target, perms);
+                    if perms.mode() != mode {
+                        perms.set_mode(mode);
+                        let _ = fs::set_permissions(&bin_target, perms);
+                    }
                 }
 
                 // Create relative symlink from .bin/name -> ../pkg/script
                 let rel_target = pathdiff_relative(&bin_dir, &bin_target);
+                if fs::read_link(&bin_link).ok().as_ref() == Some(&rel_target) {
+                    result.links_created += 1;
+                    continue;
+                }
+                let _ = fs::remove_file(&bin_link);
                 match std::os::unix::fs::symlink(&rel_target, &bin_link) {
                     Ok(()) => result.links_created += 1,
                     Err(_) => result.links_failed += 1,
@@ -352,7 +356,7 @@ pub fn run_lifecycle_scripts_for_install(
     let output = command
         .args(["rebuild", "--no-audit", "--no-fund"])
         .current_dir(project_root)
-        .stdout(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::from(std::io::stderr()))
         .stderr(std::process::Stdio::inherit())
         .status();
 
@@ -402,6 +406,31 @@ mod tests {
             resolved_url: String::new(),
             integrity: String::new(),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn repeated_bin_setup_preserves_matching_link_and_repairs_wrong_target() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().unwrap();
+        let nm = dir.path().join("node_modules");
+        let package_dir = nm.join("tool");
+        fs::create_dir_all(&package_dir).unwrap();
+        fs::write(package_dir.join("package.json"), r#"{"bin":{"tool":"cli.js"}}"#).unwrap();
+        fs::write(package_dir.join("cli.js"), "#!/usr/bin/env node").unwrap();
+        let packages = vec![ResolvedPackage { name: "tool".into(), version: "1".into(),
+            rel_path: "node_modules/tool".into(), resolved_url: String::new(),
+            integrity: String::new(), selection: Default::default() }];
+        create_bin_links(&nm, &packages).unwrap();
+        let link = nm.join(".bin/tool");
+        let inode = fs::symlink_metadata(&link).unwrap().ino();
+        let expected = fs::read_link(&link).unwrap();
+        create_bin_links(&nm, &packages).unwrap();
+        assert_eq!(fs::symlink_metadata(&link).unwrap().ino(), inode);
+        fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink("../wrong", &link).unwrap();
+        create_bin_links(&nm, &packages).unwrap();
+        assert_eq!(fs::read_link(&link).unwrap(), expected);
     }
 
     #[test]

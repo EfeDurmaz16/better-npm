@@ -1,7 +1,7 @@
 import { parseArgs } from "node:util";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { getCacheRoot, cacheLayout, ensureCacheDirs, loadState, saveState } from "../lib/cache.js";
+import { getCacheRoot, cacheLayout, ensureCacheDirs, loadState, updateState } from "../lib/cache.js";
 import { scanTree } from "../lib/fsScan.js";
 import { runCommand } from "../lib/spawn.js";
 import { printJson, printText } from "../lib/output.js";
@@ -410,14 +410,14 @@ export async function cmdCache(argv) {
       }
     };
     if (!dryRun) {
-      const state = await loadState(layout);
-      state.gc = {
-        ...(state.gc ?? {}),
-        maxAgeDays: keepDays,
-        lastRunAt: new Date().toISOString(),
-        lastFreedBytes: bytesFreed
-      };
-      await saveState(layout, state);
+      await updateState(layout, async (state) => {
+        state.gc = {
+          ...(state.gc ?? {}),
+          maxAgeDays: keepDays,
+          lastRunAt: new Date().toISOString(),
+          lastFreedBytes: bytesFreed
+        };
+      }, { projectKeys: [] });
     }
     if (values.json) printJson(out);
     else {
@@ -631,24 +631,24 @@ export async function cmdCache(argv) {
       return;
     }
 
-    const state = await loadState(layout);
-    state.cacheEntries = state.cacheEntries ?? {};
-    state.cacheEntries[derived.key] = {
-      ...(state.cacheEntries[derived.key] ?? {}),
-      key: derived.key,
-      pm: context.pm,
-      engine: context.engine,
-      cacheMode: context.cacheMode,
-      scriptsMode: context.cacheScripts,
-      lockHash: derived.lockHash,
-      lockfile: derived.lockfile,
-      runtimeFingerprint: derived.fingerprint,
-      createdAt: (state.cacheEntries[derived.key]?.createdAt ?? new Date().toISOString()),
-      lastUsedAt: new Date().toISOString(),
-      useCount: Number(state.cacheEntries[derived.key]?.useCount ?? 0) + 1,
-      status: "stored"
-    };
-    await saveState(layout, state);
+    await updateState(layout, async (state) => {
+      state.cacheEntries = state.cacheEntries ?? {};
+      state.cacheEntries[derived.key] = {
+        ...(state.cacheEntries[derived.key] ?? {}),
+        key: derived.key,
+        pm: context.pm,
+        engine: context.engine,
+        cacheMode: context.cacheMode,
+        scriptsMode: context.cacheScripts,
+        lockHash: derived.lockHash,
+        lockfile: derived.lockfile,
+        runtimeFingerprint: derived.fingerprint,
+        createdAt: (state.cacheEntries[derived.key]?.createdAt ?? new Date().toISOString()),
+        lastUsedAt: new Date().toISOString(),
+        useCount: Number(state.cacheEntries[derived.key]?.useCount ?? 0) + 1,
+        status: "stored"
+      };
+    }, { projectKeys: [] });
 
     const out = {
       ok: true,
@@ -706,19 +706,19 @@ export async function cmdCache(argv) {
       return;
     }
 
-    const state = await loadState(layout);
-    state.materializationIndex = state.materializationIndex ?? {};
-    const projectId = sha256Hex(context.projectRoot).slice(0, 10);
-    state.materializationIndex[projectId] = {
-      projectId,
-      projectRoot: context.projectRoot,
-      key: derived.key,
-      pm: context.pm,
-      engine: context.engine,
-      lastMaterializedAt: new Date().toISOString(),
-      lastVerifiedAt: new Date().toISOString()
-    };
-    await saveState(layout, state);
+    await updateState(layout, async (state) => {
+      state.materializationIndex = state.materializationIndex ?? {};
+      const projectId = sha256Hex(context.projectRoot).slice(0, 10);
+      state.materializationIndex[projectId] = {
+        projectId,
+        projectRoot: context.projectRoot,
+        key: derived.key,
+        pm: context.pm,
+        engine: context.engine,
+        lastMaterializedAt: new Date().toISOString(),
+        lastVerifiedAt: new Date().toISOString()
+      };
+    }, { projectKeys: [] });
 
     const out = {
       ok: true,

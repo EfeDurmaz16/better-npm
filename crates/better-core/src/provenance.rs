@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::HashSet;
 
 use crate::types::ResolvedPackage;
 use crate::{extract_json_field, extract_json_object_raw, JsonWriter};
@@ -28,29 +28,23 @@ pub struct ProvenanceReport {
 
 /// Fetch attestation bundle from npm registry for a given package@version.
 /// Returns the raw JSON response or an error.
-fn fetch_attestation(name: &str, version: &str) -> Result<String, String> {
-    let encoded_name = name.replace('/', "%2F");
-    let url = format!(
-        "https://registry.npmjs.org/-/npm/v1/attestations/{}@{}",
-        encoded_name, version
-    );
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("HTTP client error: {}", e))?;
-    let resp = client
-        .get(&url)
-        .header("Accept", "application/json")
-        .send()
-        .map_err(|e| format!("Failed to fetch attestation for {}@{}: {}", name, version, e))?;
-    if resp.status().as_u16() == 404 {
-        return Err("no attestation found".into());
+fn fetch_attestation(
+    name: &str,
+    version: &str,
+    config: &crate::types::NpmrcConfig,
+) -> Result<String, String> {
+    if version.is_empty() || !version.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+' | b'_')) {
+        return Err("invalid version for provenance registry request".into());
     }
-    if !resp.status().is_success() {
-        return Err(format!("HTTP {}", resp.status().as_u16()));
+    let (base, _) = crate::npmrc::registry_for_package(config, name);
+    let identity = format!("{name}@{version}");
+    let url =
+        crate::audit::evidence::registry_url(base, &["-", "npm", "v1", "attestations", &identity])?;
+    let token = crate::audit::evidence::registry_token(config, base, &url, name);
+    match crate::audit::evidence::registry_get(&url, token)? {
+        crate::audit::evidence::RegistryEvidence::Present(body) => Ok(body),
+        crate::audit::evidence::RegistryEvidence::Missing => Err("no attestation found".into()),
     }
-    resp.text()
-        .map_err(|e| format!("Failed to read response: {}", e))
 }
 
 /// Parse a DSSE envelope from the attestation bundle JSON.
@@ -133,8 +127,12 @@ struct ProvenanceVerification {
 }
 
 /// Check provenance for a single package.
-fn check_package_provenance(name: &str, version: &str) -> ProvenanceAttestation {
-    match fetch_attestation(name, version) {
+fn check_package_provenance(
+    name: &str,
+    version: &str,
+    config: &crate::types::NpmrcConfig,
+) -> ProvenanceAttestation {
+    match fetch_attestation(name, version, config) {
         Ok(json) => {
             let verification = verify_attestation_structure(&json);
             ProvenanceAttestation {
@@ -169,31 +167,45 @@ pub fn verify_provenance(
     packages: &[ResolvedPackage],
     mode: &str,
 ) -> Result<ProvenanceReport, String> {
+    let root = std::env::current_dir().map_err(|e| format!("provenance working directory: {e}"))?;
+    let config = crate::npmrc::parse_npmrc(&root);
+    verify_provenance_with_config(packages, mode, &config)
+}
+
+/// Project-aware entry point using the install registry configuration.
+pub fn verify_provenance_with_config(
+    packages: &[ResolvedPackage],
+    mode: &str,
+    config: &crate::types::NpmrcConfig,
+) -> Result<ProvenanceReport, String> {
     let mut attestations = Vec::new();
     let mut with_provenance = 0u64;
     let mut without_provenance = 0u64;
     let mut verification_errors = 0u64;
 
     // Deduplicate by name@version (lockfile can have multiple entries for same package)
-    let mut seen: HashMap<String, bool> = HashMap::new();
+    let mut seen = HashSet::new();
     let mut unique_packages: Vec<(&str, &str)> = Vec::new();
     for pkg in packages {
-        let key = format!("{}@{}", pkg.name, pkg.version);
-        if seen.contains_key(&key) {
+        let key = (pkg.name.as_str(), pkg.version.as_str());
+        if !seen.insert(key) {
             continue;
         }
-        seen.insert(key, true);
         unique_packages.push((&pkg.name, &pkg.version));
     }
 
-    for (name, version) in &unique_packages {
-        let attestation = check_package_provenance(name, version);
+    let checked = crate::audit::evidence::map_bounded(&unique_packages, |(name, version)| {
+        check_package_provenance(name, version, config)
+    });
+    for attestation in checked {
         if attestation.has_attestation && attestation.signature_valid {
             with_provenance += 1;
         } else if attestation.has_attestation && !attestation.signature_valid {
             verification_errors += 1;
-        } else {
+        } else if attestation.error.as_deref() == Some("no attestation found") {
             without_provenance += 1;
+        } else {
+            verification_errors += 1;
         }
         attestations.push(attestation);
     }
@@ -206,16 +218,16 @@ pub fn verify_provenance(
         attestations,
     };
 
-    if mode == "require" && without_provenance > 0 {
+    if mode == "require" && (without_provenance > 0 || verification_errors > 0) {
         let missing: Vec<String> = report
             .attestations
             .iter()
-            .filter(|a| !a.has_attestation)
+            .filter(|a| !a.has_attestation || !a.signature_valid)
             .map(|a| format!("{}@{}", a.package, a.version))
             .collect();
         return Err(format!(
-            "--require-provenance: {} package(s) lack provenance attestation: {}",
-            without_provenance,
+            "--require-provenance: {} package(s) lack provenance attestation or could not be verified: {}",
+            without_provenance + verification_errors,
             missing.join(", ")
         ));
     }
@@ -250,32 +262,57 @@ mod tests {
         assert_eq!(report.without_provenance, 0);
     }
 
+    fn missing_registry() -> (crate::types::NpmrcConfig, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let config = crate::types::NpmrcConfig {
+            default_registry: format!("http://{}/", listener.local_addr().unwrap()),
+            ..Default::default()
+        };
+        let server = std::thread::spawn(move || {
+            listener.set_nonblocking(true).unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(std::time::Instant::now() < deadline, "registry fixture timed out");
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("registry fixture: {error}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut byte = [0; 1];
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+                assert!(request.len() <= 16 * 1024, "fixture headers too large");
+            }
+            stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();
+        });
+        (config, server)
+    }
+
     #[test]
     fn require_mode_fails_when_packages_lack_provenance() {
-        // Without network, packages will fail attestation fetch
+        let (config, server) = missing_registry();
         let pkgs = vec![make_pkg("some-package", "1.0.0")];
-        let result = verify_provenance(&pkgs, "require");
-        // Should either be Ok with without_provenance>0 and we check require mode error,
-        // or directly Err if require mode triggers failure
-        match result {
-            Err(e) => assert!(e.contains("lack provenance attestation")),
-            Ok(r) => {
-                // If no network, without_provenance > 0 but verify mode wouldn't error
-                // require mode with without_provenance > 0 should Err
-                assert!(r.without_provenance > 0 || r.with_provenance > 0);
-            }
-        }
+        let result = verify_provenance_with_config(&pkgs, "require", &config);
+        server.join().unwrap();
+        assert!(result.unwrap_err().contains("lack provenance attestation"));
     }
 
     #[test]
     fn deduplication_skips_same_version() {
-        // Two entries of same pkg@version should only be checked once
-        let pkgs = vec![
-            make_pkg("lodash", "4.17.21"),
-            make_pkg("lodash", "4.17.21"),
-        ];
-        let report = verify_provenance(&pkgs, "verify").unwrap();
+        let (config, server) = missing_registry();
+        let pkgs = vec![make_pkg("lodash", "4.17.21"), make_pkg("lodash", "4.17.21")];
+        let report = verify_provenance_with_config(&pkgs, "verify", &config).unwrap();
+        server.join().unwrap();
         assert_eq!(report.total_checked, 1);
+        assert_eq!(report.without_provenance, 1);
     }
 
     #[test]

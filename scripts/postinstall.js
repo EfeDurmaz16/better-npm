@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { execSync } from "node:child_process";
-import { existsSync, chmodSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, chmodSync, mkdirSync, mkdtempSync, renameSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -39,15 +39,30 @@ const url = VERSION === "latest"
 
 console.log(`better: downloading prebuilt binary for ${target}...`);
 
-// Download and extract using curl (available on all platforms)
-// Note: execSync is safe here — url and binDir are constructed from hardcoded
-// constants and process.platform/process.arch, not from user input.
+// Stage only known archive members. Argument arrays keep version/path text out
+// of the shell; an old core-only release remains a supported fallback.
+let staging;
 try {
-  execSync(`curl -fsSL "${url}" | tar -xz -C "${binDir}" better-core`, { stdio: "pipe" });
+  mkdirSync(binDir, { recursive: true });
+  staging = mkdtempSync(join(binDir, ".better-download-"));
+  const archive = join(staging, "release.tar.gz");
+  execFileSync("curl", ["-fsSL", "--connect-timeout", "15", "--max-time", "120", "--output", archive, url], { stdio: "pipe" });
+  execFileSync("tar", ["-xzf", archive, "-C", staging, "better-core"], { stdio: "pipe" });
+  try {
+    execFileSync("tar", ["-xzf", archive, "-C", staging, "better-core.node"], { stdio: "pipe" });
+  } catch {
+    // Older releases contain only the standalone binary.
+  }
+  renameSync(join(staging, "better-core"), binaryPath);
   chmodSync(binaryPath, 0o755);
+  if (existsSync(join(staging, "better-core.node"))) {
+    renameSync(join(staging, "better-core.node"), join(binDir, "better-core.node"));
+  }
   console.log("better: binary installed successfully");
 } catch {
   console.warn("better: failed to download prebuilt binary, Rust core unavailable");
   console.warn("better: JS commands will still work, but install/analyze require the Rust binary");
   // Don't fail — graceful degradation
+} finally {
+  if (staging) rmSync(staging, { recursive: true, force: true });
 }

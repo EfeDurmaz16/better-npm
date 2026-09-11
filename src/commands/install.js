@@ -2,8 +2,10 @@ import { validateFetchOptions } from "../lib/core.js";
 import { parseArgs } from "node:util";
 import { prepareLazyInstall } from "../lib/lazyPrepare.js";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { loadPmCacheSnapshotStore, pmCacheSnapshotKey, persistPmCacheSnapshot } from "../lib/pmCacheSnapshots.js";
 import fs from "node:fs/promises";
-import { getCacheRoot, cacheLayout, ensureCacheDirs, loadState, saveState } from "../lib/cache.js";
+import { getCacheRoot, cacheLayout, ensureCacheDirs, updateState, writeJsonAtomic } from "../lib/cache.js";
 import { nowIso } from "../lib/time.js";
 import { shortHash } from "../lib/hash.js";
 import { scanTreeWithBestEngine } from "../lib/scanFacade.js";
@@ -23,7 +25,7 @@ import {
   captureProjectNodeModulesToGlobalCache,
   entryBytesFromNodeModulesSnapshot
 } from "../lib/globalCache.js";
-import { evaluateReuseMarker, writeReuseMarker } from "../lib/reuseMarker.js";
+import { evaluateReuseMarker, reuseMarkerPath, writeReuseMarker } from "../lib/reuseMarker.js";
 import { findBetterCore, tryLoadNapiAddon, runBetterCoreInstall } from "../lib/core.js";
 import { resolveWorkspacePackages, workspaceSummary } from "../lib/workspaces.js";
 import { executionPlan, affectedPackages } from "../lib/topoSort.js";
@@ -85,19 +87,6 @@ async function readJsonFileOrNull(filePath) {
   }
 }
 
-async function loadPmCacheSnapshotStore(layout) {
-  const snapshotFile = path.join(layout.root, "pm-cache-snapshots.json");
-  const parsed = await readJsonFileOrNull(snapshotFile);
-  return {
-    file: snapshotFile,
-    snapshots: parsed?.snapshots && typeof parsed.snapshots === "object" ? parsed.snapshots : {}
-  };
-}
-
-function pmCacheSnapshotKey(pmCacheDir) {
-  return path.resolve(pmCacheDir);
-}
-
 function snapshotToCacheResult(entry) {
   if (!entry || typeof entry !== "object") return { ok: false, reason: "snapshot_missing" };
   const logicalBytes = Number(entry.logicalBytes);
@@ -113,21 +102,6 @@ function snapshotToCacheResult(entry) {
     source: "snapshot_index",
     snapshotUpdatedAt: entry.updatedAt ?? null
   };
-}
-
-async function persistPmCacheSnapshot(layout, snapshotStore, pmCacheDir, sample) {
-  if (!sample?.ok) return;
-  const key = pmCacheSnapshotKey(pmCacheDir);
-  snapshotStore.snapshots[key] = {
-    logicalBytes: Number(sample.logicalBytes ?? 0),
-    physicalBytes: Number(sample.physicalBytes ?? 0),
-    updatedAt: nowIso()
-  };
-  const payload = {
-    schemaVersion: 1,
-    snapshots: snapshotStore.snapshots
-  };
-  await fs.writeFile(snapshotStore.file, `${JSON.stringify(payload, null, 2)}\n`);
 }
 
 function suggestFsConcurrencyTuning({ engine, fsConcurrency, globalMaterialize }) {
@@ -928,7 +902,7 @@ Workspace options:
     }
   }
 
-  const runId = `${Date.now()}-${shortHash(`${projectRoot}:${pm}:${mode}`)}`;
+  const runId = `${Date.now()}-${randomUUID()}`;
   const startedAt = nowIso();
   const startedAtMs = Date.now();
   const phaseDurations = {
@@ -953,7 +927,9 @@ Workspace options:
   const quickLogical = measureMode === "fast";
   const scanCoreMode = measureMode === "fast" ? "off" : "auto";
   const duFallback = measureMode === "precise" ? "off" : "auto";
-  const pmCacheSnapshotStore = await loadPmCacheSnapshotStore(layout);
+  const pmCacheSnapshotStore = measure === "on"
+    ? await loadPmCacheSnapshotStore(layout, pmCacheDir)
+    : { snapshots: {} };
   const pmCacheSnapshotBefore = snapshotToCacheResult(pmCacheSnapshotStore.snapshots[pmCacheSnapshotKey(pmCacheDir)]);
   const preMeasureStartMs = Date.now();
   const beforeCache = shouldMeasureCache
@@ -1364,23 +1340,28 @@ Workspace options:
   progress(
     measure === "off"
       ? "post-install: measurement disabled"
-      : shouldMeasureCache
-        ? "post-install: measuring cache and node_modules sizes"
-        : "post-install: measuring node_modules sizes (pm cache scan skipped)"
+      : noopReuseInstall
+        ? "post-install: reuse hit, reusing pre-install measurements"
+        : shouldMeasureCache
+          ? "post-install: measuring cache and node_modules sizes"
+          : "post-install: measuring node_modules sizes (pm cache scan skipped)"
   );
   const postMeasureStartMs = Date.now();
-  const afterCacheMeasured = shouldMeasureCache
+  // A reuse hit changes nothing on disk, so the pre-install scans already describe it.
+  const afterCacheMeasured = shouldMeasureCache && !noopReuseInstall
     ? await scanTreeWithBestEngine(pmCacheDir, { coreMode: scanCoreMode, duFallback, quickLogical })
     : null;
   const pmCacheSnapshotAfter = snapshotToCacheResult(pmCacheSnapshotStore.snapshots[pmCacheSnapshotKey(pmCacheDir)]);
-  const afterCache = afterCacheMeasured ?? (
+  const afterCache = noopReuseInstall ? beforeCache : afterCacheMeasured ?? (
     measure === "on" && measureCacheMode === "auto" && pmCacheSnapshotAfter.ok
       ? pmCacheSnapshotAfter
       : { ok: false, reason: measure === "off" ? "measure_off" : "measure_cache_off" }
   );
-  const nodeModules = measure === "on"
-    ? await collectNodeModulesSnapshot(projectRoot, { coreMode: scanCoreMode, duFallback, quickLogical, includePackageCount })
-    : { ok: false, reason: "measure_off", exists: false, packageCount: 0 };
+  const nodeModules = noopReuseInstall
+    ? beforeNodeModules
+    : measure === "on"
+      ? await collectNodeModulesSnapshot(projectRoot, { coreMode: scanCoreMode, duFallback, quickLogical, includePackageCount })
+      : { ok: false, reason: "measure_off", exists: false, packageCount: 0 };
   phaseDurations.postMeasureMs = Date.now() - postMeasureStartMs;
   if (shouldMeasureCache && afterCacheMeasured?.ok) {
     await persistPmCacheSnapshot(layout, pmCacheSnapshotStore, pmCacheDir, afterCacheMeasured);
@@ -1778,7 +1759,10 @@ Workspace options:
     report.baseline = { mode: "run", status: "complete", result: baseline };
   }
 
-  if (engine === "better" && reuseContext?.key) {
+  if (noopReuseInstall) {
+    // The marker just matched; rewriting it would only move updatedAt and runId.
+    report.reuseMarker = { ok: true, path: reuseMarkerPath(projectRoot), reused: true };
+  } else if (engine === "better" && reuseContext?.key) {
     try {
       const markerPayload = {
         version: 2,
@@ -1811,107 +1795,111 @@ Workspace options:
     };
   }
 
-  await fs.writeFile(path.join(layout.runsDir, `${runId}.json`), `${JSON.stringify(report, null, 2)}\n`);
+  // A reuse hit publishes nothing to the shared cache root: no run report, state update
+  // or delta snapshot, so concurrent worktrees never queue on the state lock or fsync.
+  if (!noopReuseInstall) await writeJsonAtomic(path.join(layout.runsDir, `${runId}.json`), report);
 
-  const state = await loadState(layout);
-  state.cacheEntries = state.cacheEntries ?? {};
-  state.materializationIndex = state.materializationIndex ?? {};
-  const projectId = shortHash(projectRoot);
-  state.projects[projectId] = {
-    projectId,
-    projectRoot,
-    lastUsedAt: endedAt,
-    lastRunId: runId,
-    pm
-  };
-  if (globalCacheEnabled && globalCacheContext?.key) {
-    const entryKey = globalCacheContext.key;
-    const previousEntry = state.cacheEntries?.[entryKey] ?? {};
-    const wasCreatedNow = !!globalCacheStored?.ok;
-    const sizeBytes = entryBytesFromNodeModulesSnapshot(nodeModules);
-    state.cacheEntries[entryKey] = {
-      ...previousEntry,
-      key: entryKey,
-      pm,
-      engine,
-      cacheMode,
-      scriptsMode: cacheScripts,
-      lockHash: globalCacheContext.lockHash ?? previousEntry.lockHash ?? null,
-      lockfile: globalCacheContext.lockfile ?? previousEntry.lockfile ?? null,
-      runtimeFingerprint: globalCacheContext.fingerprint ?? previousEntry.runtimeFingerprint ?? null,
-      createdAt: previousEntry.createdAt ?? endedAt,
-      lastUsedAt: endedAt,
-      useCount: Number(previousEntry.useCount ?? 0) + 1,
-      sizeBytes,
-      sourceRunId: runId,
-      hitCount: Number(previousEntry.hitCount ?? 0) + (globalCacheDecision.hit ? 1 : 0),
-      missCount: Number(previousEntry.missCount ?? 0) + (globalCacheDecision.hit ? 0 : 1),
-      status: wasCreatedNow ? "stored" : globalCacheDecision.hit ? "hit" : "miss"
-    };
-    state.materializationIndex[projectId] = {
+  if (!noopReuseInstall) await updateState(layout, async (state) => {
+    state.cacheEntries = state.cacheEntries ?? {};
+    state.materializationIndex = state.materializationIndex ?? {};
+    const projectId = shortHash(projectRoot);
+    state.projects[projectId] = {
       projectId,
       projectRoot,
-      key: entryKey,
-      pm,
-      engine,
-      lastMaterializedAt: globalCacheDecision.hit ? endedAt : (state.materializationIndex?.[projectId]?.lastMaterializedAt ?? null),
-      lastStoredAt: wasCreatedNow ? endedAt : (state.materializationIndex?.[projectId]?.lastStoredAt ?? null),
-      lastVerifiedAt: endedAt
+      lastUsedAt: endedAt,
+      lastRunId: runId,
+      pm
     };
-  }
-  const previousCacheMetrics = state.cacheMetrics ?? { installRuns: 0, cacheHits: 0, cacheMisses: 0 };
-  state.cacheMetrics = {
-    installRuns: Number(previousCacheMetrics.installRuns ?? 0) + 1,
-    cacheHits: Number(previousCacheMetrics.cacheHits ?? 0) + cacheHits,
-    cacheMisses: Number(previousCacheMetrics.cacheMisses ?? 0) + cacheMisses,
-    lastUpdatedAt: endedAt
-  };
-  if (Array.isArray(betterEngine?.packages)) {
-    for (const pkg of betterEngine.packages) {
-      if (!pkg?.name || !pkg?.version) continue;
-      const key = `${pkg.name}@${pkg.version}`;
-      const prev = state.cachePackages?.[key] ?? {
-        name: pkg.name,
-        version: pkg.version,
-        seenCount: 0,
-        projects: {},
-        casKeys: []
-      };
-      const casKeys = Array.isArray(prev.casKeys) ? [...prev.casKeys] : [];
-      const nextCasKey = pkg.cas?.keyHex ? `${pkg.cas.algorithm}:${pkg.cas.keyHex}` : null;
-      if (nextCasKey && !casKeys.includes(nextCasKey)) casKeys.push(nextCasKey);
-      state.cachePackages[key] = {
-        ...prev,
-        name: pkg.name,
-        version: pkg.version,
-        seenCount: Number(prev.seenCount ?? 0) + 1,
+    if (globalCacheEnabled && globalCacheContext?.key) {
+      const entryKey = globalCacheContext.key;
+      const previousEntry = state.cacheEntries?.[entryKey] ?? {};
+      const wasCreatedNow = !!globalCacheStored?.ok;
+      const sizeBytes = entryBytesFromNodeModulesSnapshot(nodeModules);
+      state.cacheEntries[entryKey] = {
+        ...previousEntry,
+        key: entryKey,
+        pm,
+        engine,
+        cacheMode,
+        scriptsMode: cacheScripts,
+        lockHash: globalCacheContext.lockHash ?? previousEntry.lockHash ?? null,
+        lockfile: globalCacheContext.lockfile ?? previousEntry.lockfile ?? null,
+        runtimeFingerprint: globalCacheContext.fingerprint ?? previousEntry.runtimeFingerprint ?? null,
+        createdAt: previousEntry.createdAt ?? endedAt,
         lastUsedAt: endedAt,
-        projects: {
-          ...(prev.projects ?? {}),
-          [projectId]: endedAt
-        },
-        lastSource: pkg.source ?? prev.lastSource ?? null,
-        cacheHitCount: Number(prev.cacheHitCount ?? 0) + (pkg.cacheHit ? 1 : 0),
-        cacheMissCount: Number(prev.cacheMissCount ?? 0) + (pkg.cacheMiss ? 1 : 0),
-        casKeys
+        useCount: Number(previousEntry.useCount ?? 0) + 1,
+        sizeBytes,
+        sourceRunId: runId,
+        hitCount: Number(previousEntry.hitCount ?? 0) + (globalCacheDecision.hit ? 1 : 0),
+        missCount: Number(previousEntry.missCount ?? 0) + (globalCacheDecision.hit ? 0 : 1),
+        status: wasCreatedNow ? "stored" : globalCacheDecision.hit ? "hit" : "miss"
+      };
+      state.materializationIndex[projectId] = {
+        projectId,
+        projectRoot,
+        key: entryKey,
+        pm,
+        engine,
+        lastMaterializedAt: globalCacheDecision.hit ? endedAt : (state.materializationIndex?.[projectId]?.lastMaterializedAt ?? null),
+        lastStoredAt: wasCreatedNow ? endedAt : (state.materializationIndex?.[projectId]?.lastStoredAt ?? null),
+        lastVerifiedAt: endedAt
       };
     }
-  }
-  await saveState(layout, state);
-
-  // Save delta snapshot for future incremental diff
-  try {
-    const lockfileCandidates = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock"];
-    for (const lf of lockfileCandidates) {
-      const lfPath = path.join(projectRoot, lf);
-      const packages = await parseLockfilePackages(lfPath);
-      if (packages.size > 0) {
-        await saveSnapshot(layout.root, projectRoot, packages);
-        break;
+    const previousCacheMetrics = state.cacheMetrics ?? { installRuns: 0, cacheHits: 0, cacheMisses: 0 };
+    state.cacheMetrics = {
+      installRuns: Number(previousCacheMetrics.installRuns ?? 0) + 1,
+      cacheHits: Number(previousCacheMetrics.cacheHits ?? 0) + cacheHits,
+      cacheMisses: Number(previousCacheMetrics.cacheMisses ?? 0) + cacheMisses,
+      lastUpdatedAt: endedAt
+    };
+    if (Array.isArray(betterEngine?.packages)) {
+      for (const pkg of betterEngine.packages) {
+        if (!pkg?.name || !pkg?.version) continue;
+        const key = `${pkg.name}@${pkg.version}`;
+        const prev = state.cachePackages?.[key] ?? {
+          name: pkg.name,
+          version: pkg.version,
+          seenCount: 0,
+          projects: {},
+          casKeys: []
+        };
+        const casKeys = Array.isArray(prev.casKeys) ? [...prev.casKeys] : [];
+        const nextCasKey = pkg.cas?.keyHex ? `${pkg.cas.algorithm}:${pkg.cas.keyHex}` : null;
+        if (nextCasKey && !casKeys.includes(nextCasKey)) casKeys.push(nextCasKey);
+        state.cachePackages[key] = {
+          ...prev,
+          name: pkg.name,
+          version: pkg.version,
+          seenCount: Number(prev.seenCount ?? 0) + 1,
+          lastUsedAt: endedAt,
+          projects: {
+            ...(prev.projects ?? {}),
+            [projectId]: endedAt
+          },
+          lastSource: pkg.source ?? prev.lastSource ?? null,
+          cacheHitCount: Number(prev.cacheHitCount ?? 0) + (pkg.cacheHit ? 1 : 0),
+          cacheMissCount: Number(prev.cacheMissCount ?? 0) + (pkg.cacheMiss ? 1 : 0),
+          casKeys
+        };
       }
     }
-  } catch {
-    // Non-fatal: delta snapshot is optional
+  }, { projectKeys: [shortHash(projectRoot)] });
+
+  // Save delta snapshot for future incremental diff; a reuse hit left the lockfile as it was.
+  if (!noopReuseInstall) {
+    try {
+      const lockfileCandidates = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock"];
+      for (const lf of lockfileCandidates) {
+        const lfPath = path.join(projectRoot, lf);
+        const packages = await parseLockfilePackages(lfPath);
+        if (packages.size > 0) {
+          await saveSnapshot(layout.root, projectRoot, packages);
+          break;
+        }
+      }
+    } catch {
+      // Non-fatal: delta snapshot is optional
+    }
   }
 
   // Write .better-receipt.json install receipt
@@ -1965,7 +1953,9 @@ Workspace options:
       ? `- reuse marker: ${reuseDecision.hit ? "hit" : "miss"} (${reuseDecision.reason})`
       : "- reuse marker: n/a",
     `- cache root: ${layout.root}`,
-    `- run report: ${path.join(layout.runsDir, `${runId}.json`)}`
+    noopReuseInstall
+      ? "- run report: not written (reuse hit)"
+      : `- run report: ${path.join(layout.runsDir, `${runId}.json`)}`
   ];
 
   if (parityResult && parityResult.warnings.length > 0) {

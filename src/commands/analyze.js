@@ -4,7 +4,7 @@ import path from "node:path";
 import http from "node:http";
 import { analyzeWithBestEngine } from "../lib/analyzeFacade.js";
 import { printJson, printText } from "../lib/output.js";
-import { getCacheRoot, cacheLayout, ensureCacheDirs, loadState, saveState } from "../lib/cache.js";
+import { getCacheRoot, cacheLayout, ensureCacheDirs, updateState } from "../lib/cache.js";
 import { nowIso } from "../lib/time.js";
 import { shortHash } from "../lib/hash.js";
 import { enrichPackagesWithManifest } from "../lib/packageMeta.js";
@@ -352,22 +352,22 @@ export async function cmdAnalyze(argv) {
     const cacheRoot = getCacheRoot(values["cache-root"]);
     let layout = cacheLayout(cacheRoot);
     layout = await ensureCacheDirs(layout, { projectRootForFallback: projectRoot });
-    const state = await loadState(layout);
-    const projectId = shortHash(projectRoot);
-    const analysisId = `${Date.now()}-${shortHash(`${projectRoot}:analysis`)}`;
-    const savedPath = path.join(layout.analysesDir, `${analysisId}.json`);
-    await fs.writeFile(savedPath, `${JSON.stringify({ ...report, savedAt: nowIso(), analysisId }, null, 2)}\n`);
+    await updateState(layout, async (state) => {
+      const projectId = shortHash(projectRoot);
+      const analysisId = `${Date.now()}-${shortHash(`${projectRoot}:analysis`)}`;
+      const savedPath = path.join(layout.analysesDir, `${analysisId}.json`);
+      await fs.writeFile(savedPath, `${JSON.stringify({ ...report, savedAt: nowIso(), analysisId }, null, 2)}\n`);
 
-    if (report.ok) {
-      for (const p of report.packages) {
-        const key = p.key;
-        const entry = state.analysesIndex[key] ?? { lastSeenAt: null, projects: {} };
-        entry.lastSeenAt = nowIso();
-        entry.projects[projectId] = entry.lastSeenAt;
-        state.analysesIndex[key] = entry;
+      if (report.ok) {
+        for (const p of report.packages) {
+          const key = p.key;
+          const entry = state.analysesIndex[key] ?? { lastSeenAt: null, projects: {} };
+          entry.lastSeenAt = nowIso();
+          entry.projects[projectId] = entry.lastSeenAt;
+          state.analysesIndex[key] = entry;
+        }
       }
-    }
-    await saveState(layout, state);
+    }, { projectKeys: [] });
   }
 
   if (values.out) {

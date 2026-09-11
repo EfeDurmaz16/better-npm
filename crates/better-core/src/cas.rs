@@ -136,7 +136,7 @@ pub fn ingest_to_file_cas(
     // Process files in parallel using rayon
     use rayon::prelude::*;
 
-    let results: Vec<Result<(String, String, u64, u32, bool), String>> = files_to_process
+    let results: Vec<Result<(String, String, u64, u32, bool), String>> = crate::analyze::materialize_pool()?.install(|| files_to_process
         .par_iter()
         .map(|(full_path, rel_path)| -> Result<(String, String, u64, u32, bool), String> {
             let hex = hash_file(full_path)?;
@@ -163,7 +163,7 @@ pub fn ingest_to_file_cas(
 
             Ok((rel_path.clone(), hex, size, mode, is_new))
         })
-        .collect();
+        .collect());
 
     // Collect statistics and file entries
     let mut total_files = 0u64;
@@ -321,6 +321,8 @@ pub fn materialize_from_file_cas(
                 files: 0,
                 linked: 0,
                 copied: 0,
+                files_reused: 0,
+                symlinks_reused: 0,
                 symlinks: 0,
             });
         }
@@ -399,14 +401,20 @@ pub fn materialize_from_file_cas(
     let file_count = AtomicU64::new(0);
     let linked_count = AtomicU64::new(0);
     let copied_count = AtomicU64::new(0);
+    let reused_count = AtomicU64::new(0);
 
-    file_entries.par_iter().try_for_each(|(rel_path, hash, mode)| -> Result<(), String> {
+    let pool = crate::analyze::materialize_pool()?;
+    let chunk_size = file_entries.len().div_ceil(pool.current_num_threads()).max(1);
+    pool.install(|| file_entries.par_chunks(chunk_size).try_for_each(|chunk| {
+        let mut staging = crate::MaterializeStaging::default();
+        chunk.iter().try_for_each(|(rel_path, hash, mode)| -> Result<(), String> {
         let store_path = file_store_path(store_root, hash);
         let dest_path = dest_dir.join(rel_path);
         match link_strategy {
             LinkStrategy::Copy | LinkStrategy::Auto => {
-                crate::copy_file_with_mode(&store_path, &dest_path, Some(*mode))?;
-                copied_count.fetch_add(1, Ordering::Relaxed);
+                if staging.copy_if_changed(&store_path, &dest_path, Some(*mode))? {
+                    reused_count.fetch_add(1, Ordering::Relaxed);
+                } else { copied_count.fetch_add(1, Ordering::Relaxed); }
             }
             LinkStrategy::Hardlink => {
                 let stored_mode = fs::metadata(&store_path).map(|md| get_file_mode(&md) & 0o7777)
@@ -414,33 +422,39 @@ pub fn materialize_from_file_cas(
                 if stored_mode == (*mode & 0o7777) && crate::hardlink_with_retry(&store_path, &dest_path).is_ok() {
                     linked_count.fetch_add(1, Ordering::Relaxed);
                 } else {
-                    crate::copy_file_with_mode(&store_path, &dest_path, Some(*mode))?;
+                    staging.copy(&store_path, &dest_path, Some(*mode))?;
                     copied_count.fetch_add(1, Ordering::Relaxed);
                 }
             }
         }
         file_count.fetch_add(1, Ordering::Relaxed);
         Ok(())
-    })?;
+        })
+    }))?;
 
     let mut stats = FileCasMaterializeResult {
         ok: true,
         files: file_count.load(Ordering::Relaxed),
         linked: linked_count.load(Ordering::Relaxed),
         copied: copied_count.load(Ordering::Relaxed),
+        files_reused: reused_count.load(Ordering::Relaxed),
+        symlinks_reused: 0,
         symlinks: 0,
     };
 
-    // Create symlinks
-    for (rel_path, target) in symlink_entries {
-        let dest_path = dest_dir.join(&rel_path);
-
-        crate::create_symlink_with_retry(&MaterializeSymlinkTask {
-            src: dest_path.clone(), dst: dest_path, target: PathBuf::from(target),
-        })?;
-
-        stats.symlinks += 1;
-    }
+    // Symlink publication shares the same executor and reuses its staging arenas.
+    pool.install(|| -> Result<(), String> {
+        let mut staging = crate::MaterializeStaging::default();
+        for (rel_path, target) in symlink_entries {
+            let dest_path = dest_dir.join(&rel_path);
+            let reused = staging.symlink_if_changed(&MaterializeSymlinkTask {
+                src: dest_path.clone(), dst: dest_path, target: PathBuf::from(target),
+            })?;
+            stats.symlinks += 1;
+            if reused { stats.symlinks_reused += 1; }
+        }
+        Ok(())
+    })?;
 
     Ok(stats)
 }
@@ -551,6 +565,29 @@ mod tests {
         assert_eq!(result.files, 0);
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_cas_reconciles_same_length_edits_and_reports_reuse() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = temp.path().join("store");
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        setup_pkg_dir(&source, &[("index.js", b"original")]);
+        let key = "a1".repeat(32);
+        ingest_to_file_cas(&store, "sha256", &key, &source).unwrap();
+        let run = || materialize_from_file_cas(&store, "sha256", &key, &destination, LinkStrategy::Copy).unwrap();
+        assert_eq!(run().copied, 1);
+        let warm = run();
+        assert_eq!(warm.files, 1);
+        assert_eq!(warm.files_reused, 1);
+        assert_eq!(warm.copied, 0);
+        fs::write(destination.join("index.js"), "modified").unwrap();
+        let repaired = run();
+        assert_eq!(repaired.copied, 1);
+        assert_eq!(repaired.files_reused, 0);
+        assert_eq!(fs::read_to_string(destination.join("index.js")).unwrap(), "original");
     }
 
     #[test]

@@ -13,6 +13,18 @@ pub struct InstallProgress {
 }
 
 impl InstallProgress {
+    /// Resident hosts own their UI. Avoid style parsing, rendering and NDJSON.
+    pub fn disabled() -> Self {
+        Self {
+            _multi: MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::hidden()),
+            resolve_bar: ProgressBar::hidden(),
+            fetch_bar: ProgressBar::hidden(),
+            extract_bar: ProgressBar::hidden(),
+            link_bar: ProgressBar::hidden(),
+            json_progress: false,
+        }
+    }
+
     pub fn new(is_tty: bool, json_progress: bool) -> Self {
         let multi = MultiProgress::new();
 

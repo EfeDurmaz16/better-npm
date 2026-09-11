@@ -1,12 +1,12 @@
-use std::collections::HashMap;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::types::*;
 use crate::{
-    cas_key_from_integrity, extract_json_object_pairs,
-    ingest_to_file_cas, materialize_tree, try_clonefile_dir, unpacked_path,
-    remove_path_if_exists,
+    cas_key_from_integrity, extract_json_object_pairs, materialize_tree, remove_path_if_exists,
+    try_clonefile_dir, unpacked_path,
 };
 
 /// Read a package.json and extract declared dependency names.
@@ -62,7 +62,7 @@ pub fn materialize_strict(
     packages: &[ResolvedPackage],
     project_root: &Path,
     cas_layout: &CasLayout,
-    file_cas_root: &Path,
+    _file_cas_root: &Path,
     link_strategy: LinkStrategy,
 ) -> Result<StrictMaterializeStats, String> {
     crate::validate_package_paths(packages)?;
@@ -72,28 +72,16 @@ pub fn materialize_strict(
     let store_dir = node_modules.join(".better");
     crate::create_materialize_dir(&node_modules, &store_dir)?;
 
-    // Build name@version -> ResolvedPackage lookup
-    let mut by_key: HashMap<String, &ResolvedPackage> = HashMap::new();
-    // Also build name -> key for direct dep lookup
-    let mut name_to_key: HashMap<String, String> = HashMap::new();
-
-    for pkg in packages {
-        let key = format!("{}@{}", pkg.name, pkg.version);
-        by_key.insert(key.clone(), pkg);
-        // For packages with the same name, prefer the top-level one (shortest rel_path)
-        let existing = name_to_key.get(&pkg.name);
-        if existing.is_none() || pkg.rel_path.len() < by_key[existing.unwrap()].rel_path.len() {
-            name_to_key.insert(pkg.name.clone(), key);
-        }
-    }
-
+    let locations: BTreeMap<_, _> = packages
+        .iter()
+        .enumerate()
+        .map(|(index, pkg)| (pkg.rel_path.as_str(), index))
+        .collect();
+    let keys = store_keys(packages);
     // Phase 1: Materialize each package into the store
-    for pkg in packages {
-        let key = format!("{}@{}", pkg.name, pkg.version);
-        let pkg_real_dir = store_dir
-            .join(&key)
-            .join("node_modules")
-            .join(&pkg.name);
+    for (index, pkg) in packages.iter().enumerate() {
+        let key = &keys[index];
+        let pkg_real_dir = store_dir.join(&key).join("node_modules").join(&pkg.name);
 
         crate::create_materialize_dir(&node_modules, &pkg_real_dir)?;
 
@@ -104,18 +92,26 @@ pub fn materialize_strict(
             let unpacked = unpacked_path(cas_layout, &algo, &hex);
             let src_dir = unpacked.join("package");
             if src_dir.exists() {
-                // Ingest to file CAS for dedup
-                let _ = ingest_to_file_cas(file_cas_root, &algo, &hex, &src_dir);
-
                 // Try clonefile first (macOS APFS)
-                if matches!(link_strategy, LinkStrategy::Auto) && try_clonefile_dir(&src_dir, &pkg_real_dir) {
+                if matches!(link_strategy, LinkStrategy::Auto)
+                    && try_clonefile_dir(&src_dir, &pkg_real_dir)
+                {
                     true
                 } else {
                     // Fallback to materialize_tree
-                    match materialize_tree(&src_dir, &pkg_real_dir, link_strategy, 4, MaterializeProfile::Auto) {
+                    match materialize_tree(
+                        &src_dir,
+                        &pkg_real_dir,
+                        link_strategy,
+                        4,
+                        MaterializeProfile::Auto,
+                    ) {
                         Ok(report) => {
                             stats.files_linked += report.stats.files_linked;
                             stats.files_copied += report.stats.files_copied;
+                            stats.files_reused += report.stats.files_reused;
+                            stats.symlinks_reused += report.stats.symlinks_reused;
+                            stats.package_symlinks += report.stats.symlinks;
                             stats.directories += report.stats.directories;
                             true
                         }
@@ -137,16 +133,32 @@ pub fn materialize_strict(
     }
 
     // Phase 2: Create internal dependency symlinks
-    // For each package in the store, read its package.json and create symlinks
-    // to its declared dependencies.
-    for pkg in packages {
-        let key = format!("{}@{}", pkg.name, pkg.version);
+    // Resolve lockfile declarations through the shared location index.
+    for (index, pkg) in packages.iter().enumerate() {
+        let key = &keys[index];
         let pkg_nm = store_dir.join(&key).join("node_modules");
         let pkg_real_dir = pkg_nm.join(&pkg.name);
 
-        let declared_deps = read_declared_deps(&pkg_real_dir);
+        let mut declared_deps: BTreeMap<String, bool> = pkg
+            .selection
+            .dependencies
+            .keys()
+            .chain(pkg.selection.optional_dependencies.keys())
+            .map(|name| (name.clone(), false))
+            .collect();
+        for name in pkg.selection.peer_dependencies.keys() {
+            declared_deps.entry(name.clone()).or_insert(true);
+        }
+        // Legacy callers can supply packages without lockfile dependency metadata.
+        if declared_deps.is_empty() {
+            declared_deps.extend(
+                read_declared_deps(&pkg_real_dir)
+                    .into_iter()
+                    .map(|name| (name, false)),
+            );
+        }
 
-        for dep_name in &declared_deps {
+        for (dep_name, peer) in &declared_deps {
             let link_path = pkg_nm.join(dep_name);
 
             // Don't overwrite the real package directory itself
@@ -154,41 +166,40 @@ pub fn materialize_strict(
                 continue;
             }
 
-            // Skip if already exists (could be a real dir or existing symlink)
-            if link_path.symlink_metadata().is_ok() {
-                continue;
-            }
+            let dep_index = crate::platform_selection::lookup_target(
+                &pkg.rel_path,
+                dep_name,
+                *peer,
+                &locations,
+            );
 
-            // Find the resolved version of this dependency
-            // Use the rel_path hierarchy to determine which version applies
-            let dep_key = find_dep_version(dep_name, pkg, packages);
-
-            if let Some(dep_key) = dep_key {
-                let target = store_dir
-                    .join(&dep_key)
-                    .join("node_modules")
-                    .join(dep_name);
+            if let Some(dep_index) = dep_index {
+                let target = store_dir.join(&keys[dep_index]).join("node_modules")
+                    .join(&packages[dep_index].name);
 
                 // Handle scoped packages: create @scope/ dir first
                 if dep_name.contains('/') {
                     if let Some(parent) = link_path.parent() {
-                        let _ = fs::create_dir_all(parent);
+                        crate::create_materialize_dir(&node_modules, parent)?;
                         stats.directories += 1;
                     }
                 }
 
                 // Create relative symlink
                 let rel_target = pathdiff_relative(&link_path, &target);
+                if fs::read_link(&link_path).ok().as_ref() == Some(&rel_target) {
+                    continue;
+                }
+                remove_path_if_exists(&link_path)?;
                 #[cfg(unix)]
                 {
-                    if let Err(_) = std::os::unix::fs::symlink(&rel_target, &link_path) {
-                        // Try absolute as fallback
-                        let _ = std::os::unix::fs::symlink(&target, &link_path);
-                    }
+                    std::os::unix::fs::symlink(&rel_target, &link_path)
+                        .map_err(|error| format!("Failed to link {}: {}", link_path.display(), error))?;
                 }
                 #[cfg(windows)]
                 {
-                    let _ = std::os::windows::fs::symlink_dir(&target, &link_path);
+                    std::os::windows::fs::symlink_dir(&target, &link_path)
+                        .map_err(|error| format!("Failed to link {}: {}", link_path.display(), error))?;
                 }
                 stats.internal_symlinks += 1;
             }
@@ -199,34 +210,33 @@ pub fn materialize_strict(
     let direct_deps = read_direct_deps(project_root);
 
     for dep_name in &direct_deps {
-        if let Some(key) = name_to_key.get(dep_name) {
+        if let Some(index) = locations.get(format!("node_modules/{}", dep_name).as_str()) {
+            let key = &keys[*index];
             let link_path = node_modules.join(dep_name);
-            let target = store_dir
-                .join(key)
-                .join("node_modules")
-                .join(dep_name);
+            let target = store_dir.join(key).join("node_modules").join(&packages[*index].name);
 
             // Handle scoped packages
             if dep_name.contains('/') {
                 if let Some(parent) = link_path.parent() {
-                    let _ = fs::create_dir_all(parent);
+                    crate::create_materialize_dir(&node_modules, parent)?;
                 }
             }
-
-            // Remove existing entry
-            let _ = remove_path_if_exists(&link_path);
 
             // Create relative symlink
             let rel_target = pathdiff_relative(&link_path, &target);
+            if fs::read_link(&link_path).ok().as_ref() == Some(&rel_target) {
+                continue;
+            }
+            remove_path_if_exists(&link_path)?;
             #[cfg(unix)]
             {
-                if let Err(_) = std::os::unix::fs::symlink(&rel_target, &link_path) {
-                    let _ = std::os::unix::fs::symlink(&target, &link_path);
-                }
+                std::os::unix::fs::symlink(&rel_target, &link_path)
+                    .map_err(|error| format!("Failed to link {}: {}", link_path.display(), error))?;
             }
             #[cfg(windows)]
             {
-                let _ = std::os::windows::fs::symlink_dir(&target, &link_path);
+                std::os::windows::fs::symlink_dir(&target, &link_path)
+                        .map_err(|error| format!("Failed to link {}: {}", link_path.display(), error))?;
             }
             stats.root_symlinks += 1;
         }
@@ -235,63 +245,43 @@ pub fn materialize_strict(
     Ok(stats)
 }
 
-/// Find the resolved version key for a dependency of a given package.
-/// Uses npm's nested resolution algorithm: look for the dep in the package's own
-/// node_modules first, then walk up to find the hoisted version.
+/// Distinct lockfile locations can have different dependency/peer contexts even
+/// when their package bytes and version match. Never merge their writable trees.
+fn store_keys(packages: &[ResolvedPackage]) -> Vec<String> {
+    let mut counts = HashMap::new();
+    for pkg in packages {
+        *counts.entry((&pkg.name, &pkg.version)).or_insert(0usize) += 1;
+    }
+    packages
+        .iter()
+        .map(|pkg| {
+            let base = format!("{}@{}", pkg.name, pkg.version);
+            if counts[&(&pkg.name, &pkg.version)] == 1 {
+                return base;
+            }
+            let mut identity = Sha256::new();
+            identity.update(base.as_bytes());
+            identity.update([0]);
+            identity.update(pkg.rel_path.as_bytes());
+            // Keep the whole component bounded even for long valid npm names.
+            format!("ctx-{:x}", identity.finalize())
+        })
+        .collect()
+}
+
+#[cfg(test)]
 fn find_dep_version(
     dep_name: &str,
     parent_pkg: &ResolvedPackage,
-    all_packages: &[ResolvedPackage],
+    packages: &[ResolvedPackage],
 ) -> Option<String> {
-    // In npm's package-lock.json, dependencies are placed at specific paths.
-    // If parent is at node_modules/express and dep is debug,
-    // npm would place debug at node_modules/express/node_modules/debug (nested)
-    // or at node_modules/debug (hoisted).
-
-    // First: check for a nested version under the parent's path
-    let parent_base = &parent_pkg.rel_path; // e.g. "node_modules/express"
-    let nested_path = format!("{}/node_modules/{}", parent_base, dep_name);
-
-    for pkg in all_packages {
-        if pkg.rel_path == nested_path && pkg.name == dep_name {
-            return Some(format!("{}@{}", pkg.name, pkg.version));
-        }
-    }
-
-    // Second: walk up the parent path to find hoisted versions
-    // e.g. from node_modules/a/node_modules/b, try node_modules/a/node_modules/{dep}, then node_modules/{dep}
-    let mut search_path = parent_base.to_string();
-    loop {
-        // Go up one node_modules level
-        if let Some(pos) = search_path.rfind("/node_modules/") {
-            search_path = search_path[..pos].to_string();
-            let candidate = format!("{}/node_modules/{}", search_path, dep_name);
-            for pkg in all_packages {
-                if pkg.rel_path == candidate && pkg.name == dep_name {
-                    return Some(format!("{}@{}", pkg.name, pkg.version));
-                }
-            }
-        } else {
-            break;
-        }
-    }
-
-    // Final: check top-level
-    let top_level = format!("node_modules/{}", dep_name);
-    for pkg in all_packages {
-        if pkg.rel_path == top_level && pkg.name == dep_name {
-            return Some(format!("{}@{}", pkg.name, pkg.version));
-        }
-    }
-
-    // Fallback: find any package with this name (use first match)
-    for pkg in all_packages {
-        if pkg.name == dep_name {
-            return Some(format!("{}@{}", pkg.name, pkg.version));
-        }
-    }
-
-    None
+    let locations = packages
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (p.rel_path.as_str(), i))
+        .collect();
+    crate::platform_selection::lookup_target(&parent_pkg.rel_path, dep_name, false, &locations)
+        .map(|index| format!("{}@{}", packages[index].name, packages[index].version))
 }
 
 /// Compute a relative path from `from` (a file/link path) to `to` (a target path).
@@ -328,12 +318,62 @@ fn pathdiff_relative(from: &Path, to: &Path) -> PathBuf {
 mod tests {
     use super::*;
 
+    fn package(name: &str, location: &str) -> ResolvedPackage {
+        ResolvedPackage {
+            name: name.into(),
+            version: "1".into(),
+            rel_path: location.into(),
+            integrity: String::new(),
+            resolved_url: String::new(),
+            selection: Default::default(),
+        }
+    }
+
+    #[test]
+    fn identical_versions_keep_distinct_dependency_contexts() {
+        let packages = vec![
+            package("a", "node_modules/a"),
+            package("a", "node_modules/b/node_modules/a"),
+        ];
+        let keys = store_keys(&packages);
+        assert_ne!(keys[0], keys[1]);
+        assert_eq!(keys, store_keys(&packages));
+    }
+
+    #[test]
+    fn long_duplicate_names_have_bounded_context_components() {
+        let name = "a".repeat(210);
+        let packages = vec![
+            package(&name, &format!("node_modules/{name}")),
+            package(&name, &format!("node_modules/parent/node_modules/{name}")),
+        ];
+        let keys = store_keys(&packages);
+        assert_ne!(keys[0], keys[1]);
+        let root = tempfile::tempdir().unwrap();
+        for key in keys {
+            assert_eq!(key.len(), 68);
+            fs::create_dir(root.path().join(key)).unwrap();
+        }
+    }
+
+    #[test]
+    fn dependency_in_sibling_subtree_is_not_visible() {
+        let packages = vec![
+            package("a", "node_modules/a"),
+            package("dep", "node_modules/b/node_modules/dep"),
+        ];
+        assert!(find_dep_version("dep", &packages[0], &packages).is_none());
+    }
+
     #[test]
     fn test_pathdiff_relative() {
         let from = Path::new("/project/node_modules/express");
         let to = Path::new("/project/node_modules/.better/express@4.18.2/node_modules/express");
         let result = pathdiff_relative(from, to);
-        assert_eq!(result, PathBuf::from(".better/express@4.18.2/node_modules/express"));
+        assert_eq!(
+            result,
+            PathBuf::from(".better/express@4.18.2/node_modules/express")
+        );
     }
 
     #[test]
@@ -341,7 +381,10 @@ mod tests {
         let from = Path::new("/project/node_modules/.better/express@4.18.2/node_modules/debug");
         let to = Path::new("/project/node_modules/.better/debug@2.6.9/node_modules/debug");
         let result = pathdiff_relative(from, to);
-        assert_eq!(result, PathBuf::from("../../debug@2.6.9/node_modules/debug"));
+        assert_eq!(
+            result,
+            PathBuf::from("../../debug@2.6.9/node_modules/debug")
+        );
     }
 
     #[test]
@@ -439,7 +482,8 @@ mod tests {
         std::fs::write(
             tmp.join("package.json"),
             r#"{"dependencies":{"express":"^4"},"devDependencies":{"jest":"^29"}}"#,
-        ).unwrap();
+        )
+        .unwrap();
         let deps = read_direct_deps(&tmp);
         assert!(deps.contains(&"express".to_string()));
         assert!(deps.contains(&"jest".to_string()));

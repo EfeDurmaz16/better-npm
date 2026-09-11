@@ -67,11 +67,16 @@ jobs:
         run: npm run lint && npm run build && npm run typecheck
 
       - name: Run Node.js tests
+        env:
+          BETTER_PACKAGING_CORE_PATH: ${{ github.workspace }}/crates/target/release/better-core
+          BETTER_PACKAGING_ADDON_PATH: ${{ github.workspace }}/crates/better-napi/better-core.node
         run: node --test test/*.test.js
 
       - name: Test worktree evidence harness
         if: matrix.os == 'ubuntu-latest' && matrix.node-version == 22
-        run: python3 benchmarks/test_worktrees.py
+        run: |
+          python3 benchmarks/test_worktrees.py
+          python3 benchmarks/test_paired_worktrees.py
 
       - name: Worktree evidence smoke
         if: matrix.os == 'ubuntu-latest' && matrix.node-version == 22

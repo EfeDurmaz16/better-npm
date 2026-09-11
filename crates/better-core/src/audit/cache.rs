@@ -1,10 +1,36 @@
 // crates/better-core/src/audit/cache.rs
 
+use sha2::{Digest, Sha256};
+use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// TTL for OSV cache entries (24 hours)
 const CACHE_TTL_SECS: u64 = 86_400;
+
+const CACHE_SCHEMA: u32 = 2;
+const MAX_ENTRY_BYTES: u64 = 32 * 1024 * 1024;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct EvidenceEnvelope {
+    schema: u32,
+    request_digest: String,
+    fetched_at: u64,
+    expires_at: u64,
+    response_digest: String,
+    response: String,
+}
+
+pub(crate) fn digest(value: &str) -> String {
+    format!("{:x}", Sha256::digest(value.as_bytes()))
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
 
 pub struct OsvCache {
     cache_dir: PathBuf,
@@ -20,23 +46,98 @@ impl OsvCache {
         Self { cache_dir }
     }
 
-    /// Returns the cached OSV JSON response for a batch key, or None if stale/absent.
+    /// Raw evidence only. Callers must recompute policy, scoring and expiring waivers.
+    /// Legacy entries and corrupt, expired or future-dated envelopes are misses.
     pub fn get(&self, batch_key: &str) -> Option<String> {
-        let path = self.entry_path(batch_key);
-        let metadata = std::fs::metadata(&path).ok()?;
-        let modified = metadata.modified().ok()?;
-        let age = SystemTime::now().duration_since(modified).unwrap_or(Duration::MAX);
-        if age > Duration::from_secs(CACHE_TTL_SECS) {
+        let file = std::fs::File::open(self.entry_path(batch_key)).ok()?;
+        if file.metadata().ok()?.len() > MAX_ENTRY_BYTES {
             return None;
         }
-        std::fs::read_to_string(&path).ok()
+        let mut bytes = Vec::new();
+        file.take(MAX_ENTRY_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        if bytes.len() as u64 > MAX_ENTRY_BYTES {
+            return None;
+        }
+        let entry: EvidenceEnvelope = serde_json::from_slice(&bytes).ok()?;
+        let now = now_secs();
+        if entry.schema != CACHE_SCHEMA
+            || entry.request_digest != digest(batch_key)
+            || entry.fetched_at > now
+            || entry.expires_at <= now
+            || entry.expires_at < entry.fetched_at
+            || entry.expires_at - entry.fetched_at > CACHE_TTL_SECS
+            || entry.response_digest != digest(&entry.response)
+        {
+            return None;
+        }
+        Some(entry.response)
     }
 
-    /// Store OSV JSON response for a batch key.
     pub fn put(&self, batch_key: &str, json: &str) -> std::io::Result<()> {
+        self.put_with_ttl(batch_key, json, CACHE_TTL_SECS)
+    }
+
+    /// Publish a complete envelope with atomic rename; interrupted writers cannot
+    /// replace a readable entry with a partial JSON document.
+    pub(crate) fn put_with_ttl(
+        &self,
+        batch_key: &str,
+        json: &str,
+        ttl: u64,
+    ) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.cache_dir)?;
-        let path = self.entry_path(batch_key);
-        std::fs::write(path, json)
+        let now = now_secs();
+        let entry = EvidenceEnvelope {
+            schema: CACHE_SCHEMA,
+            request_digest: digest(batch_key),
+            fetched_at: now,
+            expires_at: now.saturating_add(ttl.min(CACHE_TTL_SECS)),
+            response_digest: digest(json),
+            response: json.to_owned(),
+        };
+        let bytes = serde_json::to_vec(&entry)?;
+        if bytes.len() as u64 > MAX_ENTRY_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "evidence cache entry exceeds limit",
+            ));
+        }
+        let temporary = self.cache_dir.join(format!(
+            ".{}.{}.{}.tmp",
+            digest(batch_key),
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let result = (|| {
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(&temporary)?;
+            file.write_all(&bytes)?;
+            std::fs::rename(&temporary, self.entry_path(batch_key))
+        })();
+        let _ = std::fs::remove_file(temporary);
+        result
+    }
+
+    /// Stable lock inode, deliberately not removed on release. A waiter rechecks
+    /// freshness after acquiring it, merging concurrent cold requests.
+    pub(crate) fn lock(&self, key: &str) -> std::io::Result<std::fs::File> {
+        std::fs::create_dir_all(&self.cache_dir)?;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(self.cache_dir.join(format!("{}.lock", digest(key))))?;
+        file.lock()?;
+        Ok(file)
     }
 
     /// Delete a cache entry.
@@ -52,7 +153,12 @@ impl OsvCache {
         }
         for entry in std::fs::read_dir(&self.cache_dir)? {
             let entry = entry?;
-            if entry.path().extension().map(|e| e == "json").unwrap_or(false) {
+            if entry
+                .path()
+                .extension()
+                .map(|e| e == "json")
+                .unwrap_or(false)
+            {
                 std::fs::remove_file(entry.path())?;
                 count += 1;
             }
@@ -74,9 +180,16 @@ impl OsvCache {
                         count += 1;
                         bytes += meta.len();
                         if let Ok(modified) = meta.modified() {
-                            let ts = modified.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-                            if ts < oldest { oldest = ts; }
-                            if ts > newest { newest = ts; }
+                            let ts = modified
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs();
+                            if ts < oldest {
+                                oldest = ts;
+                            }
+                            if ts > newest {
+                                newest = ts;
+                            }
                         }
                     }
                 }
@@ -85,19 +198,18 @@ impl OsvCache {
         CacheStats {
             entries: count,
             total_bytes: bytes,
-            oldest_ts: if oldest == u64::MAX { None } else { Some(oldest) },
+            oldest_ts: if oldest == u64::MAX {
+                None
+            } else {
+                Some(oldest)
+            },
             newest_ts: if newest == 0 { None } else { Some(newest) },
             cache_dir: self.cache_dir.display().to_string(),
         }
     }
 
     fn entry_path(&self, key: &str) -> PathBuf {
-        // Sanitize key to valid filename
-        let safe: String = key
-            .chars()
-            .map(|c| if c.is_alphanumeric() || c == '-' || c == '.' || c == '_' { c } else { '_' })
-            .collect();
-        self.cache_dir.join(format!("{}.json", safe))
+        self.cache_dir.join(format!("{}.json", digest(key)))
     }
 }
 
@@ -210,5 +322,55 @@ mod tests {
         assert_eq!(stats.entries, 1);
         assert!(stats.total_bytes >= content.len() as u64);
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+    #[test]
+    fn evidence_rejects_expiry_corruption_and_other_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = OsvCache::with_dir(dir.path().to_owned());
+        cache.put("request-a", "response").unwrap();
+        let path = cache.entry_path("request-a");
+        let original = std::fs::read(&path).unwrap();
+        let mut entry: EvidenceEnvelope = serde_json::from_slice(&original).unwrap();
+        entry.response = "different response".into();
+        std::fs::write(&path, serde_json::to_vec(&entry).unwrap()).unwrap();
+        assert!(cache.get("request-a").is_none());
+        std::fs::write(cache.entry_path("request-b"), &original).unwrap();
+        assert!(cache.get("request-b").is_none());
+        cache.put_with_ttl("expired", "response", 0).unwrap();
+        assert!(cache.get("expired").is_none());
+        let mut entry: EvidenceEnvelope = serde_json::from_slice(&original).unwrap();
+        entry.fetched_at = now_secs() + 100;
+        entry.expires_at = entry.fetched_at + 100;
+        std::fs::write(&path, serde_json::to_vec(&entry).unwrap()).unwrap();
+        assert!(cache.get("request-a").is_none());
+    }
+
+    #[test]
+    fn request_keys_do_not_collide_after_long_prefix_or_filename_sanitizing() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = OsvCache::with_dir(dir.path().to_owned());
+        let prefix = "same".repeat(100);
+        cache.put(&format!("{prefix}/a"), "first").unwrap();
+        cache.put(&format!("{prefix}_a"), "second").unwrap();
+        assert_eq!(cache.get(&format!("{prefix}/a")).as_deref(), Some("first"));
+        assert_eq!(cache.get(&format!("{prefix}_a")).as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn concurrent_publication_only_exposes_complete_envelopes() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = OsvCache::with_dir(dir.path().to_owned());
+        cache.put("same", "initial").unwrap();
+        std::thread::scope(|scope| {
+            for n in 0..4 {
+                let cache = &cache;
+                scope.spawn(move || {
+                    for _ in 0..10 {
+                        cache.put("same", &format!("response-{n}")).unwrap();
+                        assert!(cache.get("same").is_some());
+                    }
+                });
+            }
+        });
     }
 }

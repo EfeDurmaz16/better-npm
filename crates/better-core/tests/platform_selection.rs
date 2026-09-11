@@ -104,3 +104,18 @@ fn invalid_cpu_and_missing_root_metadata_fail_explicitly() {
     let resolved = resolve_from_lockfile(&lock).unwrap();
     assert!(select_platform_packages(&resolved,false,"darwin","arm64").err().unwrap().contains("root package metadata"));
 }
+
+#[test]
+fn optional_failure_propagates_through_cycles_and_stops_at_optional_edges() {
+    let packages = select(
+        json!({"dependencies":{"app":"1"},"optionalDependencies":{"a":"1"}}),
+        vec![
+            ("node_modules/app", json!({"optionalDependencies":{"a":"1"}})),
+            ("node_modules/a", json!({"optional":true,"dependencies":{"b":"1"}})),
+            ("node_modules/b", json!({"optional":true,"dependencies":{"a":"1","foreign":"1"}})),
+            ("node_modules/foreign", json!({"optional":true,"os":["linux"]})),
+        ],
+        false,
+    ).unwrap();
+    assert_eq!(packages, ["node_modules/app"]);
+}

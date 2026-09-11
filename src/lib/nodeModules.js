@@ -22,16 +22,21 @@ async function isDirOrSymlinkToDir(fullPath, dirent) {
   }
 }
 
-export async function listInstalledPackageDirs(nodeModulesDir) {
+export async function listInstalledPackageDirs(nodeModulesDir, opts = {}) {
+  const readDirectory = async (dir) => opts.directoryEntries?.get(dir) ?? fs.readdir(dir, { withFileTypes: true });
   const out = [];
   if (!(await exists(nodeModulesDir))) return out;
 
   const queue = [nodeModulesDir];
+  const visited = new Set();
   while (queue.length > 0) {
     const current = queue.pop();
     let entries;
     try {
-      entries = await fs.readdir(current, { withFileTypes: true });
+      const real = await fs.realpath(current);
+      if (visited.has(real)) continue;
+      visited.add(real);
+      entries = await readDirectory(current);
     } catch {
       continue;
     }
@@ -50,7 +55,7 @@ export async function listInstalledPackageDirs(nodeModulesDir) {
       if (entry.name.startsWith("@")) {
         let scoped;
         try {
-          scoped = await fs.readdir(full, { withFileTypes: true });
+          scoped = await readDirectory(full);
         } catch {
           continue;
         }
@@ -86,13 +91,19 @@ async function readPackageIdentity(pkgDir) {
   }
 }
 
-export async function countInstalledPackages(nodeModulesDir) {
-  const dirs = await listInstalledPackageDirs(nodeModulesDir);
+export async function countInstalledPackages(nodeModulesDir, opts = {}) {
+  const dirs = await listInstalledPackageDirs(nodeModulesDir, opts);
   const identities = new Set();
-  for (const dir of dirs) {
-    const ident = await readPackageIdentity(dir);
-    if (ident) identities.add(ident);
-  }
+  let next = 0;
+  // Bound open descriptors and queued promises independently of package count.
+  const workerCount = Math.min(8, dirs.length);
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (next < dirs.length) {
+      const dir = dirs[next++];
+      const ident = await readPackageIdentity(dir);
+      if (ident) identities.add(ident);
+    }
+  }));
   return identities.size;
 }
 
@@ -113,14 +124,25 @@ export async function collectNodeModulesSnapshot(projectRoot, opts = {}) {
     };
   }
 
-  const [size, packageCount] = await Promise.all([
-    scanTreeWithBestEngine(nodeModulesPath, {
-      coreMode: opts.coreMode ?? "auto",
-      duFallback: opts.duFallback ?? "auto",
-      quickLogical: opts.quickLogical === true
-    }),
-    includePackageCount ? countInstalledPackages(nodeModulesPath) : Promise.resolve(null)
-  ]);
+  // Only retain entries needed for package enumeration, and only for this
+  // observation. The JS size fallback supplies them during its existing walk.
+  const directoryEntries = new Map();
+  const size = await scanTreeWithBestEngine(nodeModulesPath, {
+    coreMode: opts.coreMode ?? "auto",
+    duFallback: opts.duFallback ?? "auto",
+    quickLogical: opts.quickLogical === true,
+    observeDirectory: includePackageCount ? (dir, entries) => {
+      const name = path.basename(dir);
+      if (name === "node_modules" || name === ".pnpm" || name.startsWith("@")) {
+        directoryEntries.set(dir, entries);
+      }
+    } : undefined
+  });
+  // Native size counts are not distinct package identities. Preserve that
+  // contract until the native scanner exports a compatible identity inventory.
+  const packageCount = includePackageCount
+    ? await countInstalledPackages(nodeModulesPath, { directoryEntries })
+    : null;
   const resolvedPackageCount = packageCount ?? (
     Number.isFinite(size?.packageCount) ? Number(size.packageCount) : null
   );

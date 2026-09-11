@@ -1,4 +1,5 @@
 import https from "node:https";
+import { createOsvEvidenceService, OsvEvidenceError } from "./osvEvidence.js";
 
 /**
  * OSV.dev API client for querying known vulnerabilities.
@@ -10,6 +11,8 @@ import https from "node:https";
 const OSV_API_BASE = "https://api.osv.dev/v1";
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_BATCH_SIZE = 1000;
+const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
+const httpAgent = new https.Agent({ keepAlive: true, maxSockets: 8 });
 
 /**
  * Make an HTTPS POST request and return parsed JSON.
@@ -25,6 +28,7 @@ function httpsPost(url, body, timeoutMs = DEFAULT_TIMEOUT_MS) {
         port: parsed.port || 443,
         path: parsed.pathname + parsed.search,
         method: "POST",
+        agent: httpAgent,
         headers: {
           "Content-Type": "application/json",
           "Content-Length": Buffer.byteLength(payload),
@@ -34,7 +38,17 @@ function httpsPost(url, body, timeoutMs = DEFAULT_TIMEOUT_MS) {
       },
       (res) => {
         const chunks = [];
-        res.on("data", (chunk) => chunks.push(chunk));
+        let bytes = 0;
+        res.on("error", reject);
+        res.on("aborted", () => reject(new OsvEvidenceError("osv_incomplete_response", "OSV response interrupted")));
+        res.on("data", (chunk) => {
+          bytes += chunk.length;
+          if (bytes > MAX_RESPONSE_BYTES) {
+            res.destroy(new OsvEvidenceError("osv_response_limit", "OSV response exceeds limit"));
+            return;
+          }
+          chunks.push(chunk);
+        });
         res.on("end", () => {
           const raw = Buffer.concat(chunks).toString("utf8");
           try {
@@ -70,6 +84,7 @@ function httpsGet(url, timeoutMs = DEFAULT_TIMEOUT_MS) {
         port: parsed.port || 443,
         path: parsed.pathname + parsed.search,
         method: "GET",
+        agent: httpAgent,
         headers: {
           "User-Agent": "better-npm/0.1.0"
         },
@@ -77,7 +92,17 @@ function httpsGet(url, timeoutMs = DEFAULT_TIMEOUT_MS) {
       },
       (res) => {
         const chunks = [];
-        res.on("data", (chunk) => chunks.push(chunk));
+        let bytes = 0;
+        res.on("error", reject);
+        res.on("aborted", () => reject(new OsvEvidenceError("osv_incomplete_response", "OSV response interrupted")));
+        res.on("data", (chunk) => {
+          bytes += chunk.length;
+          if (bytes > MAX_RESPONSE_BYTES) {
+            res.destroy(new OsvEvidenceError("osv_response_limit", "OSV response exceeds limit"));
+            return;
+          }
+          chunks.push(chunk);
+        });
         res.on("end", () => {
           const raw = Buffer.concat(chunks).toString("utf8");
           try {
@@ -108,22 +133,10 @@ function httpsGet(url, timeoutMs = DEFAULT_TIMEOUT_MS) {
  */
 export async function queryPackage(name, version) {
   try {
-    const result = await httpsPost(`${OSV_API_BASE}/query`, {
-      package: {
-        name,
-        version,
-        ecosystem: "npm"
-      }
-    });
-
-    if (result.status !== 200) {
-      return { ok: false, vulns: [], reason: `osv_api_error_${result.status}` };
-    }
-
-    const vulns = result.data?.vulns ?? [];
-    return { ok: true, vulns };
-  } catch (err) {
-    return { ok: false, vulns: [], reason: err?.message ?? "osv_query_failed" };
+    return { ok: true, vulns: await evidenceService.single(name, version) };
+  } catch (error) {
+    return { ok: false, vulns: [], reason: error?.message ?? "osv_query_failed",
+      errorCode: error?.code ?? "osv_transport_error" };
   }
 }
 
@@ -134,49 +147,27 @@ export async function queryPackage(name, version) {
  * @param {Array<{name: string, version: string}>} packages
  * @returns {Promise<{results: Array<{name: string, version: string, vulns: Object[]}>, ok: boolean}>}
  */
+const evidenceService = createOsvEvidenceService({ post: httpsPost });
+
 export async function queryBatch(packages) {
-  if (packages.length === 0) {
-    return { ok: true, results: [] };
-  }
-
-  const results = [];
-
-  // Process in chunks of MAX_BATCH_SIZE
-  for (let i = 0; i < packages.length; i += MAX_BATCH_SIZE) {
-    const chunk = packages.slice(i, i + MAX_BATCH_SIZE);
-    const queries = chunk.map((pkg) => ({
-      package: {
-        name: pkg.name,
-        version: pkg.version,
-        ecosystem: "npm"
-      }
-    }));
-
-    try {
-      const result = await httpsPost(`${OSV_API_BASE}/querybatch`, { queries });
-
-      if (result.status !== 200) {
-        return {
-          ok: false,
-          results,
-          reason: `osv_batch_error_${result.status}`
-        };
-      }
-
-      const batchResults = result.data?.results ?? [];
-      for (let j = 0; j < chunk.length; j++) {
-        results.push({
-          name: chunk[j].name,
-          version: chunk[j].version,
-          vulns: batchResults[j]?.vulns ?? []
-        });
-      }
-    } catch (err) {
-      return { ok: false, results, reason: err?.message ?? "osv_batch_failed" };
+  if (packages.length === 0) return { ok: true, results: [] };
+  try {
+    // Canonicalize globally before chunking so reordered input shares cache keys.
+    const requested = packages.map(({ name, version }) => ({ name, version }));
+    const unique = new Map(requested.map((pkg) => [JSON.stringify([pkg.name, pkg.version]), pkg]));
+    const canonical = [...unique.values()].sort((a, b) => Buffer.compare(Buffer.from(a.name), Buffer.from(b.name)) ||
+      Buffer.compare(Buffer.from(a.version), Buffer.from(b.version)));
+    const byIdentity = new Map();
+    for (let i = 0; i < canonical.length; i += MAX_BATCH_SIZE) {
+      const rows = await evidenceService.batch(canonical.slice(i, i + MAX_BATCH_SIZE));
+      for (const row of rows) byIdentity.set(JSON.stringify([row.name, row.version]), row);
     }
+    return { ok: true, results: requested.map(({ name, version }) => structuredClone(byIdentity.get(JSON.stringify([name, version])))) };
+  } catch (error) {
+    // Never expose an incomplete batch as a successful or partially clean audit.
+    return { ok: false, results: [], reason: error?.message ?? "osv_batch_failed",
+      errorCode: error?.code ?? "osv_transport_error" };
   }
-
-  return { ok: true, results };
 }
 
 /**

@@ -55,6 +55,7 @@ export async function scanTree(rootDir, opts = {}) {
         throw err;
       }
 
+      if (opts.observeDirectory) await opts.observeDirectory(dir, entries);
       entries.sort((a, b) => a.name.localeCompare(b.name));
       for (const ent of entries) {
         if (!includeDotfiles && ent.name.startsWith(".")) continue;

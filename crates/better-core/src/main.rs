@@ -1,16 +1,14 @@
-use better_core::fetch_pipeline::{FetchOptions, ArtifactLimits};
+use better_core::fetch_pipeline::ArtifactLimits;
 use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::time::Instant;
 
 use better_core::{
-    analyze, cas_key_from_integrity, create_bin_links, detect_lifecycle_scripts, fetch_packages_with_options, tarball_path, FetchResult,
-    ingest_to_file_cas, materialize_from_file_cas, materialize_tree, resolve_from_lockfile,
-    run_lifecycle_scripts_for_install, scan_tree, try_clonefile_dir, unpacked_path, write_analyze_json,
-    write_materialize_json, write_scan_json, CasLayout, JsonWriter, LifecycleRunResult,
-    InstallProgress, LinkStrategy, MaterializeProfile, MaterializeStats, NodeLayout, PhaseDurations, ScanAgg,
-    StrictMaterializeStats, VERSION, materialize_strict,
+    analyze, materialize_tree, resolve_from_lockfile,
+    scan_tree, write_analyze_json,
+    write_materialize_json, write_scan_json, JsonWriter, LinkStrategy, MaterializeProfile, MaterializeStats, NodeLayout, PhaseDurations, ScanAgg,
+    VERSION,
     // Phase B
     run_script, run_scripts_parallel,
     scan_licenses, check_dedupe, trace_dependency, check_outdated,
@@ -18,7 +16,7 @@ use better_core::{
     // Phase C
     hooks_install, exec_script, env_info, env_check, init_project, run_script_watch,
     // Phase D
-    parse_npmrc, scan_scripts, scripts_allow, scripts_block,
+    scan_scripts, scripts_allow, scripts_block,
     policy_check, policy_init,
     // Audit allow-listing
     run_audit_with_config, add_audit_ignore,
@@ -27,18 +25,15 @@ use better_core::{
     generate_lock_metadata, verify_lock_metadata,
     detect_workspaces, workspace_graph, workspace_changed, workspace_run,
     generate_sbom_v2,
-    LockfileWriter, verify_frozen_lockfile,
     merge_lockfiles, run_merge_driver, install_merge_driver,
     // v0.4 intelligence
     detect_unused, load_license_policy, check_license_policy,
     // v0.5 registry
-    registry_add, registry_list, registry_remove, registry_rotate, RegistryChain,
-    // v0.5 provenance + receipt + firewall
+    registry_add, registry_list, registry_remove, registry_rotate, // v0.5 provenance + receipt + firewall
     verify_provenance, write_provenance_json,
-    write_install_receipt, list_receipts, verify_receipt, write_receipt_verify_json,
+    list_receipts, verify_receipt, write_receipt_verify_json,
     run_firewall, load_firewall_config, save_firewall_config, write_firewall_json,
     // v0.5 sandbox
-    load_sandbox_policy, permissions_for_package, execute_sandboxed,
     sandbox_scan, write_sandbox_scan_json,
     // v0.7 output
     GlobalFlags,
@@ -1564,6 +1559,28 @@ fn agent_exit(kind: &str, raw_code: i32, agent_mode: bool) -> i32 {
 }
 
 fn main() {
+    // Internal transaction lease for JS writers. EOF releases the OS lock even
+    // when the JS parent exits unexpectedly. Never unlink this stable lock file.
+    let helper_args: Vec<_> = std::env::args_os().skip(1).collect();
+    if helper_args.first().is_some_and(|arg| arg == "state-lock") {
+        use std::io::Write;
+        let result = (|| -> std::io::Result<()> {
+            if helper_args.len() != 3 || helper_args[1] != "--lock-path" {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "state-lock requires --lock-path <path>"));
+            }
+            let file = std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).open(&helper_args[2])?;
+            file.lock()?;
+            let mut out = std::io::stdout().lock();
+            out.write_all(b"ready\n")?;
+            out.flush()?;
+            drop(out);
+            std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink())?;
+            file.unlock()?;
+            Ok(())
+        })();
+        if let Err(error) = result { eprintln!("state-lock: {error}"); std::process::exit(1); }
+        return;
+    }
     let (command, global_flags) = parse_args();
     let json_mode = global_flags.json || global_flags.agent_mode;
     let agent_mode = global_flags.agent_mode;
@@ -2414,545 +2431,17 @@ fn main() {
             }
         },
         Command::Install { lockfile, project_root, cache_root, store_root, link_strategy, jobs, extraction_jobs, artifact_limits, scripts, dedup, frozen, offline, production, target_os, target_cpu, json_progress, node_layout, sandbox, verify_provenance: vp, require_provenance: rp, registry_failover } => {
-            let started = Instant::now();
-
-            // Engine detection: identify which ecosystem this project uses
-            let registry = EngineRegistry::new();
-            let detected_engines = registry.detect(&project_root);
-            let engine_name = detected_engines.first().map(|e| e.name()).unwrap_or("npm");
-            let _ = engine_name; // Will be used for multi-engine dispatch in future
-
-            let npmrc = parse_npmrc(&project_root);
-            let is_tty = std::io::stderr().is_terminal() && !json_mode;
-            let progress = InstallProgress::new(is_tty, json_progress || json_mode);
-
-            // Step 1: Resolve
-            let t_resolve = Instant::now();
-            progress.set_resolve_total(1);
-            let resolve_result = match resolve_from_lockfile(&lockfile) {
-                Ok(r) => r,
-                Err(reason) => {
-                    let mut w = JsonWriter::new();
-                    w.begin_object();
-                    w.key("ok"); w.value_bool(false);
-                    w.key("kind"); w.value_string("better.install.report");
-                    w.key("reason"); w.value_string(&reason);
-                    w.end_object(); w.out.push('\n');
-                    print!("{}", w.finish());
-                    std::process::exit(1);
-                }
-            };
-            progress.set_resolve_total(resolve_result.packages.len() as u64);
-            progress.finish_resolve();
-            let phase_resolve_ms = t_resolve.elapsed().as_millis() as u64;
-
-            // Frozen lockfile check: fail if better.lock exists and would change
-            if frozen {
-                match verify_frozen_lockfile(&project_root, &resolve_result.packages) {
-                    Ok(true) => { /* lockfile matches, proceed */ }
-                    Ok(false) => {
-                        let mut w = JsonWriter::new();
-                        w.begin_object();
-                        w.key("ok"); w.value_bool(false);
-                        w.key("kind"); w.value_string("better.install.report");
-                        w.key("reason"); w.value_string("--frozen: better.lock would change — lockfile is out of date");
-                        w.end_object(); w.out.push('\n');
-                        print!("{}", w.finish());
-                        std::process::exit(1);
+            let options = better_core::install::InstallOptions { lockfile, project_root, cache_root, store_root, link_strategy, jobs, extraction_jobs, artifact_limits, scripts, dedup, frozen, offline, production, target_os, target_cpu, json_progress, node_layout, sandbox, verify_provenance: vp, require_provenance: rp, registry_failover, json_mode, progress_enabled: true };
+            match better_core::install::run_install(options) {
+                Ok(report) => print!("{report}"),
+                Err(error) => {
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&error.report) {
+                        if let Some(reason) = value["reason"].as_str() { eprintln!("{reason}"); }
                     }
-                    Err(reason) => {
-                        let mut w = JsonWriter::new();
-                        w.begin_object();
-                        w.key("ok"); w.value_bool(false);
-                        w.key("kind"); w.value_string("better.install.report");
-                        w.key("reason"); w.value_string(&reason);
-                        w.end_object(); w.out.push('\n');
-                        print!("{}", w.finish());
-                        std::process::exit(1);
-                    }
-                }
-            }
-
-            let selected_packages = match better_core::select_platform_packages(&resolve_result, production, &target_os, &target_cpu) {
-                Ok(packages) => packages,
-                Err(reason) => {
-                    eprintln!("{reason}");
-                    std::process::exit(1);
-                }
-            };
-            if let Err(reason) = better_core::validate_package_paths(&selected_packages) {
-                eprintln!("{reason}");
-                std::process::exit(1);
-            }
-            let refresh_tree = production || selected_packages.len() != resolve_result.packages.len();
-
-            // Step 2: Fetch (skip network in --offline mode, only use CAS)
-            let t_fetch = Instant::now();
-            progress.set_fetch_total(selected_packages.len() as u64);
-            let fetch_result = if offline {
-                let result = better_core::artifact_cache::prepare_offline_packages(&selected_packages, &cache_root, artifact_limits);
-                if let Err(reason) = result {
-                    let mut w = JsonWriter::new();
-                    w.begin_object();
-                    w.key("ok"); w.value_bool(false);
-                    w.key("kind"); w.value_string("better.install.report");
-                    w.key("reason"); w.value_string(&reason);
-                    w.end_object(); w.out.push('\n');
-                    print!("{}", w.finish());
-                    std::process::exit(1);
-                }
-                progress.finish_fetch();
-                FetchResult {
-                    packages_fetched: 0,
-                    packages_cached: selected_packages.len() as u64,
-                    bytes_downloaded: 0,
-                    metrics: Default::default(),
-                }
-            } else {
-                // Build registry chain for failover if requested
-                let registry_chain = if registry_failover {
-                    let primary = &npmrc.default_registry;
-                    Some(RegistryChain::new(primary))
-                } else {
-                    None
-                };
-                let _ = registry_chain; // chain available for future fetch integration
-
-                match fetch_packages_with_options(&selected_packages, &cache_root, Some(&npmrc), &FetchOptions { network_jobs: jobs, extract_jobs: extraction_jobs.unwrap_or(jobs), limits: artifact_limits }) {
-                    Ok(r) => {
-                        progress.finish_fetch();
-                        r
-                    }
-                    Err(reason) => {
-                        let mut w = JsonWriter::new();
-                        w.begin_object();
-                        w.key("ok"); w.value_bool(false);
-                        w.key("kind"); w.value_string("better.install.report");
-                        w.key("reason"); w.value_string(&reason);
-                        w.end_object(); w.out.push('\n');
-                        print!("{}", w.finish());
-                        std::process::exit(1);
-                    }
-                }
-            };
-            let phase_fetch_ms = t_fetch.elapsed().as_millis() as u64;
-
-            // Step 3: Materialize
-            let t_mat = Instant::now();
-            let layout = CasLayout::new(&cache_root);
-            let file_cas_root = store_root.unwrap_or_else(|| cache_root.join("file-store"));
-            let node_modules = project_root.join("node_modules");
-            if std::fs::symlink_metadata(&node_modules).is_ok_and(|md| md.file_type().is_symlink()) {
-                eprintln!("Refusing a symlink node_modules destination");
-                std::process::exit(1);
-            }
-            // Refresh only after every selected package has passed fetch/cache checks.
-            // This also removes stale dev bins and strict-layout store entries.
-            if refresh_tree {
-                for pkg in &selected_packages {
-                    let source = cas_key_from_integrity(&pkg.integrity)
-                        .map(|(algo, hex)| unpacked_path(&layout, &algo, &hex).join("package"));
-                    if !source.is_some_and(|path| path.is_dir() && path.join("package.json").is_file()) {
-                        eprintln!("Selected install requires a complete cached package: {}@{}", pkg.name, pkg.version);
-                        std::process::exit(1);
-                    }
-                }
-            }
-            if refresh_tree && node_modules.exists() {
-                // A custom cache/store may live inside the tree being refreshed.
-                // Resolve symlinks too: never delete fetched inputs during cleanup.
-                if let Ok(tree) = node_modules.canonicalize() {
-                    for protected in [&cache_root, &file_cas_root] {
-                        if protected.canonicalize().is_ok_and(|path| path.starts_with(&tree)) {
-                            eprintln!("Selected install requires cache and store roots outside node_modules: {}", protected.display());
-                            std::process::exit(1);
-                        }
-                    }
-                }
-                if let Err(reason) = std::fs::remove_dir_all(&node_modules) {
-                    eprintln!("Failed to refresh node_modules for selection: {reason}");
+                    print!("{}", error.report);
                     std::process::exit(1);
                 }
             }
-            if let Err(reason) = better_core::create_materialize_dir(&node_modules, &node_modules) {
-                eprintln!("{reason}");
-                std::process::exit(1);
-            }
-
-            let total_files = std::sync::atomic::AtomicU64::new(0);
-            let total_dirs = std::sync::atomic::AtomicU64::new(0);
-            let total_symlinks = std::sync::atomic::AtomicU64::new(0);
-            let cloned = std::sync::atomic::AtomicU64::new(0);
-            let cas_linked = std::sync::atomic::AtomicU64::new(0);
-            let cas_copied = std::sync::atomic::AtomicU64::new(0);
-            let fallback_materialized = std::sync::atomic::AtomicU64::new(0);
-            let mut strict_stats: Option<StrictMaterializeStats> = None;
-
-            if node_layout == NodeLayout::Strict {
-                // Strict mode: pnpm-style isolated node_modules with symlinks
-                progress.set_extract_total(selected_packages.len() as u64);
-                match materialize_strict(
-                    &selected_packages,
-                    &project_root,
-                    &layout,
-                    &file_cas_root,
-                    link_strategy,
-                ) {
-                    Ok(ss) => {
-                        total_files.store(ss.files_linked + ss.files_copied, std::sync::atomic::Ordering::Relaxed);
-                        total_dirs.store(ss.directories, std::sync::atomic::Ordering::Relaxed);
-                        total_symlinks.store(ss.internal_symlinks + ss.root_symlinks, std::sync::atomic::Ordering::Relaxed);
-                        progress.finish_extract();
-                        strict_stats = Some(ss);
-                    }
-                    Err(reason) => {
-                        let mut w = JsonWriter::new();
-                        w.begin_object();
-                        w.key("ok"); w.value_bool(false);
-                        w.key("kind"); w.value_string("better.install.report");
-                        w.key("reason"); w.value_string(&reason);
-                        w.end_object(); w.out.push('\n');
-                        print!("{}", w.finish());
-                        std::process::exit(1);
-                    }
-                }
-            } else {
-                // Hoist mode: traditional flat node_modules
-                for pkg in &selected_packages {
-                    let dest_path = if pkg.rel_path.starts_with("node_modules/") {
-                        node_modules.join(&pkg.rel_path[13..])
-                    } else {
-                        node_modules.join(&pkg.rel_path)
-                    };
-                    if let Some(parent) = dest_path.parent() {
-                        if let Err(reason) = better_core::create_materialize_dir(&node_modules, parent) {
-                            eprintln!("{reason}");
-                            std::process::exit(1);
-                        }
-                    }
-                }
-
-                use rayon::prelude::*;
-                let materialize_error: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
-                progress.set_extract_total(selected_packages.len() as u64);
-
-                // Materializing a parent may replace its entire directory. Finish
-                // shallower packages before descendants; siblings remain parallel.
-                let mut layers = std::collections::BTreeMap::new();
-                for pkg in &selected_packages {
-                    let depth = std::path::Path::new(&pkg.rel_path).components().count();
-                    layers.entry(depth).or_insert_with(Vec::new).push(pkg);
-                }
-                for packages in layers.values() {
-                packages.par_iter().for_each(|pkg| {
-                    if materialize_error.lock().ok().and_then(|g| g.as_ref().cloned()).is_some() { return; }
-                    let (algo, hex) = match cas_key_from_integrity(&pkg.integrity) { Some(k) => k, None => { progress.inc_extract(); return } };
-                    let unpacked = unpacked_path(&layout, &algo, &hex);
-                    let src_dir = unpacked.join("package");
-                    if !src_dir.is_dir() {
-                        if let Ok(mut guard) = materialize_error.lock() {
-                            *guard = Some(format!("Missing materialization source for {}", pkg.name));
-                        }
-                        return;
-                    }
-                    let dest_path = if pkg.rel_path.starts_with("node_modules/") {
-                        node_modules.join(&pkg.rel_path[13..])
-                    } else {
-                        node_modules.join(&pkg.rel_path)
-                    };
-
-                    if let Err(reason) = better_core::create_materialize_dir(&node_modules, &dest_path) {
-                        if let Ok(mut guard) = materialize_error.lock() { *guard = Some(reason); }
-                        return;
-                    }
-
-                    if dedup {
-                        let _ = ingest_to_file_cas(&file_cas_root, &algo, &hex, &src_dir);
-                        if let Ok(result) = materialize_from_file_cas(&file_cas_root, &algo, &hex, &dest_path, link_strategy) {
-                            if result.ok && result.files > 0 {
-                                total_files.fetch_add(result.files, std::sync::atomic::Ordering::Relaxed);
-                                cas_linked.fetch_add(result.linked, std::sync::atomic::Ordering::Relaxed);
-                                cas_copied.fetch_add(result.copied, std::sync::atomic::Ordering::Relaxed);
-                                total_symlinks.fetch_add(result.symlinks, std::sync::atomic::Ordering::Relaxed);
-                                progress.inc_extract();
-                                return;
-                            }
-                        }
-                        if matches!(link_strategy, LinkStrategy::Auto) && try_clonefile_dir(&src_dir, &dest_path) {
-                            cloned.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            progress.inc_extract();
-                            return;
-                        }
-                    } else {
-                        if matches!(link_strategy, LinkStrategy::Auto) && try_clonefile_dir(&src_dir, &dest_path) {
-                            cloned.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            let _ = ingest_to_file_cas(&file_cas_root, &algo, &hex, &src_dir);
-                            progress.inc_extract();
-                            return;
-                        }
-                        let _ = ingest_to_file_cas(&file_cas_root, &algo, &hex, &src_dir);
-                        if let Ok(result) = materialize_from_file_cas(&file_cas_root, &algo, &hex, &dest_path, link_strategy) {
-                            if result.ok && result.files > 0 {
-                                total_files.fetch_add(result.files, std::sync::atomic::Ordering::Relaxed);
-                                cas_linked.fetch_add(result.linked, std::sync::atomic::Ordering::Relaxed);
-                                cas_copied.fetch_add(result.copied, std::sync::atomic::Ordering::Relaxed);
-                                total_symlinks.fetch_add(result.symlinks, std::sync::atomic::Ordering::Relaxed);
-                                progress.inc_extract();
-                                return;
-                            }
-                        }
-                    }
-
-                    match materialize_tree(&src_dir, &dest_path, link_strategy, 4, MaterializeProfile::Auto) {
-                        Ok(report) => {
-                            total_files.fetch_add(report.stats.files, std::sync::atomic::Ordering::Relaxed);
-                            total_dirs.fetch_add(report.stats.directories, std::sync::atomic::Ordering::Relaxed);
-                            total_symlinks.fetch_add(report.stats.symlinks, std::sync::atomic::Ordering::Relaxed);
-                            fallback_materialized.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        }
-                        Err(reason) => {
-                            if let Ok(mut guard) = materialize_error.lock() {
-                                if guard.is_none() { *guard = Some(format!("Failed to materialize {}: {}", pkg.name, reason)); }
-                            }
-                        }
-                    }
-                    progress.inc_extract();
-                });
-                }
-                progress.finish_extract();
-
-                if let Some(reason) = materialize_error.lock().ok().and_then(|g| g.clone()) {
-                    let mut w = JsonWriter::new();
-                    w.begin_object();
-                    w.key("ok"); w.value_bool(false);
-                    w.key("kind"); w.value_string("better.install.report");
-                    w.key("reason"); w.value_string(&reason);
-                    w.end_object(); w.out.push('\n');
-                    print!("{}", w.finish());
-                    std::process::exit(1);
-                }
-            }
-            let phase_materialize_ms = t_mat.elapsed().as_millis() as u64;
-
-            // Step 4: Bin links
-            let t_bins = Instant::now();
-            progress.set_link_total(selected_packages.len() as u64);
-            let bin_result = create_bin_links(&node_modules, &selected_packages).unwrap_or_default();
-            progress.finish_link();
-            let phase_binlinks_ms = t_bins.elapsed().as_millis() as u64;
-
-            // Step 5: Lifecycle scripts (with optional sandboxing)
-            let t_scripts = Instant::now();
-            let scripts_result = if scripts {
-                let detection = detect_lifecycle_scripts(&node_modules, &selected_packages);
-                if sandbox {
-                    let sandbox_policy = load_sandbox_policy(&project_root);
-                    let mut result = LifecycleRunResult::default();
-                    for script_info in &detection.scripts {
-                        result.scripts_run += 1;
-                        let perms = match permissions_for_package(
-                            &sandbox_policy,
-                            &script_info.package_name,
-                            &script_info.package_dir,
-                        ) {
-                            Some(p) => p,
-                            None => {
-                                eprintln!("  sandbox: blocked scripts for {}", script_info.package_name);
-                                result.scripts_failed += 1;
-                                continue;
-                            }
-                        };
-                        match execute_sandboxed(
-                            "sh",
-                            &["-c", &script_info.script_command],
-                            &script_info.package_dir,
-                            &perms,
-                        ) {
-                            Ok(sr) => {
-                                if sr.exit_code == 0 {
-                                    result.scripts_succeeded += 1;
-                                } else {
-                                    result.scripts_failed += 1;
-                                    eprintln!("  sandbox: script failed for {} (exit {})", script_info.package_name, sr.exit_code);
-                                }
-                                for v in &sr.sandbox_violations {
-                                    eprintln!("  sandbox violation: {}", v);
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("  sandbox error for {}: {}", script_info.package_name, e);
-                                result.scripts_failed += 1;
-                            }
-                        }
-                    }
-                    result
-                } else {
-                    run_lifecycle_scripts_for_install(&project_root, &detection, production)
-                }
-            } else {
-                LifecycleRunResult { skipped_reason: Some("disabled".into()), ..Default::default() }
-            };
-            let phase_scripts_ms = t_scripts.elapsed().as_millis() as u64;
-
-            // Step 6: Write better.lock + better.lock.json (skip in frozen mode)
-            let t_lockfile = Instant::now();
-            let lockfile_result = if !frozen {
-                let lw = LockfileWriter::from_resolved_packages(&resolve_result.packages);
-                match lw.write_both(&project_root) {
-                    Ok(r) => Some(r),
-                    Err(_) => None, // non-fatal: lockfile writing failure shouldn't break install
-                }
-            } else {
-                None
-            };
-            let phase_lockfile_ms = t_lockfile.elapsed().as_millis() as u64;
-
-            // Step 7: Provenance verification (if requested)
-            let mut provenance_packages: Vec<String> = Vec::new();
-            if vp || rp {
-                let mode = if rp { "require" } else { "verify" };
-                match verify_provenance(&selected_packages, mode) {
-                    Ok(report) => {
-                        for att in &report.attestations {
-                            if att.has_attestation && att.signature_valid {
-                                provenance_packages.push(format!("{}@{}", att.package, att.version));
-                            }
-                        }
-                        if vp && report.without_provenance > 0 {
-                            eprintln!("warning: {} package(s) lack provenance attestation", report.without_provenance);
-                        }
-                    }
-                    Err(reason) => {
-                        if rp {
-                            let mut w = JsonWriter::new();
-                            w.begin_object();
-                            w.key("ok"); w.value_bool(false);
-                            w.key("kind"); w.value_string("better.install.report");
-                            w.key("reason"); w.value_string(&reason);
-                            w.end_object(); w.out.push('\n');
-                            print!("{}", w.finish());
-                            std::process::exit(agent_exit("security", 1, agent_mode));
-                        } else {
-                            eprintln!("warning: provenance check failed: {}", reason);
-                        }
-                    }
-                }
-            }
-
-            // Step 8: Dependency firewall
-            let firewall_config = load_firewall_config(&project_root);
-            let _firewall_report = if firewall_config.enabled {
-                let report = run_firewall(&selected_packages, &project_root, &firewall_config);
-                if report.blocked > 0 {
-                    eprintln!("firewall: {} package(s) blocked, {} warning(s)", report.blocked, report.warnings);
-                    for alert in &report.alerts {
-                        if alert.severity == "high" {
-                            eprintln!("  BLOCKED: {}", alert.message);
-                        }
-                    }
-                } else if report.warnings > 0 {
-                    eprintln!("firewall: {} warning(s)", report.warnings);
-                }
-                Some(report)
-            } else {
-                None
-            };
-
-            // Step 9: Write install receipt
-            let lockfile_hash = lockfile_result.as_ref().map(|lr| lr.fingerprint.clone());
-            let _ = write_install_receipt(
-                &project_root,
-                &selected_packages,
-                None,
-                lockfile_hash.as_deref(),
-                &provenance_packages,
-            );
-
-            let duration_ms = started.elapsed().as_millis() as u64;
-            let total_files = total_files.load(std::sync::atomic::Ordering::Relaxed);
-            let total_dirs = total_dirs.load(std::sync::atomic::Ordering::Relaxed);
-            let total_symlinks = total_symlinks.load(std::sync::atomic::Ordering::Relaxed);
-            let cloned = cloned.load(std::sync::atomic::Ordering::Relaxed);
-            let cas_linked = cas_linked.load(std::sync::atomic::Ordering::Relaxed);
-            let cas_copied = cas_copied.load(std::sync::atomic::Ordering::Relaxed);
-            let fallback_materialized = fallback_materialized.load(std::sync::atomic::Ordering::Relaxed);
-
-            let mut w = JsonWriter::new();
-            w.begin_object();
-            w.key("ok"); w.value_bool(true);
-            w.key("kind"); w.value_string("better.install.report");
-            w.key("schemaVersion"); w.value_u64(2);
-            w.key("lockfile"); w.value_string(&lockfile.to_string_lossy());
-            w.key("projectRoot"); w.value_string(&project_root.to_string_lossy());
-            w.key("cacheRoot"); w.value_string(&cache_root.to_string_lossy());
-            w.key("durationMs"); w.value_u64(duration_ms);
-            w.key("nodeLayout"); w.value_string(node_layout.as_str());
-            w.key("target"); w.begin_object();
-            w.key("os"); w.value_string(&target_os);
-            w.key("cpu"); w.value_string(&target_cpu);
-            w.end_object();
-            w.key("stats"); w.begin_object();
-            w.key("packagesResolved"); w.value_u64(selected_packages.len() as u64);
-            w.key("packagesFetched"); w.value_u64(fetch_result.packages_fetched);
-            w.key("packagesCached"); w.value_u64(fetch_result.packages_cached);
-            w.key("bytesDownloaded"); w.value_u64(fetch_result.bytes_downloaded);
-            w.key("fetchMetrics"); w.begin_object();
-            w.key("networkJobs"); w.value_u64(fetch_result.metrics.network_jobs as u64);
-            w.key("extractJobs"); w.value_u64(fetch_result.metrics.extract_jobs as u64);
-            w.key("queueCapacity"); w.value_u64(fetch_result.metrics.queue_capacity as u64);
-            w.key("peakPreparing"); w.value_u64(fetch_result.metrics.peak_preparing as u64);
-            w.key("peakExtracting"); w.value_u64(fetch_result.metrics.peak_extracting as u64);
-            w.key("prepareMicros"); w.value_u64(fetch_result.metrics.prepare_micros as u64);
-            w.key("extractMicros"); w.value_u64(fetch_result.metrics.extract_micros as u64);
-            w.key("backpressureMicros"); w.value_u64(fetch_result.metrics.backpressure_micros as u64);
-            w.end_object();
-            w.key("files"); w.value_u64(total_files);
-            w.key("directories"); w.value_u64(total_dirs);
-            w.key("symlinks"); w.value_u64(total_symlinks);
-            w.key("cloned"); w.value_u64(cloned);
-            w.key("casLinked"); w.value_u64(cas_linked);
-            w.key("casCopied"); w.value_u64(cas_copied);
-            w.key("fallbackMaterialized"); w.value_u64(fallback_materialized);
-            w.end_object();
-            if let Some(ref ss) = strict_stats {
-                w.key("strict"); w.begin_object();
-                w.key("packages"); w.value_u64(ss.packages);
-                w.key("filesLinked"); w.value_u64(ss.files_linked);
-                w.key("filesCopied"); w.value_u64(ss.files_copied);
-                w.key("internalSymlinks"); w.value_u64(ss.internal_symlinks);
-                w.key("rootSymlinks"); w.value_u64(ss.root_symlinks);
-                w.key("directories"); w.value_u64(ss.directories);
-                w.end_object();
-            }
-            w.key("binLinks"); w.begin_object();
-            w.key("created"); w.value_u64(bin_result.links_created);
-            w.key("failed"); w.value_u64(bin_result.links_failed);
-            w.end_object();
-            w.key("scripts"); w.begin_object();
-            w.key("run"); w.value_u64(scripts_result.scripts_run);
-            w.key("succeeded"); w.value_u64(scripts_result.scripts_succeeded);
-            w.key("failed"); w.value_u64(scripts_result.scripts_failed);
-            if let Some(reason) = &scripts_result.skipped_reason { w.key("skippedReason"); w.value_string(reason); }
-            if let Some(code) = scripts_result.rebuild_exit_code { w.key("rebuildExitCode"); w.value_i64(code as i64); }
-            w.end_object();
-            if let Some(ref lr) = lockfile_result {
-                w.key("betterLock"); w.begin_object();
-                w.key("packageCount"); w.value_u64(lr.package_count as u64);
-                w.key("binarySize"); w.value_u64(lr.binary_size);
-                w.key("fingerprint"); w.value_string(&lr.fingerprint);
-                w.end_object();
-            }
-            w.key("timing"); w.begin_object();
-            w.key("resolveMs"); w.value_u64(phase_resolve_ms);
-            w.key("fetchMs"); w.value_u64(phase_fetch_ms);
-            w.key("materializeMs"); w.value_u64(phase_materialize_ms);
-            w.key("binLinksMs"); w.value_u64(phase_binlinks_ms);
-            w.key("scriptsMs"); w.value_u64(phase_scripts_ms);
-            w.key("lockfileMs"); w.value_u64(phase_lockfile_ms);
-            w.key("totalMs"); w.value_u64(duration_ms);
-            w.end_object();
-            w.end_object(); w.out.push('\n');
-            print!("{}", w.finish());
         }
 
         // === Phase B Commands ===

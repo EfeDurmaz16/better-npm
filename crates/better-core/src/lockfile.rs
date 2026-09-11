@@ -1,11 +1,76 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 
 use sha2::{Digest, Sha256};
 
 use crate::types::ResolvedPackage;
 use crate::JsonWriter;
+
+// Compare actual bytes, never metadata/mtime, before skipping a lockfile write.
+fn write_if_changed(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    if fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_file())
+        && fs::read(path).is_ok_and(|existing| existing == content) {
+        return Ok(());
+    }
+    let previous_permissions = fs::symlink_metadata(path).ok()
+        .filter(|metadata| metadata.is_file()).map(|metadata| metadata.permissions());
+    crate::publish_file(path, |staged| {
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o666);
+        }
+        let mut file = options.open(staged)?;
+        file.write_all(content)?;
+        if let Some(permissions) = &previous_permissions {
+            file.set_permissions(permissions.clone())?;
+        }
+        Ok(())
+    }).map_err(std::io::Error::other)
+}
+
+#[cfg(all(test, unix))]
+mod atomic_write_mode_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn new_lock_uses_normal_creation_mode_and_rewrites_preserve_permissions() {
+        let root = tempfile::tempdir().unwrap();
+        let control = root.path().join("control");
+        let lock = root.path().join("better.lock");
+        fs::write(&control, "control").unwrap();
+        write_if_changed(&lock, b"first").unwrap();
+        assert_eq!(fs::metadata(&lock).unwrap().permissions().mode() & 0o777,
+            fs::metadata(&control).unwrap().permissions().mode() & 0o777);
+        fs::set_permissions(&lock, fs::Permissions::from_mode(0o640)).unwrap();
+        write_if_changed(&lock, b"changed").unwrap();
+        assert_eq!(fs::metadata(&lock).unwrap().permissions().mode() & 0o777, 0o640);
+        assert_eq!(fs::read(&lock).unwrap(), b"changed");
+    }
+}
+
+fn write_sidecar_if_changed(path: &Path, content: &[u8]) -> std::io::Result<()> {
+    // Keep the original generation timestamp when the represented lock is
+    // unchanged. Comparing JSON also notices resolved URLs absent from the
+    // binary package index.
+    if fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_file()) {
+        if let (Ok(existing), Ok(mut next)) = (fs::read(path), serde_json::from_slice::<serde_json::Value>(content)) {
+            if let Ok(mut previous) = serde_json::from_slice::<serde_json::Value>(&existing) {
+                if let (Some(previous), Some(next)) = (previous.as_object_mut(), next.as_object_mut()) {
+                    previous.remove("generated");
+                    next.remove("generated");
+                    if previous == next { return Ok(()); }
+                }
+            }
+        }
+    }
+    write_if_changed(path, content)
+}
 
 // === Binary format constants ===
 
@@ -70,23 +135,16 @@ impl LockfileWriter {
     /// Populate from resolved packages (convenience for install flow).
     pub fn from_resolved_packages(resolved: &[ResolvedPackage]) -> Self {
         let mut writer = Self::new();
-        // Build a lookup: name -> version for dependency resolution
-        let version_map: BTreeMap<&str, &str> = resolved
-            .iter()
-            .map(|p| (p.name.as_str(), p.version.as_str()))
-            .collect();
-
         for pkg in resolved {
             // We don't have dep info in ResolvedPackage directly,
             // so dependencies are empty for now — they can be enriched later
             // from the original lockfile parse.
-            let _ = &version_map; // suppress unused warning
             writer.add_package(LockPackage::from_resolved(pkg, Vec::new()));
         }
         writer
     }
 
-    /// Write both better.lock and better.lock.json atomically.
+    /// Atomically publish each file when its content changes. The pair is not a transaction.
     pub fn write_both(&self, dir: &Path) -> Result<LockfileWriteResult, String> {
         let binary_path = dir.join("better.lock");
         let json_path = dir.join("better.lock.json");
@@ -95,11 +153,11 @@ impl LockfileWriter {
         let json_string = self.build_json();
 
         // Write binary
-        fs::write(&binary_path, &binary_bytes)
+        write_if_changed(&binary_path, &binary_bytes)
             .map_err(|e| format!("Failed to write better.lock: {}", e))?;
 
         // Write JSON sidecar
-        fs::write(&json_path, json_string.as_bytes())
+        write_sidecar_if_changed(&json_path, json_string.as_bytes())
             .map_err(|e| format!("Failed to write better.lock.json: {}", e))?;
 
         // Compute fingerprint of the binary file
@@ -140,9 +198,9 @@ impl LockfileWriter {
         let binary_bytes = self.build_binary_v2()?;
         let json_string = self.build_json_v2();
 
-        fs::write(&binary_path, &binary_bytes)
+        write_if_changed(&binary_path, &binary_bytes)
             .map_err(|e| format!("Failed to write better.lock: {}", e))?;
-        fs::write(&json_path, json_string.as_bytes())
+        write_sidecar_if_changed(&json_path, json_string.as_bytes())
             .map_err(|e| format!("Failed to write better.lock.json: {}", e))?;
 
         let mut hasher = Sha256::new();
@@ -936,6 +994,27 @@ pub struct LockfileWriteResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unchanged_lockfiles_preserve_files_but_changed_content_is_published() {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = LockfileWriter::new();
+        writer.write_both(dir.path()).unwrap();
+        let binary = dir.path().join("better.lock");
+        let sidecar = dir.path().join("better.lock.json");
+        let before = fs::metadata(&binary).unwrap().modified().unwrap();
+        // A preserved generation timestamp demonstrates semantic sidecar reuse.
+        let mut json: serde_json::Value = serde_json::from_slice(&fs::read(&sidecar).unwrap()).unwrap();
+        json["generated"] = serde_json::json!("original-generation");
+        fs::write(&sidecar, serde_json::to_vec(&json).unwrap()).unwrap();
+        writer.write_both(dir.path()).unwrap();
+        assert_eq!(fs::metadata(&binary).unwrap().modified().unwrap(), before);
+        let actual: serde_json::Value = serde_json::from_slice(&fs::read(&sidecar).unwrap()).unwrap();
+        assert_eq!(actual["generated"], "original-generation");
+        fs::write(&binary, b"corrupt").unwrap();
+        writer.write_both(dir.path()).unwrap();
+        assert_eq!(fs::read(binary).unwrap(), writer.build_binary().unwrap());
+    }
 
     #[test]
     fn test_roundtrip() {

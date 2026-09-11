@@ -7,40 +7,80 @@ use crate::package_name_from_path;
 
 // --- Install engine: resolve and fetch ---
 
-/// Parse package-lock.json and extract packages to install
-pub fn resolve_from_lockfile(lockfile_path: &Path) -> Result<ResolveResult, String> {
-    let content = fs::read_to_string(lockfile_path).map_err(|e| e.to_string())?;
+/// Bounded process-resident parsing cache. Every request still reads and hashes
+/// the current bytes; installed trees and mtime markers are never trusted here.
+#[derive(Default)]
+struct ParsedLockCache {
+    entries: std::collections::VecDeque<([u8; 32], usize, std::sync::Arc<ResolveResult>)>,
+    input_bytes: usize,
+}
+impl ParsedLockCache {
+    fn resolve(&mut self, content: &str) -> Result<(std::sync::Arc<ResolveResult>, bool), String> {
+        use sha2::{Digest, Sha256};
+        let key: [u8; 32] = Sha256::digest(content.as_bytes()).into();
+        if let Some(position) = self.entries.iter().position(|entry| entry.0 == key) {
+            let entry = self.entries.remove(position).unwrap();
+            let result = entry.2.clone();
+            self.entries.push_back(entry);
+            return Ok((result, true));
+        }
+        let result = std::sync::Arc::new(parse_npm_lockfile(content)?);
+        const MAX_INPUT_BYTES: usize = 8 * 1024 * 1024;
+        if content.len() <= MAX_INPUT_BYTES && result.packages.len() <= 20_000 {
+            while self.entries.len() >= 8 || self.input_bytes + content.len() > MAX_INPUT_BYTES {
+                if let Some((_, bytes, _)) = self.entries.pop_front() { self.input_bytes -= bytes; }
+                else { break; }
+            }
+            self.input_bytes += content.len();
+            self.entries.push_back((key, content.len(), result.clone()));
+        }
+        Ok((result, false))
+    }
+}
 
-    parse_npm_lockfile(&content)
+/// Resolve immutable parsed input for resident consumers without cloning the
+/// package vector. Cache lifetime is this binary's parse-schema lifetime.
+pub fn resolve_from_lockfile_shared(lockfile_path: &Path) -> Result<std::sync::Arc<ResolveResult>, String> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<ParsedLockCache>> = std::sync::OnceLock::new();
+    let content = fs::read_to_string(lockfile_path).map_err(|e| e.to_string())?;
+    let mut cache = CACHE.get_or_init(Default::default).lock().map_err(|_| "Parsed lock cache poisoned".to_string())?;
+    cache.resolve(&content).map(|(result, _)| result)
+}
+
+/// Compatibility boundary for callers that require an owned package vector.
+pub fn resolve_from_lockfile(lockfile_path: &Path) -> Result<ResolveResult, String> {
+    resolve_from_lockfile_shared(lockfile_path).map(|result| (*result).clone())
 }
 
 fn parse_npm_lockfile(json: &str) -> Result<ResolveResult, String> {
-    let lockfile: serde_json::Value = serde_json::from_str(json)
+    let mut lockfile: serde_json::Value = serde_json::from_str(json)
         .map_err(|e| format!("Invalid package-lock.json: {}", e))?;
-    let entries = lockfile.get("packages").and_then(serde_json::Value::as_object)
+    let entries = lockfile.get_mut("packages").and_then(serde_json::Value::as_object_mut)
+        .map(std::mem::take)
         .ok_or_else(|| "Lockfile 'packages' must be an object".to_string())?;
 
-    let mut packages = Vec::new();
+    let mut packages = Vec::with_capacity(entries.len());
     let mut root_selection = None;
     for (rel_path, entry) in entries {
         if rel_path.is_empty() {
-            root_selection = Some(parse_selection(rel_path, entry)?);
             if entry.get("workspaces").is_some_and(|value| value != &serde_json::json!([])) {
                 return Err("Native install does not support root workspaces; use npm install for this project".to_string());
             }
+            root_selection = Some(parse_selection(&rel_path, entry)?);
             continue;
         }
         if !rel_path.starts_with("node_modules/") {
             return Err(format!("Native install does not support workspace/local lockfile entry '{}'; use npm install for this project", rel_path));
         }
-        packages.push(parse_package_entry(rel_path, entry)?);
+        packages.push(parse_package_entry(&rel_path, entry)?);
     }
     Ok(ResolveResult { packages, root_selection, lockfile_version: 3 })
 }
 
-fn parse_package_entry(rel_path: &str, entry: &serde_json::Value) -> Result<ResolvedPackage, String> {
-    let entry = entry.as_object()
-        .ok_or_else(|| format!("Lockfile entry '{}' must be an object", rel_path))?;
+fn parse_package_entry(rel_path: &str, entry: serde_json::Value) -> Result<ResolvedPackage, String> {
+    let serde_json::Value::Object(entry) = entry else {
+        return Err(format!("Lockfile entry '{}' must be an object", rel_path));
+    };
     match entry.get("link") {
         Some(serde_json::Value::Bool(true)) => {
             return Err(format!("Native install does not support linked lockfile entry '{}'; use npm install for this project", rel_path));
@@ -66,20 +106,24 @@ fn parse_package_entry(rel_path: &str, entry: &serde_json::Value) -> Result<Reso
         None => package_name_from_path(rel_path),
         Some(_) => required_string("name")?,
     };
+    let version = required_string("version")?;
+    let resolved_url = required_string("resolved")?;
+    let integrity = required_string("integrity")?;
     Ok(ResolvedPackage {
-        selection: parse_selection(rel_path, &serde_json::Value::Object(entry.clone()))?,
+        selection: parse_selection(rel_path, serde_json::Value::Object(entry))?,
         name,
-        version: required_string("version")?,
+        version,
         rel_path: rel_path.to_string(),
-        resolved_url: required_string("resolved")?,
-        integrity: required_string("integrity")?,
+        resolved_url,
+        integrity,
     })
 }
 
 
-fn parse_selection(rel_path: &str, entry: &serde_json::Value) -> Result<PackageSelection, String> {
-    let mut fields = entry.as_object().cloned()
-        .ok_or_else(|| format!("Lockfile entry '{}' must be an object", rel_path))?;
+fn parse_selection(rel_path: &str, entry: serde_json::Value) -> Result<PackageSelection, String> {
+    let serde_json::Value::Object(mut fields) = entry else {
+        return Err(format!("Lockfile entry '{}' must be an object", rel_path));
+    };
     // npm accepts a single platform string as well as an array. Preserve an
     // explicit empty array separately from an absent restriction.
     for key in ["os", "cpu", "libc"] {
@@ -162,28 +206,37 @@ pub fn fetch_packages_with_options(
     for pkg in packages {
         let identity = Integrity::parse(&pkg.integrity)?;
         let key = (identity.algorithm(), identity.hex_digest());
-        let entry = unique.entry(key).or_insert((pkg, 0_u64));
+        let hex = key.1.clone();
+        let entry = unique.entry(key).or_insert((pkg, 0_u64, identity, hex));
         entry.1 += 1;
     }
     let unique: Vec<_> = unique.into_values().collect();
-    let metrics = crate::fetch_scheduler::run_pipeline(&unique, options.network_jobs, options.extract_jobs,
-      |(pkg, multiplicity)| {
-        let integrity = Integrity::parse(&pkg.integrity)?;
+    let metrics = crate::fetch_scheduler::run_retry_pipeline(&unique, options.network_jobs, options.extract_jobs,
+      |(pkg, multiplicity, integrity, hex)| {
         let algo = integrity.algorithm();
-        let hex = integrity.hex_digest();
-        let artifact = crate::artifact_cache::ArtifactCache::new(cache_dir, algo, &hex);
-        let _content_lock = artifact.lock()?;
+        let artifact = crate::artifact_cache::ArtifactCache::new(cache_dir, algo, hex);
         let verify = |path: &Path| -> Result<(), String> {
             let file = fs::File::open(path).map_err(|e| e.to_string())?;
-            if file.metadata().map_err(|e| e.to_string())?.len() > limits.compressed_bytes {
+            let compressed_bytes = file.metadata().map_err(|e| e.to_string())?.len();
+            if compressed_bytes > limits.compressed_bytes {
                 return Err("Cached archive exceeds compressed byte limit; increase --max-tarball-bytes".into());
             }
+            let _permit = crate::artifact_cache::acquire_hash_permit(cache_dir, compressed_bytes)?;
             integrity.verify_reader(file)
         };
+        let Some(reader) = artifact.try_read_lock()? else { return Ok(crate::fetch_scheduler::Preparation::Deferred); };
         if artifact.ready() {
-            artifact.retained_tarball(verify)?;
+            verify(&artifact.tarball)?;
             packages_cached.fetch_add(*multiplicity, Ordering::Relaxed);
-            return Ok(None);
+            return Ok(crate::fetch_scheduler::Preparation::Complete(None));
+        }
+        drop(reader);
+        let Some(_content_lock) = artifact.try_lock()? else { return Ok(crate::fetch_scheduler::Preparation::Deferred); };
+        // Another producer may have completed while this worker was waiting.
+        if artifact.ready() {
+            verify(&artifact.tarball)?;
+            packages_cached.fetch_add(*multiplicity, Ordering::Relaxed);
+            return Ok(crate::fetch_scheduler::Preparation::Complete(None));
         }
         let retained = artifact.retained_tarball(verify)?;
         if !retained {
@@ -209,10 +262,11 @@ pub fn fetch_packages_with_options(
         }
         packages_cached.fetch_add(multiplicity - 1, Ordering::Relaxed);
         // Keep the producer lock alive through handoff and final publication.
-        Ok(Some((artifact, _content_lock)))
+        Ok(crate::fetch_scheduler::Preparation::Complete(Some((artifact, _content_lock))))
       },
       |(artifact, _content_lock)| {
         artifact.extract_and_publish(|source, destination| {
+            let _permit = crate::artifact_cache::acquire_resource_permit(cache_dir)?;
             extract_verified_tarball(source, destination, limits)
         })
       })?;
@@ -314,5 +368,33 @@ mod tests {
         // Both should have sha512/de/ad/ segment
         assert!(tp.to_string_lossy().contains("/sha512/de/ad/"));
         assert!(up.to_string_lossy().contains("/sha512/de/ad/"));
+    }
+}
+
+#[cfg(test)]
+mod resident_plan_tests {
+    use super::*;
+    #[test]
+    fn identical_bytes_reuse_parse_and_changed_bytes_invalidate() {
+        let mut cache = ParsedLockCache::default();
+        let input = r#"{"packages":{"":{"dependencies":{}}}}"#;
+        let (first, hit) = cache.resolve(input).unwrap();
+        assert!(!hit);
+        let (second, hit) = cache.resolve(input).unwrap();
+        assert!(hit);
+        assert!(std::sync::Arc::ptr_eq(&first, &second));
+        let (changed, hit) = cache.resolve(r#"{"packages":{"":{"dependencies":{"new":"1"}}}}"#).unwrap();
+        assert!(!hit);
+        assert!(!std::sync::Arc::ptr_eq(&first, &changed));
+        assert!(cache.resolve("invalid").is_err());
+    }
+    #[test]
+    fn resident_parse_cache_evicts_old_inputs() {
+        let mut cache = ParsedLockCache::default();
+        for index in 0..16 {
+            cache.resolve(&format!(r#"{{"packages":{{}},"extra":{index}}}"#)).unwrap();
+        }
+        assert_eq!(cache.entries.len(), 8);
+        assert!(cache.input_bytes <= 8 * 1024 * 1024);
     }
 }
