@@ -25,7 +25,7 @@ import {
   captureProjectNodeModulesToGlobalCache,
   entryBytesFromNodeModulesSnapshot
 } from "../lib/globalCache.js";
-import { evaluateReuseMarker, writeReuseMarker } from "../lib/reuseMarker.js";
+import { evaluateReuseMarker, reuseMarkerPath, writeReuseMarker } from "../lib/reuseMarker.js";
 import { findBetterCore, tryLoadNapiAddon, runBetterCoreInstall } from "../lib/core.js";
 import { resolveWorkspacePackages, workspaceSummary } from "../lib/workspaces.js";
 import { executionPlan, affectedPackages } from "../lib/topoSort.js";
@@ -1340,23 +1340,28 @@ Workspace options:
   progress(
     measure === "off"
       ? "post-install: measurement disabled"
-      : shouldMeasureCache
-        ? "post-install: measuring cache and node_modules sizes"
-        : "post-install: measuring node_modules sizes (pm cache scan skipped)"
+      : noopReuseInstall
+        ? "post-install: reuse hit, reusing pre-install measurements"
+        : shouldMeasureCache
+          ? "post-install: measuring cache and node_modules sizes"
+          : "post-install: measuring node_modules sizes (pm cache scan skipped)"
   );
   const postMeasureStartMs = Date.now();
-  const afterCacheMeasured = shouldMeasureCache
+  // A reuse hit changes nothing on disk, so the pre-install scans already describe it.
+  const afterCacheMeasured = shouldMeasureCache && !noopReuseInstall
     ? await scanTreeWithBestEngine(pmCacheDir, { coreMode: scanCoreMode, duFallback, quickLogical })
     : null;
   const pmCacheSnapshotAfter = snapshotToCacheResult(pmCacheSnapshotStore.snapshots[pmCacheSnapshotKey(pmCacheDir)]);
-  const afterCache = afterCacheMeasured ?? (
+  const afterCache = noopReuseInstall ? beforeCache : afterCacheMeasured ?? (
     measure === "on" && measureCacheMode === "auto" && pmCacheSnapshotAfter.ok
       ? pmCacheSnapshotAfter
       : { ok: false, reason: measure === "off" ? "measure_off" : "measure_cache_off" }
   );
-  const nodeModules = measure === "on"
-    ? await collectNodeModulesSnapshot(projectRoot, { coreMode: scanCoreMode, duFallback, quickLogical, includePackageCount })
-    : { ok: false, reason: "measure_off", exists: false, packageCount: 0 };
+  const nodeModules = noopReuseInstall
+    ? beforeNodeModules
+    : measure === "on"
+      ? await collectNodeModulesSnapshot(projectRoot, { coreMode: scanCoreMode, duFallback, quickLogical, includePackageCount })
+      : { ok: false, reason: "measure_off", exists: false, packageCount: 0 };
   phaseDurations.postMeasureMs = Date.now() - postMeasureStartMs;
   if (shouldMeasureCache && afterCacheMeasured?.ok) {
     await persistPmCacheSnapshot(layout, pmCacheSnapshotStore, pmCacheDir, afterCacheMeasured);
@@ -1754,7 +1759,10 @@ Workspace options:
     report.baseline = { mode: "run", status: "complete", result: baseline };
   }
 
-  if (engine === "better" && reuseContext?.key) {
+  if (noopReuseInstall) {
+    // The marker just matched; rewriting it would only move updatedAt and runId.
+    report.reuseMarker = { ok: true, path: reuseMarkerPath(projectRoot), reused: true };
+  } else if (engine === "better" && reuseContext?.key) {
     try {
       const markerPayload = {
         version: 2,
@@ -1787,9 +1795,11 @@ Workspace options:
     };
   }
 
-  await writeJsonAtomic(path.join(layout.runsDir, `${runId}.json`), report);
+  // A reuse hit publishes nothing to the shared cache root: no run report, state update
+  // or delta snapshot, so concurrent worktrees never queue on the state lock or fsync.
+  if (!noopReuseInstall) await writeJsonAtomic(path.join(layout.runsDir, `${runId}.json`), report);
 
-  await updateState(layout, async (state) => {
+  if (!noopReuseInstall) await updateState(layout, async (state) => {
     state.cacheEntries = state.cacheEntries ?? {};
     state.materializationIndex = state.materializationIndex ?? {};
     const projectId = shortHash(projectRoot);
@@ -1875,19 +1885,21 @@ Workspace options:
     }
   }, { projectKeys: [shortHash(projectRoot)] });
 
-  // Save delta snapshot for future incremental diff
-  try {
-    const lockfileCandidates = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock"];
-    for (const lf of lockfileCandidates) {
-      const lfPath = path.join(projectRoot, lf);
-      const packages = await parseLockfilePackages(lfPath);
-      if (packages.size > 0) {
-        await saveSnapshot(layout.root, projectRoot, packages);
-        break;
+  // Save delta snapshot for future incremental diff; a reuse hit left the lockfile as it was.
+  if (!noopReuseInstall) {
+    try {
+      const lockfileCandidates = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock"];
+      for (const lf of lockfileCandidates) {
+        const lfPath = path.join(projectRoot, lf);
+        const packages = await parseLockfilePackages(lfPath);
+        if (packages.size > 0) {
+          await saveSnapshot(layout.root, projectRoot, packages);
+          break;
+        }
       }
+    } catch {
+      // Non-fatal: delta snapshot is optional
     }
-  } catch {
-    // Non-fatal: delta snapshot is optional
   }
 
   // Write .better-receipt.json install receipt
@@ -1941,7 +1953,9 @@ Workspace options:
       ? `- reuse marker: ${reuseDecision.hit ? "hit" : "miss"} (${reuseDecision.reason})`
       : "- reuse marker: n/a",
     `- cache root: ${layout.root}`,
-    `- run report: ${path.join(layout.runsDir, `${runId}.json`)}`
+    noopReuseInstall
+      ? "- run report: not written (reuse hit)"
+      : `- run report: ${path.join(layout.runsDir, `${runId}.json`)}`
   ];
 
   if (parityResult && parityResult.warnings.length > 0) {
