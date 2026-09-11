@@ -255,10 +255,12 @@ pub fn acquire_package_leases(packages: &[crate::ResolvedPackage], cache_dir: &P
         identities.insert((identity.algorithm(), identity.hex_digest()));
     }
     let lease = lifecycle_lock(cache_dir, true)?;
-    for (algorithm, hex) in identities {
-        let artifact = ArtifactCache::new(cache_dir, algorithm, &hex);
-        if !artifact.ready() { return Err("Artifact changed before materialization; retry preparation".into()); }
-    }
+    use rayon::prelude::*;
+    let identities: Vec<_> = identities.into_iter().collect();
+    let ready = crate::analyze::materialize_pool()?.install(|| {
+        identities.par_iter().all(|(algorithm, hex)| ArtifactCache::new(cache_dir, algorithm, hex).ready())
+    });
+    if !ready { return Err("Artifact changed before materialization; retry preparation".into()); }
     Ok(vec![lease])
 }
 

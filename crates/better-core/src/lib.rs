@@ -658,11 +658,20 @@ pub fn copy_file_with_mode(src: &Path, dst: &Path, mode: Option<u32>) -> Result<
 #[derive(Default)]
 pub(crate) struct MaterializeStaging {
     directories: std::collections::HashMap<PathBuf, PathBuf>,
+    fresh: bool,
     #[cfg(unix)]
     comparison_buffers: Option<(Vec<u8>, Vec<u8>)>,
 }
 
 impl MaterializeStaging {
+    /// For destinations inside a private tree this invocation created. Files are
+    /// created in place with O_EXCL; an occupied path takes the checked path.
+    pub(crate) fn fresh() -> Self {
+        let mut staging = Self::default();
+        staging.fresh = true;
+        staging
+    }
+
     fn publish<T>(
         &mut self,
         dst: &Path,
@@ -696,6 +705,14 @@ impl MaterializeStaging {
         dst: &Path,
         mode: Option<u32>,
     ) -> Result<bool, String> {
+        #[cfg(unix)]
+        if self.fresh {
+            match create_fresh_copy(src, dst, mode) {
+                Ok(()) => return Ok(false),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(format!("materialize {}: {}", dst.display(), error)),
+            }
+        }
         if self.matches_independent_file(src, dst, mode) {
             return Ok(true);
         }
@@ -879,6 +896,84 @@ fn same_file_observation(before: &fs::Metadata, after: &fs::Metadata) -> bool {
         && before.mtime_nsec() == after.mtime_nsec()
         && before.ctime() == after.ctime()
         && before.ctime_nsec() == after.ctime_nsec()
+}
+
+/// O_EXCL never opens an existing inode or follows a final symlink, so the
+/// published file is independent without staging, rename or a reuse probe.
+#[cfg(unix)]
+fn create_fresh_copy(src: &Path, dst: &Path, mode: Option<u32>) -> std::io::Result<()> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    if try_clonefile(src, dst) {
+        if let Some(mode) = mode {
+            fs::set_permissions(dst, fs::Permissions::from_mode(mode & 0o7777))?;
+        }
+        return Ok(());
+    }
+    let source = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(src)?;
+    let metadata = source.metadata()?;
+    if !metadata.is_file() {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "source is not a regular file"));
+    }
+    let mode = mode.unwrap_or(metadata.mode()) & 0o7777;
+    let destination = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(mode)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(dst)?;
+    // The umask may clear bits, and reuse requires the exact mode.
+    destination.set_permissions(fs::Permissions::from_mode(mode))?;
+    copy_exact(&source, &destination, metadata.len())
+}
+
+/// Copy exactly `len` bytes; btrfs and XFS turn this into a reflink.
+#[cfg(target_os = "linux")]
+fn copy_exact(source: &fs::File, destination: &fs::File, len: u64) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let mut copied = 0;
+    while copied < len {
+        let chunk = (len - copied).min(1 << 30) as usize;
+        // SAFETY: both descriptors stay open; null offsets use the file positions.
+        let result = unsafe {
+            libc::copy_file_range(source.as_raw_fd(), std::ptr::null_mut(),
+                destination.as_raw_fd(), std::ptr::null_mut(), chunk, 0)
+        };
+        if result > 0 {
+            copied += result as u64;
+            continue;
+        }
+        if result == 0 {
+            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "source shrank during copy"));
+        }
+        let error = std::io::Error::last_os_error();
+        match error.raw_os_error() {
+            Some(libc::EINTR) => {}
+            // No in-kernel copy for this pair (or a seccomp filter): read and write.
+            Some(libc::EXDEV | libc::EINVAL | libc::ENOSYS | libc::EOPNOTSUPP | libc::EPERM) => {
+                return copy_rest(source, destination, len - copied);
+            }
+            _ => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn copy_exact(source: &fs::File, destination: &fs::File, len: u64) -> std::io::Result<()> {
+    copy_rest(source, destination, len)
+}
+
+#[cfg(unix)]
+fn copy_rest(source: &fs::File, mut destination: &fs::File, len: u64) -> std::io::Result<()> {
+    use std::io::Read;
+    if std::io::copy(&mut source.take(len), &mut destination)? == len {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "source shrank during copy"))
+    }
 }
 
 impl Drop for MaterializeStaging {
@@ -1126,6 +1221,41 @@ mod staging_reuse_tests {
         assert!(fs::symlink_metadata(&target).unwrap().is_file());
         fs::write(&target, "another edit").unwrap();
         assert_eq!(fs::read_to_string(&source).unwrap(), "original");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fresh_arena_creates_files_in_place_and_checks_occupied_paths() {
+        use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        fs::write(&source, vec![7; 3 * 64 * 1024 + 5]).unwrap();
+        // Group write survives only if the umask-cleared bit is restored.
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o775)).unwrap();
+        let mut arena = MaterializeStaging::fresh();
+        let target = temp.path().join("target");
+        assert!(!arena.copy_if_changed(&source, &target, None).unwrap());
+        assert!(arena.directories.is_empty(), "fresh files need no staging directory");
+        assert_eq!(fs::read(&target).unwrap(), fs::read(&source).unwrap());
+        assert_eq!(fs::metadata(&target).unwrap().mode() & 0o7777, 0o775);
+        assert_ne!(fs::metadata(&target).unwrap().ino(), fs::metadata(&source).unwrap().ino());
+        let empty = temp.path().join("empty");
+        fs::write(&empty, "").unwrap();
+        assert!(!arena.copy_if_changed(&empty, &temp.path().join("empty-copy"), Some(0o600)).unwrap());
+        assert_eq!(fs::metadata(temp.path().join("empty-copy")).unwrap().mode() & 0o7777, 0o600);
+
+        let linked = temp.path().join("linked");
+        fs::hard_link(&source, &linked).unwrap();
+        assert!(!arena.copy_if_changed(&source, &linked, None).unwrap());
+        assert_ne!(fs::metadata(&linked).unwrap().ino(), fs::metadata(&source).unwrap().ino());
+        let other = temp.path().join("other");
+        fs::write(&other, "other").unwrap();
+        let symlinked = temp.path().join("symlinked");
+        symlink(&other, &symlinked).unwrap();
+        assert!(!arena.copy_if_changed(&source, &symlinked, None).unwrap());
+        assert!(fs::symlink_metadata(&symlinked).unwrap().is_file());
+        assert_eq!(fs::read_to_string(&other).unwrap(), "other");
+        assert!(arena.copy_if_changed(&temp.path().join("missing"), &temp.path().join("absent"), None).is_err());
     }
 
     #[cfg(unix)]
